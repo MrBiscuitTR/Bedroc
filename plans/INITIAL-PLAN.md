@@ -2,7 +2,7 @@
 
 ## Context
 
-Bedroc is a green-field, open-source, self-hostable, end-to-end encrypted (E2EE) real-time notes application. The goal is to give users a fully private alternative to Google Keep / Notion, where the server never sees note contents. Zero code exists yet. This plan covers the entire project from stack selection through deployment.
+Bedroc is an open-source, self-hostable, end-to-end encrypted (E2EE) real-time notes application. The goal is to give users a fully private alternative to Google Keep / Notion, where the server never sees note contents. This plan covers the entire project from stack selection through deployment.
 
 ---
 
@@ -35,88 +35,106 @@ Bedroc is a green-field, open-source, self-hostable, end-to-end encrypted (E2EE)
 
 ## Project Directory Structure
 
+> **Confirmed layout (Option B — Docker at root).** This is the standard pattern for self-hostable apps (Gitea, Immich, n8n). A user clones the repo, copies `.env.example` → `.env`, edits a few lines, and runs `docker-compose up -d`. No hunting in subfolders.
+
 ```
-Bedroc/
-├── plans/
-│   └── INITIAL-PLAN.md
-├── apps/
-│   ├── web/                        # SvelteKit frontend
-│   │   ├── src/
-│   │   │   ├── lib/
-│   │   │   │   ├── crypto/
-│   │   │   │   │   ├── keys.ts           # Key derivation, wrapping, storage
-│   │   │   │   │   ├── encrypt.ts        # AES-GCM encrypt/decrypt
-│   │   │   │   │   └── srp.ts            # SRP/OPAQUE auth (no password to server)
-│   │   │   │   ├── db/
-│   │   │   │   │   └── indexeddb.ts      # Local offline storage
-│   │   │   │   ├── sync/
-│   │   │   │   │   ├── websocket.ts      # Real-time sync client
-│   │   │   │   │   └── conflict.ts       # Conflict resolution (CRDT/last-write-wins)
-│   │   │   │   ├── stores/
-│   │   │   │   │   ├── auth.ts           # Auth state store
-│   │   │   │   │   └── notes.ts          # Notes state store
-│   │   │   │   └── utils/
-│   │   │   │       └── export.ts         # JSON export with security warning
-│   │   │   ├── routes/
-│   │   │   │   ├── +layout.svelte        # Root layout, PWA shell
-│   │   │   │   ├── +page.svelte          # Home / note list
-│   │   │   │   ├── login/
-│   │   │   │   │   └── +page.svelte
-│   │   │   │   ├── register/
-│   │   │   │   │   └── +page.svelte
-│   │   │   │   └── note/
-│   │   │   │       └── [id]/
-│   │   │   │           └── +page.svelte  # Note editor
-│   │   │   ├── service-worker.ts         # Offline caching, background sync
-│   │   │   └── app.html                  # HTML shell (meta tags, PWA, iOS fixes)
-│   │   ├── static/
-│   │   │   ├── manifest.webmanifest      # PWA manifest
-│   │   │   ├── icons/                    # App icons (all sizes)
-│   │   │   └── fonts/                    # Self-hosted fonts
-│   │   ├── svelte.config.js
-│   │   ├── vite.config.ts
-│   │   ├── tailwind.config.ts
-│   │   └── package.json
-│   └── server/                     # Fastify backend
-│       ├── src/
-│       │   ├── routes/
-│       │   │   ├── auth.ts               # Register, login (SRP), logout, refresh
-│       │   │   ├── notes.ts              # CRUD for encrypted note blobs
-│       │   │   └── sync.ts               # WebSocket upgrade + sync handler
-│       │   ├── db/
-│       │   │   ├── client.ts             # PostgreSQL connection pool
-│       │   │   ├── migrations/           # SQL migration files
-│       │   │   │   ├── 001_init.sql
-│       │   │   │   └── 002_sessions.sql
-│       │   │   └── queries/
-│       │   │       ├── users.ts
-│       │   │       └── notes.ts
-│       │   ├── middleware/
-│       │   │   ├── auth.ts               # JWT verification middleware
-│       │   │   ├── ratelimit.ts          # Rate limiting (Redis-backed)
-│       │   │   └── csrf.ts               # CSRF protection
-│       │   ├── plugins/
-│       │   │   ├── redis.ts              # Redis plugin
-│       │   │   └── websocket.ts          # WebSocket plugin
-│       │   └── index.ts                  # Server entry point
-│       ├── package.json
-│       └── tsconfig.json
-├── docker/
-│   ├── docker-compose.yml
-│   ├── docker-compose.dev.yml
+Bedroc/                              ← root git repo
+├── bedroc/                          ← SvelteKit frontend source
+│   ├── src/
+│   │   ├── lib/
+│   │   │   ├── crypto/
+│   │   │   │   ├── keys.ts          # Key derivation, wrapping, storage
+│   │   │   │   ├── encrypt.ts       # AES-GCM encrypt/decrypt
+│   │   │   │   └── srp.ts           # SRP auth (no password to server)
+│   │   │   ├── db/
+│   │   │   │   └── indexeddb.ts     # Local offline storage
+│   │   │   ├── sync/
+│   │   │   │   ├── websocket.ts     # Real-time sync client
+│   │   │   │   └── conflict.ts      # Conflict resolution
+│   │   │   ├── stores/
+│   │   │   │   ├── auth.ts          # Auth state (server URL, session)
+│   │   │   │   └── notes.ts         # Notes state
+│   │   │   └── utils/
+│   │   │       └── export.ts        # JSON export with security warning
+│   │   ├── routes/
+│   │   │   ├── +layout.svelte       # Root layout (sidebar/bottom nav)
+│   │   │   ├── +page.svelte         # Notes list (home)
+│   │   │   ├── login/
+│   │   │   │   └── +page.svelte     # Login + server URL picker
+│   │   │   ├── register/
+│   │   │   │   └── +page.svelte     # Register + server URL picker
+│   │   │   ├── note/[id]/
+│   │   │   │   └── +page.svelte     # Note editor
+│   │   │   └── settings/
+│   │   │       └── +page.svelte     # Settings
+│   │   ├── service-worker.ts        # Offline cache, background sync
+│   │   ├── app.html                 # HTML shell (PWA meta, iOS fixes)
+│   │   └── app.css                  # Global styles, design tokens
+│   ├── static/
+│   │   ├── manifest.webmanifest     # PWA manifest
+│   │   ├── icons/                   # App icons (all sizes)
+│   │   └── robots.txt
+│   ├── svelte.config.js
+│   ├── vite.config.ts
+│   └── package.json
+├── server/                          ← Fastify backend (future phase)
+│   ├── src/
+│   │   ├── routes/
+│   │   │   ├── auth.ts              # Register, login (SRP), logout, refresh
+│   │   │   ├── notes.ts             # CRUD for encrypted note blobs
+│   │   │   └── sync.ts              # WebSocket upgrade + sync handler
+│   │   ├── db/
+│   │   │   ├── client.ts            # PostgreSQL connection pool
+│   │   │   ├── migrations/
+│   │   │   │   └── 001_init.sql
+│   │   │   └── queries/
+│   │   │       ├── users.ts
+│   │   │       └── notes.ts
+│   │   ├── middleware/
+│   │   │   ├── auth.ts              # JWT verification
+│   │   │   ├── ratelimit.ts         # Redis-backed rate limiting
+│   │   │   └── csrf.ts              # CSRF protection
+│   │   ├── plugins/
+│   │   │   ├── redis.ts
+│   │   │   └── websocket.ts
+│   │   └── index.ts                 # Server entry point
+│   ├── package.json
+│   └── tsconfig.json
+├── docker/                          ← Docker internals (not the compose file)
 │   ├── nginx/
 │   │   ├── nginx.conf
-│   │   └── ssl/                    # TLS certs (Let's Encrypt or self-signed)
+│   │   └── ssl/                     # TLS certs (Let's Encrypt or self-signed)
 │   └── postgres/
 │       └── init.sql
-├── GUIDE.md                        # Self-hosting guide (Docker, Tailscale, WireGuard/UFW)
+├── docker-compose.yml               ← at root — production
+├── docker-compose.dev.yml           ← at root — development (hot reload)
+├── .env.example                     ← at root — copy to .env and edit
+├── GUIDE.md                         ← self-hosting guide (Docker, Tailscale, WireGuard/UFW)
+├── docs/                            ← generated documentation
+├── plans/                           ← planning and decision documents
 ├── README.md
 ├── TODO.md
 ├── LICENSE
-├── .env.example
-├── .gitignore
-└── package.json                    # Root workspace (pnpm workspaces)
+└── .gitignore
 ```
+
+---
+
+## Backend Connection Model
+
+The frontend build is **always the same** regardless of where it is accessed from (website, PWA on home screen, Electron app). There are no "modes."
+
+At login and register, a subtle **server URL field** defaults to `https://api.bedroc.app` (the public hosted instance). Users change this to their own server URL to use a self-hosted backend. The chosen URL is saved to localStorage and multiple saved servers are remembered (dropdown switcher).
+
+This transparently covers all use cases:
+
+| Use case | Server URL |
+| --- | --- |
+| Public / commercial (bedroc.app) | `https://api.bedroc.app` (default) |
+| Self-hosted on VPS / public domain | `https://notes.mydomain.com` |
+| Self-hosted behind VPN / CGNAT | `https://100.x.x.x` (Tailscale) or `http://192.168.x.x:3000` |
+
+The frontend URL is irrelevant — it is either a website the user visited and added to their home screen, or the Electron desktop app. Only the API endpoint changes.
 
 ---
 

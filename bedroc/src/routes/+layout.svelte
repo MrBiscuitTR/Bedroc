@@ -146,7 +146,7 @@
 					{:else if path === '/settings'}
 						Settings
 					{:else}
-						bedroc
+						Bedroc
 					{/if}
 				</span>
 				<div class="mobile-header-actions">

@@ -169,7 +169,7 @@
 </script>
 
 <svelte:head>
-	<title>{title || 'New note'} — bedroc</title>
+	<title>{title || 'New note'} — Bedroc</title>
 </svelte:head>
 
 <div class="editor-page">

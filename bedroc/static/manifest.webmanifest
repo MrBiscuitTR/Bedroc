@@ -1,6 +1,6 @@
 {
-  "name": "bedroc",
-  "short_name": "bedroc",
+  "name": "Bedroc",
+  "short_name": "Bedroc",
   "description": "Private, end-to-end encrypted notes.",
   "start_url": "/",
   "display": "standalone",

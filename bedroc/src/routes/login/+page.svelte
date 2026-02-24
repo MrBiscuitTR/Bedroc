@@ -28,14 +28,14 @@
 </script>
 
 <svelte:head>
-	<title>Log in — bedroc</title>
+	<title>Log in — Bedroc</title>
 </svelte:head>
 
 <div class="auth-card">
 	<div class="brand">
-		<div class="brand-mark">b</div>
-		<h1 class="brand-name">bedroc</h1>
-		<p class="brand-tagline">private notes, your way</p>
+		<div class="brand-mark">B</div>
+		<h1 class="brand-name">Bedroc</h1>
+		<p class="brand-tagline">Private synchronous notes, your way</p>
 	</div>
 
 	<form class="form" onsubmit={handleSubmit}>

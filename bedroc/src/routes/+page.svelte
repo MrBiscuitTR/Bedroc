@@ -17,6 +17,9 @@
 	// Track the last visited topic/folder for back-button support
 	let lastVisitedId = $state<string | null | 'all'>('all');
 
+	// Mobile side nav drawer
+	let drawerOpen = $state(false);
+
 	// ── Derived lists ──────────────────────────────────────────────
 	let allNotes    = $derived((notesMap.size, getNotes()));
 	let allTopics   = $derived((topicsMap.size, getTopics()));
@@ -49,6 +52,7 @@
 	function selectTopic(id: string | null | 'all') {
 		lastVisitedId = activeTopicId;
 		activeTopicId = id;
+		drawerOpen = false; // close drawer on mobile after selection
 	}
 
 	function handleNewNote() {
@@ -135,11 +139,15 @@
 	let dropTarget  = $state<string | null>(null); // topic/folder id being hovered
 	let dropZone    = $state<'topic' | 'folder' | 'root' | null>(null);
 
-	// Long-press timer for mobile drag initiation
+	// Long-press timer for mobile drag initiation.
+	// NOTE: ontouchstart/ontouchend are also used on topic/folder buttons.
+	// We set longPressActive=true only after 500ms; a short tap cancels it,
+	// so the click event fires normally for navigation — no double-tap needed.
 	let longPressTimer: ReturnType<typeof setTimeout> | null = null;
 	let longPressActive = $state(false);
 
 	function startLongPress(kind: DragKind, id: string) {
+		cancelLongPress();
 		longPressTimer = setTimeout(() => {
 			longPressActive = true;
 			dragKind = kind;
@@ -149,6 +157,11 @@
 
 	function cancelLongPress() {
 		if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+		// Only reset drag state if long press never fired
+		if (!longPressActive) return;
+		longPressActive = false;
+		dragKind = null;
+		dragId   = null;
 	}
 
 	// Desktop drag handlers (HTML5 DnD API)
@@ -215,8 +228,6 @@
 				moveFolder(dragId, targetId);
 			} else if (zone === 'root') {
 				moveFolder(dragId, null);
-			} else if (zone === 'folder' && targetId && targetId !== dragId) {
-				moveFolder(dragId, null, targetId);
 			}
 		}
 	}
@@ -242,13 +253,37 @@
 </script>
 
 <svelte:head>
-	<title>Notes — bedroc</title>
+	<title>Notes — Bedroc</title>
 </svelte:head>
 
 <div class="page">
+	<!-- ── Mobile: topics drawer toggle ─────────────────────────── -->
+	<button
+		class="drawer-toggle"
+		onclick={() => (drawerOpen = true)}
+		aria-label="Open topics"
+		aria-expanded={drawerOpen}
+	>
+		<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+			<rect x="2" y="3" width="5" height="10" rx="1" stroke="currentColor" stroke-width="1.3"/>
+			<path d="M10 5h4M10 8h4M10 11h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+		</svg>
+		<span class="drawer-toggle-label">{panelTitle}</span>
+		<svg class="drawer-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none">
+			<path d="M4 3l4 3-4 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+		</svg>
+	</button>
+
+	<!-- ── Mobile drawer backdrop ───────────────────────────────── -->
+	{#if drawerOpen}
+		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+		<div class="drawer-backdrop" onclick={() => (drawerOpen = false)}></div>
+	{/if}
+
 	<!-- ── Left panel: folders + topics ────────────────────────── -->
 	<aside
 		class="topics-panel"
+		class:drawer-open={drawerOpen}
 		ondragover={(e) => { e.preventDefault(); dropZone = 'root'; dropTarget = null; }}
 		ondrop={(e) => onDrop(e, null, 'root')}
 		ondragleave={onDragLeave}
@@ -269,6 +304,12 @@
 						<path d="M6.5 1v11M1 6.5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
 					</svg>
 				</button>
+				<!-- Close button visible only in mobile drawer -->
+				<button class="btn-icon drawer-close-btn" onclick={() => (drawerOpen = false)} aria-label="Close">
+					<svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+						<path d="M1.5 1.5l10 10M11.5 1.5l-10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+					</svg>
+				</button>
 			</div>
 		</div>
 
@@ -287,7 +328,7 @@
 			<button
 				class="topic-item"
 				class:active={activeTopicId === null}
-				class:drop-target={dropZone === 'root' && dragKind === 'note'}
+				class:drop-target-topic={dropZone === 'root' && dragKind === 'note'}
 				onclick={() => selectTopic(null)}
 				ondragover={(e) => onDragOver(e, 'uncategorised', 'root')}
 				ondrop={(e) => onDrop(e, null, 'root')}
@@ -391,7 +432,7 @@
 {#snippet folderRow(folder: Folder, depth: number)}
 	<div
 		class="folder-row"
-		class:drop-target={dropTarget === folder.id && (dropZone === 'folder')}
+		class:drop-target-folder={dropTarget === folder.id && dropZone === 'folder'}
 		ondragover={(e) => onDragOver(e, folder.id, 'folder')}
 		ondrop={(e) => onDrop(e, folder.id, 'folder')}
 		ondragleave={onDragLeave}
@@ -455,7 +496,7 @@
 {#snippet topicRow(topic: Topic, depth: number)}
 	<div
 		class="topic-row"
-		class:drop-target={dropTarget === topic.id && dragKind === 'note'}
+		class:drop-target-topic={dropTarget === topic.id && dragKind === 'note'}
 		ondragover={(e) => onDragOver(e, topic.id, 'topic')}
 		ondrop={(e) => onDrop(e, topic.id, 'topic')}
 		ondragleave={onDragLeave}
@@ -468,8 +509,20 @@
 			onclick={() => selectTopic(topic.id)}
 			ondragstart={(e) => onDragStart(e, 'topic', topic.id)}
 			ondragend={onDragEnd}
-			ontouchstart={() => startLongPress('topic', topic.id)}
-			ontouchend={cancelLongPress}
+			ontouchstart={(e) => {
+				// Start long-press timer. If user lifts quickly, click fires normally.
+				startLongPress('topic', topic.id);
+			}}
+			ontouchend={(e) => {
+				// If long press did NOT fire, treat as a tap → allow click
+				if (!longPressActive) {
+					cancelLongPress();
+				} else {
+					// Long press active: end drag operation
+					cancelLongPress();
+					e.preventDefault();
+				}
+			}}
 			ontouchmove={cancelLongPress}
 		>
 			<span class="topic-dot" style="background: {topic.color}"></span>
@@ -577,6 +630,52 @@
 		display: flex;
 		height: 100%;
 		overflow: hidden;
+		position: relative;
+	}
+
+	/* ── Mobile drawer toggle button ────────────────────────────── */
+	.drawer-toggle {
+		display: none;
+		position: absolute;
+		top: 14px;
+		left: 14px;
+		z-index: 10;
+		align-items: center;
+		gap: 6px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		padding: 6px 10px;
+		font-size: 12.5px;
+		font-weight: 500;
+		color: var(--text-muted);
+		cursor: pointer;
+		max-width: 160px;
+	}
+
+	.drawer-toggle-label {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		flex: 1;
+	}
+
+	.drawer-chevron {
+		flex-shrink: 0;
+		color: var(--text-faint);
+	}
+
+	/* Show toggle on mobile when panel is hidden */
+	@media (max-width: 899px) {
+		.drawer-toggle { display: flex; }
+	}
+
+	/* Backdrop for mobile drawer */
+	.drawer-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 19;
+		background: rgba(0,0,0,0.5);
 	}
 
 	/* ── Topics panel ──────────────────────────────────────────── */
@@ -592,8 +691,38 @@
 		gap: 4px;
 	}
 
+	/* Desktop: always visible */
 	@media (min-width: 900px) {
-		.topics-panel { display: flex; }
+		.topics-panel {
+			display: flex;
+		}
+		.drawer-close-btn {
+			display: none;
+		}
+	}
+
+	/* Mobile: hidden by default, slides in as a drawer */
+	@media (max-width: 899px) {
+		.topics-panel {
+			display: flex;
+			position: fixed;
+			top: 0;
+			left: 0;
+			bottom: 0;
+			width: 240px;
+			max-width: 80vw;
+			z-index: 20;
+			background: var(--bg-elevated);
+			border-right: 1px solid var(--border);
+			transform: translateX(-100%);
+			transition: transform 0.22s ease;
+			/* Extra top padding for safe area */
+			padding-top: max(20px, env(safe-area-inset-top, 14px));
+		}
+
+		.topics-panel.drawer-open {
+			transform: translateX(0);
+		}
 	}
 
 	.topics-header {
@@ -607,6 +736,10 @@
 		display: flex;
 		align-items: center;
 		gap: 2px;
+	}
+
+	.drawer-close-btn {
+		/* Shown only on mobile drawer */
 	}
 
 	.topic-list {
@@ -627,12 +760,23 @@
 		flex-direction: column;
 		border-radius: var(--radius-sm);
 		transition: background 0.1s ease;
+		position: relative;
 	}
 
-	.folder-row.drop-target {
-		background: color-mix(in srgb, var(--accent) 10%, transparent);
-		outline: 1px dashed color-mix(in srgb, var(--accent) 50%, transparent);
-		outline-offset: -1px;
+	/* Drop-target for folders: bright bottom border */
+	.folder-row.drop-target-folder {
+		background: color-mix(in srgb, var(--accent) 8%, transparent);
+	}
+
+	.folder-row.drop-target-folder::after {
+		content: '';
+		position: absolute;
+		bottom: 0;
+		left: 8px;
+		right: 8px;
+		height: 2px;
+		background: var(--accent);
+		border-radius: 999px;
 	}
 
 	.folder-item {
@@ -703,12 +847,15 @@
 		gap: 2px;
 		border-radius: var(--radius-sm);
 		transition: background 0.1s ease;
+		position: relative;
 	}
 
-	.topic-row.drop-target {
+	/* Drop-target for topics: visible border + accent fill */
+	.topic-row.drop-target-topic {
 		background: color-mix(in srgb, var(--accent) 12%, transparent);
-		outline: 1px dashed color-mix(in srgb, var(--accent) 50%, transparent);
+		outline: 1.5px solid var(--accent);
 		outline-offset: -1px;
+		border-radius: var(--radius-sm);
 	}
 
 	.topic-item {
@@ -729,6 +876,8 @@
 		transition: background 0.12s ease, color 0.12s ease;
 		min-width: 0;
 		user-select: none;
+		/* Ensure the tap target is large enough */
+		-webkit-tap-highlight-color: transparent;
 	}
 
 	.topic-item:hover {
@@ -789,6 +938,15 @@
 		align-items: center;
 		justify-content: space-between;
 		padding: 18px 20px 0;
+		/* On mobile, shift right to make room for the drawer toggle */
+		padding-left: 20px;
+	}
+
+	@media (max-width: 899px) {
+		.notes-header {
+			padding-top: 14px;
+			padding-left: 186px; /* clear the drawer toggle */
+		}
 	}
 
 	.notes-title {
@@ -809,6 +967,7 @@
 		background: color-mix(in srgb, var(--accent) 8%, transparent);
 		cursor: pointer;
 		transition: background 0.15s ease;
+		flex-shrink: 0;
 	}
 
 	.new-btn:hover {
@@ -860,6 +1019,7 @@
 		text-decoration: none;
 		transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
 		cursor: grab;
+		-webkit-tap-highlight-color: transparent;
 	}
 
 	.note-card:active { cursor: grabbing; }

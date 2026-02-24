@@ -34,7 +34,7 @@
 </script>
 
 <svelte:head>
-	<title>Settings — bedroc</title>
+	<title>Settings — Bedroc</title>
 </svelte:head>
 
 <div class="page">
@@ -202,7 +202,7 @@
 		</div>
 	</section>
 
-	<p class="version">bedroc v0.1.0 — open source, E2EE</p>
+	<p class="version">Bedroc v0.1.0 — open source, E2EE</p>
 </div>
 
 <style>

@@ -75,7 +75,7 @@ Base size: `14px`. All `input` and `textarea` elements use `font-size: 16px` to 
 
 | Token | Value | Usage |
 | --- | --- | --- |
-| `--sidebar-w` | `240px` | Desktop sidebar width |
+| `--sidebar-w` | `200px` | Desktop sidebar width |
 | `--nav-h` | `56px` | Mobile header/bottom nav height |
 | `--radius-sm` | `6px` | Inputs, buttons |
 | `--radius-md` | `8px` | Cards |

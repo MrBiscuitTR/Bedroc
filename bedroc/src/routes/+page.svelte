@@ -141,6 +141,9 @@
 			longPressActive = true;
 			dragKind = kind;
 			dragId   = id;
+			// Add touch listeners to emulate dragover on touch devices
+			document.addEventListener('touchmove', onTouchMove, { passive: false });
+			document.addEventListener('touchend', onTouchEnd);
 		}, 500);
 	}
 
@@ -150,6 +153,128 @@
 		longPressActive = false;
 		dragKind = null;
 		dragId   = null;
+		dropTarget = null; dropSide = null; dropZone = null;
+		document.removeEventListener('touchmove', onTouchMove);
+		document.removeEventListener('touchend', onTouchEnd);
+	}
+
+	function elementClosestClass(el: Element | null, cls: string) {
+		while (el && el !== document.documentElement) {
+			if (el.classList && el.classList.contains(cls)) return el as HTMLElement;
+			el = el.parentElement;
+		}
+		return null;
+	}
+
+	function onTouchMove(e: TouchEvent) {
+		if (!longPressActive || !e.touches || e.touches.length === 0) return;
+		e.preventDefault();
+		const t = e.touches[0];
+		const el = document.elementFromPoint(t.clientX, t.clientY) as Element | null;
+		// detect topic, folder, or note elements
+		const topicEl = elementClosestClass(el, 'topic-item');
+		const folderEl = elementClosestClass(el, 'folder-item');
+		const noteCard = elementClosestClass(el, 'note-card');
+		if (topicEl) {
+			const id = topicEl.getAttribute('data-topic-id') || topicEl.getAttribute('data-id');
+			if (id) {
+				dropZone = 'topic';
+				dropTarget = id;
+				// compute side using element rect
+				const rect = topicEl.getBoundingClientRect();
+				const rel = (t.clientY - rect.top) / rect.height;
+				if (dragKind === 'note') {
+					if (rel < 0.3) dropSide = 'before';
+					else if (rel > 0.7) dropSide = 'after';
+					else dropSide = 'into';
+				} else {
+					dropSide = rel < 0.5 ? 'before' : 'after';
+				}
+				return;
+			}
+		}
+		if (folderEl) {
+			const id = folderEl.getAttribute('data-folder-id') || folderEl.getAttribute('data-id');
+			if (id) {
+				dropZone = 'folder';
+				dropTarget = id;
+				const rect = folderEl.getBoundingClientRect();
+				const rel = (t.clientY - rect.top) / rect.height;
+				if (dragKind === 'topic' || dragKind === 'folder') {
+					if (rel < 0.3) dropSide = 'before';
+					else if (rel > 0.7) dropSide = 'after';
+					else dropSide = 'into';
+				} else {
+					dropSide = rel < 0.5 ? 'before' : 'after';
+				}
+				return;
+			}
+		}
+		if (noteCard) {
+			const li = elementClosestClass(noteCard, 'note-list') ? (noteCard.parentElement as HTMLElement) : noteCard.parentElement as HTMLElement;
+			const noteId = noteCard.getAttribute('data-note-id') || noteCard.getAttribute('href')?.split('/').pop();
+			if (noteId) {
+				dropZone = 'note';
+				dropTarget = noteId;
+				const rect = (noteCard as HTMLElement).getBoundingClientRect();
+				const rel = (t.clientY - rect.top) / rect.height;
+				dropSide = rel < 0.5 ? 'before' : 'after';
+				return;
+			}
+		}
+		// if none matched, clear
+		dropTarget = null; dropSide = null; dropZone = null;
+	}
+
+	function onTouchEnd(e?: TouchEvent) {
+		// commit based on dragKind/dragId/dropZone/dropTarget/dropSide
+		if (!longPressActive) return;
+		if (dragKind && dragId && dropTarget) {
+			if (dropZone === 'topic') {
+				if (dragKind === 'note') {
+					const note = notesMap.get(dragId);
+					if (note) saveNote({ ...note, topicId: dropTarget });
+				} else if (dragKind === 'topic') {
+					// reorder/move topic
+					const tgt = topicsMap.get(dropTarget);
+					if (tgt) {
+						const newFolder = tgt.folderId ?? null;
+						// compute afterId from dropSide
+						const siblings = [...topicsMap.values()].filter(t => t.folderId === newFolder && t.id !== dragId).sort((a,b)=>a.order-b.order);
+						const tgtIdx = siblings.findIndex(t=>t.id===dropTarget);
+						let afterId: string | undefined;
+						if (dropSide === 'after') afterId = dropTarget;
+						else afterId = tgtIdx>0?siblings[tgtIdx-1].id:undefined;
+						moveTopic(dragId, newFolder, afterId);
+					}
+				}
+			} else if (dropZone === 'folder') {
+				if (dragKind === 'topic') {
+					if (dropSide === 'into') moveTopic(dragId, dropTarget);
+					else {
+						const tgt = foldersMap.get(dropTarget);
+						if (tgt) moveTopic(dragId, tgt.parentId ?? null);
+					}
+				} else if (dragKind === 'folder') {
+					if (dropSide === 'into') moveFolder(dragId, dropTarget);
+					else {
+						const tgt = foldersMap.get(dropTarget);
+						if (tgt) moveFolder(dragId, tgt.parentId ?? null, dropSide === 'after' ? dropTarget : undefined);
+					}
+				}
+			} else if (dropZone === 'note') {
+				if (dragKind === 'note' && sortMode === 'custom') {
+					if (dropSide === 'after') reorderNote(dragId, dropTarget);
+					else {
+						const sorted = [...notesMap.values()].filter(n => n.topicId === notesMap.get(dropTarget!)?.topicId).sort((a,b)=>a.customOrder-b.customOrder);
+						const idx = sorted.findIndex(n=>n.id===dropTarget);
+						reorderNote(dragId, idx>0?sorted[idx-1].id:null);
+					}
+				}
+			}
+		}
+		cancelLongPress();
+		onDragEnd();
 	}
 
 	function onDragStart(e: DragEvent, kind: DragKind, id: string) {
@@ -252,10 +377,23 @@
 		} else if (dragKind === 'topic') {
 			const src = topicsMap.get(dragId);
 			const tgt = topicsMap.get(topicId);
-			if (src && tgt && src.folderId === tgt.folderId) {
+			if (src && tgt) {
 				const side = calcSide(e, false);
-				// 'before' = insert before tgt, 'after' = insert after tgt (use tgt as afterId)
-				moveTopic(dragId, src.folderId, side === 'before' ? undefined : topicId);
+				// Determine target folder (we allow moving into target's folder)
+				const newFolder = tgt.folderId ?? null;
+				// Build ordered siblings in that folder
+				const siblings = [...topicsMap.values()]
+					.filter(t => t.folderId === newFolder && t.id !== dragId)
+					.sort((a,b) => a.order - b.order);
+				const tgtIdx = siblings.findIndex(t => t.id === topicId);
+				let afterId: string | undefined;
+				if (side === 'after') {
+					afterId = topicId;
+				} else {
+					// before: insert before target → afterId is previous sibling (or undefined for start)
+					afterId = tgtIdx > 0 ? siblings[tgtIdx - 1].id : undefined;
+				}
+				moveTopic(dragId, newFolder, afterId);
 			}
 		}
 		onDragEnd();
@@ -342,7 +480,7 @@
 	<title>Notes — Bedroc</title>
 </svelte:head>
 
-<div class="page">
+<div class="page" class:long-press-active={longPressActive}>
 	<!-- ── Mobile: topics drawer toggle ─────────────────────────── -->
 	<button
 		class="drawer-toggle"
@@ -641,11 +779,13 @@
 		class="topic-row"
 		class:drop-target-topic={dropTarget === topic.id && dragKind === 'note'}
 		class:drop-target-topic-reorder={dropTarget === topic.id && dragKind === 'topic'}
+		class:drop-target-topic-reorder-before={dropTarget === topic.id && dragKind === 'topic' && dropSide === 'before'}
+		class:drop-target-topic-reorder-after={dropTarget === topic.id && dragKind === 'topic' && dropSide === 'after'}
 	>
 		<button
 			class="topic-item"
 			class:active={activeTopicId === topic.id}
-			style="padding-left: {10 + depth * 14}px"
+			style="padding-left: {14 + depth * 14}px"
 			draggable="true"
 			onclick={() => selectTopic(topic.id)}
 			ondragover={(e) => onDragOver(e, topic.id, 'topic')}
@@ -819,19 +959,19 @@
 
 	@media (max-width: 899px) {
 		.topics-panel {
-			display: flex;
-			position: fixed;
-			top: 0;
-			left: 0;
-			bottom: 0;
-			width: 240px;
-			max-width: 80vw;
-			z-index: 20;
-			background: var(--bg-elevated);
-			border-right: 1px solid var(--border);
-			transform: translateX(-100%);
-			transition: transform 0.22s ease;
-			padding-top: max(20px, env(safe-area-inset-top, 14px));
+		display: flex;
+		position: fixed;
+		top: 0;
+		left: 0;
+		bottom: 0;
+		width: 240px;
+		max-width: 80vw;
+		z-index: 20;
+		background: var(--bg-elevated);
+		border-right: 1px solid var(--border);
+		transform: translateX(-100%);
+		transition: transform 0.22s ease;
+		padding-top: max(20px, env(safe-area-inset-top, 14px));
 		}
 		.topics-panel.drawer-open { transform: translateX(0); }
 	}
@@ -939,9 +1079,12 @@
 
 	/* Topic-over-topic reorder: bottom insertion line shows where it will land */
 	.topic-row.drop-target-topic-reorder {
-		border-bottom: 2px solid var(--accent);
 		border-radius: 0;
 	}
+
+	/* Topic reorder insertion lines: show top or bottom depending on side */
+	.topic-row.drop-target-topic-reorder-before { border-top: 2px solid var(--accent); }
+	.topic-row.drop-target-topic-reorder-after { border-bottom: 2px solid var(--accent); }
 
 	.topic-item {
 		flex: 1;
@@ -962,9 +1105,25 @@
 		-webkit-tap-highlight-color: transparent;
 	}
 
+	/* Always prevent text selection when interacting with draggable items */
+	.topic-item, .folder-item, .note-card {
+		user-select: none;
+		-webkit-user-select: none;
+		-webkit-touch-callout: none;
+	}
+
 	.topic-item:active { cursor: grabbing; }
 
 	.topic-item:hover { background: var(--bg-hover); color: var(--text); }
+
+	/* When long-press dragging on touch, disable selection/drag highlights to avoid accidental text selection */
+	.page.long-press-active .topic-item,
+	.page.long-press-active .folder-item,
+	.page.long-press-active .note-card {
+		user-select: none;
+		-webkit-user-select: none;
+		-webkit-user-drag: none;
+	}
 
 	.topic-item.active {
 		background: color-mix(in srgb, var(--accent) 12%, transparent);
@@ -976,6 +1135,7 @@
 		height: 8px;
 		border-radius: 50%;
 		flex-shrink: 0;
+        margin-left: 4px;
 	}
 
 	/* Uncategorised dot: grey with dashed border */

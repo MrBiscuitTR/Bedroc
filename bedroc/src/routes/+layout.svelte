@@ -267,7 +267,8 @@
 		display: flex;
 		align-items: center;
 		gap: 10px;
-		padding: max(20px, env(safe-area-inset-top, 0px)) 18px 16px;
+		min-height: var(--nav-h);
+		padding: max(env(safe-area-inset-top, 0px), 8px) 18px;
 		border-bottom: 1px solid var(--border);
 	}
 
@@ -397,10 +398,10 @@
 	   has its own toolbar that fills this visual role). */
 	.mobile-header {
 		display: flex;
-		align-items: flex-end;
+		align-items: center; /* center vertically to match sidebar logo */
 		justify-content: space-between;
 		min-height: var(--nav-h);
-		padding: max(env(safe-area-inset-top, 0px), 12px) 16px 12px;
+		padding: max(env(safe-area-inset-top, 0px), 8px) 16px; /* symmetric vertical padding */
 		background: var(--bg-elevated);
 		border-bottom: 1px solid var(--border);
 		flex-shrink: 0;

@@ -23,7 +23,7 @@
 	let bodyEl: HTMLDivElement;
 
 	$effect(() => {
-		const n = isNew ? null : notesMap.get(noteId);
+		const n = isNew ? null : notesMap.get(noteId!);
 		if (n) {
 			title = n.title;
 			if (bodyEl && bodyEl.innerHTML !== n.body) {
@@ -58,7 +58,7 @@
 			saved = true;
 			goto(`/note/${id}`, { replaceState: true });
 		} else {
-			const existing = notesMap.get(noteId);
+			const existing = notesMap.get(noteId!);
 			if (!existing) return;
 			saveNote({ ...existing, title: dedupTitle(title.trim() || 'Untitled', existing.topicId, existing.id), body });
 			saved = true;
@@ -73,6 +73,19 @@
 		let i = 2;
 		while (titles.has(`${base} (${i})`)) i++;
 		return `${base} (${i})`;
+	}
+
+	/** Format stored names as Title Case for display */
+	function formatName(name: string): string {
+		if (!name) return '';
+		return name.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+	}
+
+	function getTopNoteForTopic(topicId: string) {
+		const notes = allNotes.filter(n => n.topicId === topicId).slice();
+		if (!notes.length) return null;
+		notes.sort((a,b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+		return notes[0];
 	}
 
 	function handleTitleInput() { saved = false; scheduleAutosave(); }
@@ -91,7 +104,7 @@
 	function handleDelete() {
 		if (isNew) { goto('/'); return; }
 		import('$lib/stores/notes.svelte').then(({ deleteNote }) => {
-			deleteNote(noteId);
+			deleteNote(noteId!);
 			goto('/');
 		});
 	}
@@ -200,13 +213,15 @@
 
 	// ── Topics side drawer (mirrors +page.svelte) ─────────────────
 	let drawerOpen = $state(false);
+	let drawerView = $state<'topics' | 'topicNotes'>('topics');
+	let selectedDrawerTopic = $state<string | null>(null);
 
 	let allNotes    = $derived((notesMap.size, getNotes()));
 	let allTopics   = $derived((topicsMap.size, getTopics()));
 	let allFolders  = $derived((foldersMap.size, getFolders()));
 
 	// Active topic derived from the current note
-	let currentNote   = $derived(isNew ? null : notesMap.get(noteId));
+	let currentNote   = $derived(isNew ? null : notesMap.get(noteId!));
 	let activeTopicId = $derived(currentNote?.topicId ?? null);
 
 	function topicsInFolder(folderId: string | null): Topic[] {
@@ -471,7 +486,7 @@
 <!-- ── Topics side drawer ─────────────────────────────────────── -->
 {#if drawerOpen}
 	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div class="drawer-backdrop" onclick={() => (drawerOpen = false)}></div>
+	<div class="drawer-backdrop" onclick={() => { drawerOpen = false; drawerView = 'topics'; selectedDrawerTopic = null; }}></div>
 {/if}
 
 <aside
@@ -480,7 +495,17 @@
 	aria-label="Topics"
 >
 	<div class="drawer-header">
-		<span class="label">Topics</span>
+		{#if drawerView === 'topics'}
+			<img src="/icons/appicon-96.png" alt="Bedroc" class="logo-icon" width="28" height="28" />
+		{:else}
+			<button class="btn-icon" onclick={() => { drawerView = 'topics'; selectedDrawerTopic = null; }} aria-label="Back">
+				<svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+					<path d="M8.5 2.5L4 6.5l4.5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</button>
+			<span class="label">{allTopics.find(t => t.id === selectedDrawerTopic)?.name ?? 'Notes'}</span>
+		{/if}
+		<span class="logo-text">Bedroc</span>
 		<button class="btn-icon" onclick={() => (drawerOpen = false)} aria-label="Close">
 			<svg width="13" height="13" viewBox="0 0 13 13" fill="none">
 				<path d="M1.5 1.5l10 10M11.5 1.5l-10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -489,69 +514,93 @@
 	</div>
 
 	<nav class="drawer-nav">
-		<!-- All notes -->
-		<div class="drawer-section-title">All notes</div>
-		{#each allNotes as note (note.id)}
-			<button
-				class="drawer-note-btn"
-				class:active={note.id === noteId}
-				onclick={() => openNoteFromDrawer(note.id)}
-			>
-				<span class="drawer-note-title">{note.title || 'Untitled'}</span>
-				<span class="drawer-note-time">{relativeTime(note.updatedAt)}</span>
+		{#if drawerView === 'topics'}
+
+			<!-- Topics & folders (filesystem style) -->
+			<div class="drawer-section-title">Topics</div>
+
+			<!-- All notes + Uncategorised top items -->
+			<button class="topic-item active" onclick={() => { /* visual only */ }}>
+				<span class="topic-dot" style="background: var(--text-faint)"></span>
+				<span class="topic-name">All notes</span>
+				<span class="topic-count">{allNotes.length}</span>
 			</button>
-		{/each}
+			<button class="topic-item" onclick={() => { /* visual only */ }}>
+				<span class="topic-dot topic-dot-uncategorised"></span>
+				<span class="topic-name">Uncategorised</span>
+				<span class="topic-count">{allNotes.filter(n => !n.topicId).length}</span>
+			</button>
 
-		<!-- Topics & folders -->
-		<div class="drawer-divider"></div>
-		<div class="drawer-section-title">Topics</div>
+			<div class="topic-separator"></div>
 
-		{#each childFolders(null) as folder (folder.id)}
-			{@render drawerFolderRow(folder)}
-		{/each}
-		{#each topicsInFolder(null) as topic (topic.id)}
-			{@render drawerTopicRow(topic)}
-		{/each}
+			{#each childFolders(null) as folder (folder.id)}
+				{@render drawerFolderRow(folder, 0)}
+			{/each}
+			{#each topicsInFolder(null) as topic (topic.id)}
+				{@render drawerTopicRow(topic, 0)}
+			{/each}
+
+		{:else}
+
+			<!-- Selected topic notes -->
+			{#if selectedDrawerTopic}
+				<div class="drawer-section-title">Notes</div>
+				{#each allNotes.filter(n => n.topicId === selectedDrawerTopic) as note (note.id)}
+					<button class="drawer-note-btn indented" class:active={note.id === noteId} onclick={() => openNoteFromDrawer(note.id)}>
+						<span class="drawer-note-title">{note.title || 'Untitled'}</span>
+						<span class="drawer-note-time">{relativeTime(note.updatedAt)}</span>
+					</button>
+				{/each}
+			{/if}
+
+		{/if}
 	</nav>
 </aside>
 
 <!-- ── Drawer folder snippet ───────────────────────────────────── -->
-{#snippet drawerFolderRow(folder: Folder)}
-	<div class="drawer-folder">
-		<button class="drawer-folder-btn" onclick={() => toggleFolderCollapsed(folder.id)}>
-			<svg class="drawer-chevron" class:collapsed={folder.collapsed} width="10" height="10" viewBox="0 0 10 10" fill="none">
-				<path d="M2 3.5L5 6.5 8 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-			</svg>
-			<svg width="12" height="11" viewBox="0 0 13 12" fill="none">
-				<path d="M1 3a1 1 0 0 1 1-1h2.5l1 1H11a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3z" stroke="currentColor" stroke-width="1.2"/>
-			</svg>
-			<span class="drawer-folder-name">{folder.name}</span>
-		</button>
+{#snippet drawerFolderRow(folder: Folder, depth = 0)}
+	<div class="drawer-folder folder-row">
+		<div class="folder-item" style="padding-left: {10 + depth * 14}px" draggable="true">
+			<button class="drawer-folder-btn" onclick={() => toggleFolderCollapsed(folder.id)} aria-label="Collapse folder">
+				<svg class="drawer-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 3.5L5 6.5 8 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+				<svg class="folder-icon" width="13" height="12" viewBox="0 0 13 12" fill="none"><path d="M1 3a1 1 0 0 1 1-1h2.5l1 1H11a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3z" stroke="currentColor" stroke-width="1.2"></path></svg>
+				<span class="drawer-folder-name folder-name">{formatName(folder.name)}</span>
+			</button>
+			<div class="folder-actions">
+				<button class="btn-icon folder-action-btn" title="New topic" aria-label="New topic" onclick={() => createTopic('New topic', '#6b8afd', folder.id)}>
+					<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M5 1v8M1 5h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"></path></svg>
+				</button>
+				<button class="btn-icon folder-action-btn" title="Edit folder" aria-label="Edit folder" onclick={() => openEditFolder ? openEditFolder(folder) : null}>
+					<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M6 1.5l2.5 2.5-5 5H1v-2.5l5-5z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"></path></svg>
+				</button>
+			</div>
+		</div>
 		{#if !folder.collapsed}
 			{#each childFolders(folder.id) as child (child.id)}
-				{@render drawerFolderRow(child)}
+				{@render drawerFolderRow(child, depth + 1)}
 			{/each}
 			{#each topicsInFolder(folder.id) as topic (topic.id)}
-				{@render drawerTopicRow(topic)}
+				{@render drawerTopicRow(topic, depth + 1)}
 			{/each}
 		{/if}
 	</div>
 {/snippet}
 
 <!-- ── Drawer topic snippet ────────────────────────────────────── -->
-{#snippet drawerTopicRow(topic: Topic)}
-	<div class="drawer-topic">
-		<div class="drawer-topic-header">
-			<span class="drawer-topic-dot" style="background:{topic.color}"></span>
-			<span class="drawer-topic-name">{topic.name}</span>
-			<span class="drawer-topic-count">{noteCountForTopic(topic.id)}</span>
+{#snippet drawerTopicRow(topic: Topic, depth = 0)}
+	<div class="drawer-topic topic-row">
+		<div class="topic-item" style="padding-left: {14 + depth * 14}px">
+			<button class="topic-item-btn topic-select" draggable="true" onclick={() => { /* select topic visually */ }}>
+				<span class="drawer-topic-dot topic-dot" style="background:{topic.color}"></span>
+				<span class="drawer-topic-name topic-name">{formatName(topic.name)}</span>
+				<span class="drawer-topic-count topic-count">{noteCountForTopic(topic.id)}</span>
+			</button>
+			<button class="btn-icon topic-edit-btn" aria-label="Edit topic" onclick={() => openEditTopic(topic)}>
+				<svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M7.5 1.5l2 2-6 6H1.5v-2l6-6z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"></path></svg>
+			</button>
 		</div>
-		{#each allNotes.filter(n => n.topicId === topic.id) as note (note.id)}
-			<button
-				class="drawer-note-btn indented"
-				class:active={note.id === noteId}
-				onclick={() => openNoteFromDrawer(note.id)}
-			>
+		{#each allNotes.filter(n => n.topicId === topic.id).sort((a,b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()) as note (note.id)}
+			<button class="drawer-note-btn indented" class:active={note.id === noteId} onclick={() => openNoteFromDrawer(note.id)} style="padding-left: {32 + depth * 14}px">
 				<span class="drawer-note-title">{note.title || 'Untitled'}</span>
 				<span class="drawer-note-time">{relativeTime(note.updatedAt)}</span>
 			</button>
@@ -622,7 +671,7 @@
 
 	@media (min-width: 768px) {
 		.toolbar {
-			min-height: unset;
+			min-height: var(--nav-h);
 			align-items: center;
 			padding: 10px 14px;
 		}
@@ -904,7 +953,18 @@
 		padding: 0 12px 10px;
 		border-bottom: 1px solid var(--border);
 		flex-shrink: 0;
+
+		height: 42px;
 	}
+
+	.logo-text {
+		font-size: 15px;
+		font-weight: 600;
+		color: var(--text);
+		letter-spacing: -0.01em;
+	}
+
+	.header-actions { display: flex; gap: 8px; align-items: center; }
 
 	.drawer-nav {
 		flex: 1;
@@ -960,6 +1020,28 @@
 
 	.drawer-note-btn.indented { padding-left: 22px; }
 
+	/* Aliases to match target classes */
+	.topic-list { padding: 0 6px; }
+	.topic-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border-radius: var(--radius-sm); background: none; border: none; text-align: left; cursor: pointer; color: var(--text-muted); font-size: 12.5px; }
+	.topic-item:hover { background: var(--bg-hover); color: var(--text); }
+	.topic-item.active { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text); }
+	.topic-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+	.topic-name { flex: 1; font-size: 11.5px; font-weight: 600; color: var(--text); letter-spacing: 0.02em; }
+	.topic-count { font-size: 10px; color: var(--text-faint); }
+	.topic-separator { height: 1px; background: var(--border); margin: 8px 4px; }
+	.folder-row { display: flex; flex-direction: column; gap: 2px; }
+	.folder-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 2px 8px; background: none; border: none; text-align: left; cursor: pointer; color: var(--text); font-size: 12px; }
+	.folder-actions { margin-left: auto; display: flex; gap: 6px; }
+	.folder-action-btn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; }
+	.topic-row { display: flex; flex-direction: column; gap: 0; }
+	.topic-item { display: flex; align-items: center; width: 100%; }
+	.topic-item-btn { display: flex; align-items: center; gap: 7px; padding: 2px 4px; background: none; border: none; width: 100%; flex: 1; }
+	.topic-edit-btn { margin-left: 8px; flex-shrink: 0; }
+	.topic-name { flex: 1; min-width: 0; text-align: left; }
+	.topic-count { margin-left: auto; flex-shrink: 0; color: var(--text-faint); }
+	.drawer-topic .drawer-note-btn { padding-top: 4px; padding-bottom: 4px; border-radius: 6px; }
+	.drawer-note-btn.indented { padding-left: 24px; }
+
 	.drawer-note-title {
 		flex: 1;
 		overflow: hidden;
@@ -982,18 +1064,18 @@
 		align-items: center;
 		gap: 5px;
 		width: 100%;
-		padding: 6px 8px;
+		padding: 3px 4px;
 		background: none;
 		border: none;
 		text-align: left;
 		cursor: pointer;
-		color: var(--text-faint);
+		color: var(--text);
 		font-size: 12px;
 		font-weight: 500;
 		-webkit-tap-highlight-color: transparent;
 	}
 
-	.drawer-folder-btn:hover { color: var(--text-muted); }
+	.drawer-folder-btn:hover { color: var(--text); }
 
 	.drawer-chevron { color: var(--text-faint); flex-shrink: 0; transition: transform 0.15s ease; }
 	.drawer-chevron.collapsed { transform: rotate(-90deg); }
@@ -1020,13 +1102,26 @@
 		flex: 1;
 		font-size: 11.5px;
 		font-weight: 600;
-		color: var(--text-muted);
+		color: var(--text);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
+		letter-spacing: 0.02em;
+		text-transform: none;
 	}
+
+	.drawer-note-preview {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		color: var(--text-faint);
+		font-size: 13px;
+		padding-top: 2px;
+		padding-bottom: 2px;
+	}
+	.drawer-note-preview-title { color: var(--text-faint); font-size: 13px; }
+	.drawer-note-preview-time { font-size: 11px; color: var(--text-faint); }
 
 	.drawer-topic-count {
 		font-size: 10px;

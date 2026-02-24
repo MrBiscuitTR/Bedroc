@@ -138,3 +138,4 @@ TODO.md
 /bedroc/.svelte-kit
 bedroc/.npmrc
 .local.env
+.prompt-notes.md

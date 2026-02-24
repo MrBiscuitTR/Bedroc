@@ -33,7 +33,10 @@ html {
 	/* Prevent iOS font scaling in landscape */
 	-webkit-text-size-adjust: 100%;
 	text-size-adjust: 100%;
+	/* Full height — required for dvh units to work correctly */
 	height: 100%;
+	/* Prevent the html element itself from rubberbanding */
+	overscroll-behavior: none;
 }
 
 body {
@@ -44,8 +47,12 @@ body {
 	font-size: 14px;
 	line-height: 1.6;
 	height: 100%;
-	/* Prevent overscroll/rubberbanding on iOS */
+	/* Lock body scroll — the app shell handles its own scrollable regions */
+	overflow: hidden;
 	overscroll-behavior: none;
+	/* Prevent iOS rubber-band on the body itself */
+	position: fixed;
+	width: 100%;
 }
 
 /* ─── Typography ──────────────────────────────────────────────── */

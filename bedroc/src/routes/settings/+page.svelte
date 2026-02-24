@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { autosave } from '$lib/stores/notes.svelte';
+
 	// Settings page — shell only. Actual logic wired in Phase 5/6.
 	let confirmLogout = $state(false);
 	let confirmDelete = $state(false);
@@ -13,6 +15,22 @@
 		{ id: '1', device: 'Chrome on macOS',  location: 'Current session', current: true },
 		{ id: '2', device: 'Safari on iPhone', location: 'Last seen 2h ago', current: false },
 	];
+
+	// ── Autosave settings ─────────────────────────────────────────
+	// autosave.interval === 0 means disabled.
+	let autosaveEnabled = $state(autosave.interval > 0);
+	// Display value in seconds for the UI input.
+	let autosaveSeconds = $state(autosave.interval > 0 ? autosave.interval / 1000 : 1);
+
+	function handleAutosaveToggle() {
+		autosaveEnabled = !autosaveEnabled;
+		autosave.set(autosaveEnabled ? Math.round(autosaveSeconds * 1000) : 0);
+	}
+
+	function handleAutosaveSecondsChange() {
+		autosaveSeconds = Math.max(0.5, autosaveSeconds);
+		if (autosaveEnabled) autosave.set(Math.round(autosaveSeconds * 1000));
+	}
 </script>
 
 <svelte:head>
@@ -39,6 +57,51 @@
 					<span class="row-value muted">{serverUrl}</span>
 				</div>
 			</div>
+		</div>
+	</section>
+
+	<!-- Editor -->
+	<section class="section">
+		<h3 class="section-title">Editor</h3>
+		<div class="card">
+			<div class="row">
+				<div class="row-info">
+					<span class="row-label">Autosave</span>
+					<span class="row-sub">Automatically save notes while you type</span>
+				</div>
+				<button
+					class="toggle"
+					class:on={autosaveEnabled}
+					onclick={handleAutosaveToggle}
+					role="switch"
+					aria-checked={autosaveEnabled}
+					aria-label="Autosave"
+				>
+					<span class="toggle-thumb"></span>
+				</button>
+			</div>
+			{#if autosaveEnabled}
+				<div class="divider-inner"></div>
+				<div class="row">
+					<div class="row-info">
+						<span class="row-label">Autosave interval</span>
+						<span class="row-sub">How long after you stop typing before saving</span>
+					</div>
+					<div class="interval-wrap">
+						<input
+							type="number"
+							class="interval-input"
+							bind:value={autosaveSeconds}
+							onchange={handleAutosaveSecondsChange}
+							min="0.5"
+							max="60"
+							step="0.5"
+							aria-label="Autosave interval in seconds"
+						/>
+						<span class="interval-unit">s</span>
+					</div>
+				</div>
+			{/if}
 		</div>
 	</section>
 
@@ -316,6 +379,60 @@
 		font-size: 12px;
 		padding: 5px 10px;
 		border-radius: var(--radius-sm);
+	}
+
+	/* Toggle switch */
+	.toggle {
+		width: 40px;
+		height: 22px;
+		border-radius: 999px;
+		background: var(--border);
+		border: none;
+		padding: 0;
+		cursor: pointer;
+		position: relative;
+		transition: background 0.2s ease;
+		flex-shrink: 0;
+	}
+
+	.toggle.on {
+		background: var(--accent);
+	}
+
+	.toggle-thumb {
+		position: absolute;
+		top: 3px;
+		left: 3px;
+		width: 16px;
+		height: 16px;
+		border-radius: 50%;
+		background: #fff;
+		transition: transform 0.2s ease;
+		display: block;
+	}
+
+	.toggle.on .toggle-thumb {
+		transform: translateX(18px);
+	}
+
+	/* Interval input */
+	.interval-wrap {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex-shrink: 0;
+	}
+
+	.interval-input {
+		width: 60px;
+		font-size: 13px;
+		padding: 6px 8px;
+		text-align: right;
+	}
+
+	.interval-unit {
+		font-size: 12px;
+		color: var(--text-faint);
 	}
 
 	/* Version */

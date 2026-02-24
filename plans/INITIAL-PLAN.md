@@ -206,6 +206,75 @@ JSON.stringify → send to server
 
 ---
 
+## Offline-First Architecture (IndexedDB)
+
+Bedroc must remain **fully usable offline** — not just "viewable" but also writable, with all features working. This applies to the website/PWA on mobile (iOS Safari, Chrome, Firefox) and desktop browsers. IndexedDB is the primary local data store; the server is the sync target, not the source of truth while offline.
+
+### IndexedDB as the Primary Store
+
+IndexedDB serves three roles (not just one):
+
+| Role | Description |
+| --- | --- |
+| **Primary read store** | All note list and editor views read from IndexedDB first — zero server round-trips for rendering |
+| **Primary write store** | All saves write to IndexedDB immediately (after local encryption) — the user never waits for a server |
+| **Sync queue** | Changes made offline are queued and flushed to the server when connectivity returns |
+
+This architecture works identically on:
+
+- iOS Safari in standalone PWA mode (Add to Home Screen)
+- Chrome/Chromium on Android, Windows, macOS, Linux
+- Firefox on all platforms
+- Any browser that supports IndexedDB (all modern browsers)
+
+### IndexedDB Schema
+
+```
+DB name: bedroc
+Version: 1
+
+Object stores:
+  notes           — keyPath: id (UUID)
+    id            : string (UUID, client-generated)
+    encryptedBlob : string (JSON: { iv, ciphertext }) — PLACEHOLDER: plaintext in Phase 0–1
+    topicId       : string | null
+    createdAt     : number (Unix ms)
+    updatedAt     : number (Unix ms)
+    syncedAt      : number | null (null = not yet synced to server)
+    serverVersion : number (for optimistic locking)
+
+  topics          — keyPath: id (UUID)
+    id            : string
+    name          : string
+    color         : string
+
+  syncQueue       — keyPath: id (autoincrement)
+    noteId        : string
+    op            : 'upsert' | 'delete'
+    payload       : string (encrypted blob or null for delete)
+    queuedAt      : number
+
+  keyMaterial     — keyPath: id (single record 'session')
+    wrappedDek    : ArrayBuffer
+    dekSalt       : ArrayBuffer
+    deviceKey     : ArrayBuffer
+```
+
+### Sync Strategy
+
+1. On app start (online): fetch `/api/notes/sync?since=<last_sync_ts>` — get any notes changed on other devices, write to IndexedDB, decrypt and display.
+2. On save: write to IndexedDB immediately → add to `syncQueue` → attempt server push; if it fails (offline), leave in queue.
+3. Service worker `sync` event (Background Sync API): flush `syncQueue` when connectivity returns. Falls back to polling on browsers without Background Sync support (Firefox).
+4. On note open: read from IndexedDB. If a newer server version exists (detected during sync), show a merge/conflict notice.
+
+### Service Worker Cache Strategy
+
+- **App shell** (HTML, JS, CSS, icons): Cache-first — works fully offline after first load.
+- **API calls**: Network-first with IndexedDB fallback — if offline, serve from local store.
+- **No external CDN requests**: The app has no external font/script/image requests, so no special CDN caching is needed.
+
+---
+
 ## Database Schema (PostgreSQL)
 
 ```sql
@@ -334,7 +403,7 @@ WebSocket message types:
 - Receiving clients fetch the updated encrypted note and decrypt locally
 - If the local copy has a newer timestamp, it wins and re-saves
 
-**Offline queue**:
+**Offline queue (CRITICAL)**:
 - Changes made offline are queued in IndexedDB
 - Service worker detects reconnect and flushes the queue
 - Queue entries include the note blob and timestamp

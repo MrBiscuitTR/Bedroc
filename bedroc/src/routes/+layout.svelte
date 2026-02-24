@@ -4,8 +4,6 @@
 
 	let { children } = $props();
 
-	// Extracted as plain string — prevents TypeScript from narrowing the
-	// SvelteKit route pattern type and producing false "no overlap" errors.
 	let path = $derived(page.url.pathname as string);
 
 	const authRoutes = ['/login', '/register'];
@@ -15,6 +13,47 @@
 		{ href: '/',         label: 'Notes',    icon: 'notes' },
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
 	];
+
+	// ── Split-window state ─────────────────────────────────────────
+	// Split mode renders a resizable second pane via an iframe pointing
+	// to the same origin. This gives true independent navigation per pane
+	// without complex router interception, and naturally supports iOS Split
+	// View (both panes are in the same process/tab, sharing IndexedDB).
+	let splitActive  = $state(false);
+	let splitUrl     = $state('/');         // URL loaded in the second pane
+	let splitWidth   = $state(50);          // percentage of total width for right pane
+	let isDragging   = $state(false);
+	let splitterEl: HTMLDivElement;
+	let containerEl: HTMLDivElement;
+
+	function openSplit() {
+		splitUrl    = '/';
+		splitActive = true;
+	}
+
+	function closeSplit() {
+		splitActive = false;
+	}
+
+	// Splitter drag — pointer events for cross-device support
+	function onSplitterPointerDown(e: PointerEvent) {
+		e.preventDefault();
+		isDragging = true;
+		splitterEl.setPointerCapture(e.pointerId);
+	}
+
+	function onSplitterPointerMove(e: PointerEvent) {
+		if (!isDragging || !containerEl) return;
+		const rect = containerEl.getBoundingClientRect();
+		// Right pane width as percentage; clamp so each side stays at least 20%
+		const rightPct = Math.max(20, Math.min(80, ((rect.right - e.clientX) / rect.width) * 100));
+		splitWidth = rightPct;
+	}
+
+	function onSplitterPointerUp(e: PointerEvent) {
+		isDragging = false;
+		splitterEl?.releasePointerCapture(e.pointerId);
+	}
 </script>
 
 {#if isAuthRoute}
@@ -28,8 +67,8 @@
 		<!-- ── Sidebar (desktop) ───────────────────────── -->
 		<aside class="sidebar">
 			<div class="sidebar-logo">
-				<span class="logo-mark">b</span>
-				<span class="logo-text">bedroc</span>
+				<span class="logo-mark">B</span>
+				<span class="logo-text">Bedroc</span>
 			</div>
 
 			<nav class="sidebar-nav">
@@ -60,6 +99,28 @@
 				{/each}
 			</nav>
 
+			<!-- Split window toggle -->
+			<div class="sidebar-split">
+				{#if splitActive}
+					<button class="btn-ghost split-btn" onclick={closeSplit} title="Close split view" aria-label="Close split view">
+						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+							<rect x="1" y="1" width="5.5" height="12" rx="1" stroke="currentColor" stroke-width="1.3"/>
+							<rect x="7.5" y="1" width="5.5" height="12" rx="1" stroke="currentColor" stroke-width="1.3" opacity="0.4"/>
+							<path d="M10 5l2 2-2 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+						</svg>
+						<span>Close split</span>
+					</button>
+				{:else}
+					<button class="btn-ghost split-btn" onclick={openSplit} title="Open split view" aria-label="Open split view">
+						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+							<rect x="1" y="1" width="5.5" height="12" rx="1" stroke="currentColor" stroke-width="1.3"/>
+							<rect x="7.5" y="1" width="5.5" height="12" rx="1" stroke="currentColor" stroke-width="1.3"/>
+						</svg>
+						<span>Split view</span>
+					</button>
+				{/if}
+			</div>
+
 			<div class="sidebar-footer">
 				<button class="btn-ghost sidebar-user" onclick={() => {}}>
 					<span class="user-avatar" aria-hidden="true">U</span>
@@ -68,8 +129,13 @@
 			</div>
 		</aside>
 
-		<!-- ── Main content ────────────────────────────── -->
-		<div class="main-wrap">
+		<!-- ── Main content area ────────────────────────── -->
+		<div
+			class="main-wrap"
+			bind:this={containerEl}
+			onpointermove={onSplitterPointerMove}
+			onpointerup={onSplitterPointerUp}
+		>
 			<!-- Mobile header -->
 			<header class="mobile-header">
 				<span class="mobile-title">
@@ -83,19 +149,60 @@
 						bedroc
 					{/if}
 				</span>
-				{#if path === '/'}
-					<a href="/note/new" class="btn-icon" aria-label="New note">
-						<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-							<path d="M9 3v12M3 9h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-						</svg>
-					</a>
-				{/if}
+				<div class="mobile-header-actions">
+					{#if path === '/'}
+						<a href="/note/new" class="btn-icon" aria-label="New note">
+							<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+								<path d="M9 3v12M3 9h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+							</svg>
+						</a>
+					{/if}
+					<!-- Split view not shown on mobile — iOS handles it natively -->
+				</div>
 			</header>
 
-			<!-- Page content -->
-			<main class="main-content">
-				{@render children()}
-			</main>
+			<!-- Pane container -->
+			<div class="pane-container" class:split={splitActive}>
+				<!-- Primary pane -->
+				<main
+					class="main-content"
+					style={splitActive ? `width: calc(${100 - splitWidth}% - 2px)` : ''}
+				>
+					{@render children()}
+				</main>
+
+				<!-- Splitter (visible only in split mode) -->
+				{#if splitActive}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div
+						class="splitter"
+						class:dragging={isDragging}
+						bind:this={splitterEl}
+						onpointerdown={onSplitterPointerDown}
+						title="Drag to resize"
+					>
+						<div class="splitter-handle"></div>
+					</div>
+
+					<!-- Secondary pane (iframe for independent navigation) -->
+					<div class="split-pane" style="width: {splitWidth}%">
+						<div class="split-pane-toolbar">
+							<span class="split-pane-label">Second pane</span>
+							<button class="btn-icon split-close-btn" onclick={closeSplit} aria-label="Close second pane">
+								<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+									<path d="M1.5 1.5l9 9M10.5 1.5l-9 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+								</svg>
+							</button>
+						</div>
+						<iframe
+							class="split-iframe"
+							src={splitUrl}
+							title="Second pane"
+							allow="same-origin"
+						></iframe>
+					</div>
+				{/if}
+			</div>
 
 			<!-- Mobile bottom nav -->
 			<nav class="bottom-nav" aria-label="Main navigation">
@@ -145,6 +252,7 @@
 		display: flex;
 		height: 100dvh;
 		overflow: hidden;
+		overscroll-behavior: none;
 	}
 
 	/* ── Sidebar ──────────────────────────────────────── */
@@ -152,7 +260,7 @@
 		width: var(--sidebar-w);
 		background: var(--bg-elevated);
 		border-right: 1px solid var(--border);
-		display: none; /* hidden on mobile */
+		display: none;
 		flex-direction: column;
 		flex-shrink: 0;
 	}
@@ -165,7 +273,7 @@
 		display: flex;
 		align-items: center;
 		gap: 10px;
-		padding: 20px 18px 16px;
+		padding: max(20px, env(safe-area-inset-top, 0px)) 18px 16px;
 		border-bottom: 1px solid var(--border);
 	}
 
@@ -227,6 +335,27 @@
 		flex-shrink: 0;
 	}
 
+	/* Split button in sidebar */
+	.sidebar-split {
+		padding: 6px 10px;
+		border-top: 1px solid var(--border);
+	}
+
+	.split-btn {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+		padding: 7px 10px;
+		font-size: 12.5px;
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+	}
+
+	.split-btn:hover {
+		color: var(--text);
+	}
+
 	.sidebar-footer {
 		padding: 12px 10px;
 		border-top: 1px solid var(--border);
@@ -270,15 +399,16 @@
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
+		min-width: 0;
 	}
 
 	/* ── Mobile header ────────────────────────────────── */
 	.mobile-header {
 		display: flex;
-		align-items: center;
+		align-items: flex-end;
 		justify-content: space-between;
-		height: var(--nav-h);
-		padding: 0 16px;
+		min-height: var(--nav-h);
+		padding: env(safe-area-inset-top, 0px) 16px 12px;
 		background: var(--bg-elevated);
 		border-bottom: 1px solid var(--border);
 		flex-shrink: 0;
@@ -294,11 +424,100 @@
 		color: var(--text);
 	}
 
-	/* ── Main content ─────────────────────────────────── */
+	.mobile-header-actions {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	/* ── Pane container ───────────────────────────────── */
+	.pane-container {
+		flex: 1;
+		display: flex;
+		overflow: hidden;
+		min-height: 0;
+	}
+
+	/* ── Main content (primary pane) ──────────────────── */
 	.main-content {
 		flex: 1;
 		overflow-y: auto;
 		-webkit-overflow-scrolling: touch;
+		overscroll-behavior: contain;
+		min-width: 0;
+		transition: width 0.05s ease;
+	}
+
+	/* In split mode, primary pane has explicit width set inline */
+	.pane-container.split .main-content {
+		flex: none;
+	}
+
+	/* ── Splitter ─────────────────────────────────────── */
+	.splitter {
+		width: 4px;
+		flex-shrink: 0;
+		background: var(--border);
+		cursor: col-resize;
+		position: relative;
+		transition: background 0.15s ease;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.splitter:hover,
+	.splitter.dragging {
+		background: var(--accent);
+	}
+
+	.splitter-handle {
+		width: 2px;
+		height: 32px;
+		border-radius: 999px;
+		background: currentColor;
+		opacity: 0.5;
+	}
+
+	/* ── Secondary pane ───────────────────────────────── */
+	.split-pane {
+		display: flex;
+		flex-direction: column;
+		flex-shrink: 0;
+		min-width: 200px;
+		border-left: 1px solid var(--border);
+	}
+
+	.split-pane-toolbar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 6px 10px;
+		background: var(--bg-elevated);
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+
+	.split-pane-label {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--text-faint);
+	}
+
+	.split-close-btn {
+		color: var(--text-faint);
+		padding: 4px;
+	}
+
+	.split-close-btn:hover { color: var(--danger); }
+
+	.split-iframe {
+		flex: 1;
+		border: none;
+		background: var(--bg);
+		display: block;
 	}
 
 	/* ── Bottom nav ───────────────────────────────────── */
@@ -306,7 +525,6 @@
 		display: flex;
 		background: var(--bg-elevated);
 		border-top: 1px solid var(--border);
-		/* Safe area for iOS home indicator */
 		padding-bottom: env(safe-area-inset-bottom);
 		flex-shrink: 0;
 	}

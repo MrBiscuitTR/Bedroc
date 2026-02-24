@@ -208,7 +208,7 @@ JSON.stringify → send to server
 
 ## Offline-First Architecture (IndexedDB)
 
-Bedroc must remain **fully usable offline** — not just "viewable" but also writable, with all features working. This applies to the website/PWA on mobile (iOS Safari, Chrome, Firefox) and desktop browsers. IndexedDB is the primary local data store; the server is the sync target, not the source of truth while offline.
+Bedroc must remain **fully usable offline** — not just "viewable" but also writable, with all features working. This applies to the website/PWA on mobile (iOS Safari, Chrome, Firefox) and desktop browsers. IndexedDB is the primary local data store; the server is the sync target, not the source of truth while offline. Conflicts must be resolved easily, git-like structure that allows manual, or accept local/remote options. if no conflict, sync to server.
 
 ### IndexedDB as the Primary Store
 

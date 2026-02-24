@@ -47,7 +47,7 @@
 
 <div class="auth-card">
 	<div class="brand">
-		<div class="brand-mark">B</div>
+		<img src="/icons/appicon-96.png" alt="Bedroc" class="brand-mark" width="44" height="44" />
 		<h1 class="brand-name">Bedroc</h1>
 		<p class="brand-tagline">Create your account</p>
 	</div>
@@ -203,14 +203,8 @@
 	.brand-mark {
 		width: 44px;
 		height: 44px;
-		background: var(--accent);
-		color: #fff;
-		font-size: 22px;
-		font-weight: 700;
 		border-radius: 12px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
+		object-fit: cover;
 		margin-bottom: 4px;
 	}
 

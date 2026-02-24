@@ -5,23 +5,24 @@
 		createNote, createTopic, saveTopic, deleteTopic,
 		createFolder, saveFolder, toggleFolderCollapsed, deleteFolder,
 		moveTopic, moveFolder,
-		saveNote,
+		saveNote, reorderNote,
+		sortModeStore,
 		relativeTime,
-		type Topic, type Folder, type Note
+		type Topic, type Folder, type Note, type SortMode
 	} from '$lib/stores/notes.svelte';
 	import { goto } from '$app/navigation';
 
 	// ── Filter / navigation state ──────────────────────────────────
 	let search        = $state('');
 	let activeTopicId = $state<string | null | 'all'>('all');
-	// Track the last visited topic/folder for back-button support
 	let lastVisitedId = $state<string | null | 'all'>('all');
 
 	// Mobile side nav drawer
 	let drawerOpen = $state(false);
 
 	// ── Derived lists ──────────────────────────────────────────────
-	let allNotes    = $derived((notesMap.size, getNotes()));
+	let sortMode    = $derived(sortModeStore.value);
+	let allNotes    = $derived((notesMap.size, getNotes(sortMode)));
 	let allTopics   = $derived((topicsMap.size, getTopics()));
 	let allFolders  = $derived((foldersMap.size, getFolders()));
 
@@ -52,7 +53,7 @@
 	function selectTopic(id: string | null | 'all') {
 		lastVisitedId = activeTopicId;
 		activeTopicId = id;
-		drawerOpen = false; // close drawer on mobile after selection
+		drawerOpen = false;
 	}
 
 	function handleNewNote() {
@@ -69,18 +70,12 @@
 	let topicFolderId   = $state<string | null>(null);
 
 	function openNewTopic(folderId: string | null = null) {
-		editingTopic  = null;
-		topicName     = '';
-		topicColor    = '#6b8afd';
-		topicFolderId = folderId;
+		editingTopic = null; topicName = ''; topicColor = '#6b8afd'; topicFolderId = folderId;
 		showTopicEditor = true;
 	}
 
 	function openEditTopic(topic: Topic) {
-		editingTopic  = topic;
-		topicName     = topic.name;
-		topicColor    = topic.color;
-		topicFolderId = topic.folderId;
+		editingTopic = topic; topicName = topic.name; topicColor = topic.color; topicFolderId = topic.folderId;
 		showTopicEditor = true;
 	}
 
@@ -106,16 +101,12 @@
 	let folderParentId   = $state<string | null>(null);
 
 	function openNewFolder(parentId: string | null = null) {
-		editingFolder  = null;
-		folderName     = '';
-		folderParentId = parentId;
+		editingFolder = null; folderName = ''; folderParentId = parentId;
 		showFolderEditor = true;
 	}
 
 	function openEditFolder(folder: Folder) {
-		editingFolder  = folder;
-		folderName     = folder.name;
-		folderParentId = folder.parentId;
+		editingFolder = folder; folderName = folder.name; folderParentId = folder.parentId;
 		showFolderEditor = true;
 	}
 
@@ -130,19 +121,17 @@
 	}
 
 	// ── Drag-and-drop ──────────────────────────────────────────────
-	// Unified drag state for notes, topics, and folders.
-
 	type DragKind = 'note' | 'topic' | 'folder';
 
 	let dragKind    = $state<DragKind | null>(null);
 	let dragId      = $state<string | null>(null);
-	let dropTarget  = $state<string | null>(null); // topic/folder id being hovered
-	let dropZone    = $state<'topic' | 'folder' | 'root' | null>(null);
+	let dropTarget  = $state<string | null>(null);
+	// 'before' = insertion line above target, 'into' = drop into target, 'after' = insertion line below
+	let dropSide    = $state<'before' | 'into' | 'after' | null>(null);
 
-	// Long-press timer for mobile drag initiation.
-	// NOTE: ontouchstart/ontouchend are also used on topic/folder buttons.
-	// We set longPressActive=true only after 500ms; a short tap cancels it,
-	// so the click event fires normally for navigation — no double-tap needed.
+	// Which zone the current drag is over: 'root' | 'topic' | 'folder' | 'note'
+	let dropZone    = $state<'root' | 'topic' | 'folder' | 'note' | null>(null);
+
 	let longPressTimer: ReturnType<typeof setTimeout> | null = null;
 	let longPressActive = $state(false);
 
@@ -157,14 +146,12 @@
 
 	function cancelLongPress() {
 		if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-		// Only reset drag state if long press never fired
 		if (!longPressActive) return;
 		longPressActive = false;
 		dragKind = null;
 		dragId   = null;
 	}
 
-	// Desktop drag handlers (HTML5 DnD API)
 	function onDragStart(e: DragEvent, kind: DragKind, id: string) {
 		dragKind = kind;
 		dragId   = id;
@@ -173,63 +160,164 @@
 	}
 
 	function onDragEnd() {
-		dragKind    = null;
-		dragId      = null;
-		dropTarget  = null;
-		dropZone    = null;
+		dragKind = null; dragId = null; dropTarget = null; dropSide = null; dropZone = null;
 	}
 
-	function onDragOver(e: DragEvent, targetId: string, zone: 'topic' | 'folder' | 'root') {
+	/**
+	 * Generic dragover handler. `side` determines the visual:
+	 *  - 'into'   → full outline (note→topic, topic→folder)
+	 *  - 'before' → top insertion line
+	 *  - 'after'  → bottom insertion line
+	 *
+	 * For topic and folder rows, we split the element in half:
+	 * top half = 'before', bottom half = 'after'. If the dragged
+	 * kind can go "into" this target (note→topic, topic/note→folder),
+	 * we use the middle third for 'into'.
+	 */
+	function calcSide(e: DragEvent, canDropInto: boolean): 'before' | 'into' | 'after' {
+		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		const rel  = (e.clientY - rect.top) / rect.height;
+		if (canDropInto) {
+			if (rel < 0.3) return 'before';
+			if (rel > 0.7) return 'after';
+			return 'into';
+		}
+		return rel < 0.5 ? 'before' : 'after';
+	}
+
+	function onTopicDragOver(e: DragEvent, topicId: string) {
 		e.preventDefault();
 		e.dataTransfer!.dropEffect = 'move';
-		dropTarget = targetId;
-		dropZone   = zone;
+		if (dragKind === null || dragId === topicId) return;
+		dropTarget = topicId;
+		// note → into topic; topic → reorder (before/after)
+		dropSide = calcSide(e, dragKind === 'note');
 	}
 
-	function onDragLeave() {
-		dropTarget = null;
-		dropZone   = null;
-	}
-
-	function onDrop(e: DragEvent, targetId: string | null, zone: 'topic' | 'folder' | 'root') {
+	function onFolderDragOver(e: DragEvent, folderId: string) {
 		e.preventDefault();
-		commitDrop(targetId, zone);
+		e.dataTransfer!.dropEffect = 'move';
+		if (dragKind === null || dragId === folderId) return;
+		dropTarget = folderId;
+		// topic or folder → can go into folder (middle) or reorder (top/bottom)
+		dropSide = calcSide(e, dragKind === 'topic' || dragKind === 'folder');
+	}
+
+	function onNoteDragOver(e: DragEvent, noteId: string) {
+		if (dragKind !== 'note' || sortMode !== 'custom') return;
+		e.preventDefault();
+		dropTarget = noteId;
+		dropSide   = calcSide(e, false);
+	}
+
+	function onDragLeave(e: DragEvent) {
+		const related = e.relatedTarget as Node | null;
+		const current = e.currentTarget as HTMLElement;
+		if (related && current.contains(related)) return;
+		dropTarget = null; dropSide = null; dropZone = null;
+	}
+
+	// Generic wrapper used in the template; routes to the more specific handlers
+	function onDragOver(e: DragEvent, id: string | null, zone: 'root' | 'topic' | 'folder' | 'note') {
+		e.preventDefault();
+		e.dataTransfer!.dropEffect = 'move';
+		if (dragKind === null) return;
+		dropZone = zone;
+		if (zone === 'root') {
+			dropTarget = 'root';
+			dropSide = 'into';
+			return;
+		}
+		if (zone === 'topic') return onTopicDragOver(e, id as string);
+		if (zone === 'folder') return onFolderDragOver(e, id as string);
+		if (zone === 'note') return onNoteDragOver(e, id as string);
+	}
+
+	function onDrop(e: DragEvent, id: string | null, zone: 'root' | 'topic' | 'folder' | 'note') {
+		e.preventDefault();
+		if (zone === 'root') return onRootDrop(e);
+		if (zone === 'topic' && id) return onTopicDrop(e, id);
+		if (zone === 'folder' && id) return onFolderDrop(e, id);
+		if (zone === 'note' && id) return onNoteDrop(e, id);
+		// fallback
 		onDragEnd();
 	}
 
-	function commitDrop(targetId: string | null, zone: 'topic' | 'folder' | 'root') {
-		if (!dragKind || !dragId) return;
-
+	function onTopicDrop(e: DragEvent, topicId: string) {
+		e.preventDefault();
+		if (!dragKind || !dragId || dragId === topicId) { onDragEnd(); return; }
 		if (dragKind === 'note') {
-			// Drop note onto a topic → recategorize
-			if (zone === 'topic' && targetId) {
-				const note = notesMap.get(dragId);
-				if (note) saveNote({ ...note, topicId: targetId });
-			} else if (zone === 'root') {
-				const note = notesMap.get(dragId);
-				if (note) saveNote({ ...note, topicId: null });
-			}
+			const note = notesMap.get(dragId);
+			if (note) saveNote({ ...note, topicId });
 		} else if (dragKind === 'topic') {
-			// Drop topic onto a folder → move into folder
-			if (zone === 'folder' && targetId) {
-				moveTopic(dragId, targetId);
-			} else if (zone === 'root') {
-				moveTopic(dragId, null);
-			} else if (zone === 'topic' && targetId && targetId !== dragId) {
-				// Reorder: drop after this topic (same folder)
-				const src = topicsMap.get(dragId);
-				const tgt = topicsMap.get(targetId);
-				if (src && tgt && src.folderId === tgt.folderId) {
-					moveTopic(dragId, src.folderId, targetId);
-				}
-			}
-		} else if (dragKind === 'folder') {
-			if (zone === 'folder' && targetId && targetId !== dragId) {
-				moveFolder(dragId, targetId);
-			} else if (zone === 'root') {
-				moveFolder(dragId, null);
+			const src = topicsMap.get(dragId);
+			const tgt = topicsMap.get(topicId);
+			if (src && tgt && src.folderId === tgt.folderId) {
+				const side = calcSide(e, false);
+				// 'before' = insert before tgt, 'after' = insert after tgt (use tgt as afterId)
+				moveTopic(dragId, src.folderId, side === 'before' ? undefined : topicId);
 			}
 		}
+		onDragEnd();
+	}
+
+	function onFolderDrop(e: DragEvent, folderId: string) {
+		e.preventDefault();
+		if (!dragKind || !dragId || dragId === folderId) { onDragEnd(); return; }
+		const side = calcSide(e, dragKind === 'topic' || dragKind === 'folder');
+		if (dragKind === 'topic') {
+			if (side === 'into') {
+				moveTopic(dragId, folderId);
+			} else {
+				// Reorder topic relative to this folder's position in parent — treat as same-level
+				const tgt = foldersMap.get(folderId);
+				const src = topicsMap.get(dragId);
+				if (src && tgt) moveTopic(dragId, tgt.parentId ?? null);
+			}
+		} else if (dragKind === 'folder') {
+			if (side === 'into') {
+				moveFolder(dragId, folderId);
+			} else {
+				const tgt = foldersMap.get(folderId);
+				if (tgt) moveFolder(dragId, tgt.parentId ?? null, side === 'after' ? folderId : undefined);
+			}
+		} else if (dragKind === 'note') {
+			// Drop note into folder = move to uncategorised (no-op, ignore)
+		}
+		onDragEnd();
+	}
+
+	function onNoteDrop(e: DragEvent, noteId: string) {
+		e.preventDefault();
+		if (dragKind !== 'note' || !dragId || dragId === noteId || sortMode !== 'custom') { onDragEnd(); return; }
+		const side = calcSide(e, false);
+		// 'before' = insert before noteId means afterId is the one before it — simpler: reorderNote puts AFTER afterId
+		// So 'after' → afterId = noteId, 'before' → afterId = null (find previous)
+		if (side === 'after') {
+			reorderNote(dragId, noteId);
+		} else {
+			// Find the note just before noteId in sorted list
+			const sorted = [...notesMap.values()]
+				.filter(n => n.topicId === notesMap.get(noteId)?.topicId)
+				.sort((a, b) => a.customOrder - b.customOrder);
+			const idx = sorted.findIndex(n => n.id === noteId);
+			reorderNote(dragId, idx > 0 ? sorted[idx - 1].id : null);
+		}
+		onDragEnd();
+	}
+
+	function onRootDrop(e: DragEvent) {
+		e.preventDefault();
+		if (!dragKind || !dragId) { onDragEnd(); return; }
+		if (dragKind === 'note') {
+			const note = notesMap.get(dragId);
+			if (note) saveNote({ ...note, topicId: null });
+		} else if (dragKind === 'topic') {
+			moveTopic(dragId, null);
+		} else if (dragKind === 'folder') {
+			moveFolder(dragId, null);
+		}
+		onDragEnd();
 	}
 
 	// ── Helpers ────────────────────────────────────────────────────
@@ -237,12 +325,10 @@
 		return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 	}
 
-	/** Topics that belong to a given folder (or are unfiled if folderId=null) */
 	function topicsInFolder(folderId: string | null): Topic[] {
 		return allTopics.filter(t => t.folderId === folderId).sort((a, b) => a.order - b.order);
 	}
 
-	/** Direct child folders of a given parent (or root if parentId=null) */
 	function childFolders(parentId: string | null): Folder[] {
 		return allFolders.filter(f => f.parentId === parentId).sort((a, b) => a.order - b.order);
 	}
@@ -264,9 +350,9 @@
 		aria-label="Open topics"
 		aria-expanded={drawerOpen}
 	>
-		<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-			<rect x="2" y="3" width="5" height="10" rx="1" stroke="currentColor" stroke-width="1.3"/>
-			<path d="M10 5h4M10 8h4M10 11h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+		<svg width="16" height="16" viewBox="0 0 18 18" fill="none">
+			<rect x="2" y="3" width="6" height="12" rx="1" stroke="currentColor" stroke-width="1.4"/>
+			<path d="M11 6h5M11 9h5M11 12h5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
 		</svg>
 		<span class="drawer-toggle-label">{panelTitle}</span>
 		<svg class="drawer-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -274,7 +360,6 @@
 		</svg>
 	</button>
 
-	<!-- ── Mobile drawer backdrop ───────────────────────────────── -->
 	{#if drawerOpen}
 		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 		<div class="drawer-backdrop" onclick={() => (drawerOpen = false)}></div>
@@ -284,9 +369,8 @@
 	<aside
 		class="topics-panel"
 		class:drawer-open={drawerOpen}
-		ondragover={(e) => { e.preventDefault(); dropZone = 'root'; dropTarget = null; }}
-		ondrop={(e) => onDrop(e, null, 'root')}
-		ondragleave={onDragLeave}
+		ondragover={(e) => e.preventDefault()}
+		ondrop={onRootDrop}
 		role="navigation"
 		aria-label="Topics and folders"
 	>
@@ -304,7 +388,6 @@
 						<path d="M6.5 1v11M1 6.5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
 					</svg>
 				</button>
-				<!-- Close button visible only in mobile drawer -->
 				<button class="btn-icon drawer-close-btn" onclick={() => (drawerOpen = false)} aria-label="Close">
 					<svg width="13" height="13" viewBox="0 0 13 13" fill="none">
 						<path d="M1.5 1.5l10 10M11.5 1.5l-10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -314,7 +397,6 @@
 		</div>
 
 		<nav class="topic-list">
-			<!-- "All notes" and "Uncategorised" are always at top, not draggable -->
 			<button
 				class="topic-item"
 				class:active={activeTopicId === 'all'}
@@ -333,7 +415,7 @@
 				ondragover={(e) => onDragOver(e, 'uncategorised', 'root')}
 				ondrop={(e) => onDrop(e, null, 'root')}
 			>
-				<span class="topic-dot" style="background: var(--border)"></span>
+				<span class="topic-dot topic-dot-uncategorised"></span>
 				<span class="topic-name">Uncategorised</span>
 				<span class="topic-count">{allNotes.filter(n => !n.topicId).length}</span>
 			</button>
@@ -342,12 +424,10 @@
 				<div class="topic-separator"></div>
 			{/if}
 
-			<!-- Root-level folders (recursive) -->
 			{#each childFolders(null) as folder (folder.id)}
 				{@render folderRow(folder, 0)}
 			{/each}
 
-			<!-- Root-level (unfiled) topics -->
 			{#each topicsInFolder(null) as topic (topic.id)}
 				{@render topicRow(topic, 0)}
 			{/each}
@@ -359,12 +439,61 @@
 		<!-- Header -->
 		<div class="notes-header">
 			<h2 class="notes-title">{panelTitle}</h2>
-			<button class="new-btn" onclick={handleNewNote} aria-label="New note">
-				<svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-					<path d="M6.5 1v11M1 6.5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-				</svg>
-				<span>New</span>
-			</button>
+			<div class="notes-header-actions">
+				<!-- Sort mode picker -->
+				<div class="sort-wrap">
+					<!-- Recent -->
+					<button
+						class="sort-btn"
+						class:active={sortMode === 'recent'}
+						onclick={() => sortModeStore.set('recent')}
+						title="Sort by last modified"
+						aria-label="Sort by last modified"
+						aria-pressed={sortMode === 'recent'}
+					>
+						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+							<circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.3"/>
+							<path d="M7 4v3.5l2 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+						</svg>
+					</button>
+					<!-- Alphabetical -->
+					<button
+						class="sort-btn"
+						class:active={sortMode === 'alpha'}
+						onclick={() => sortModeStore.set('alpha')}
+						title="Sort alphabetically"
+						aria-label="Sort alphabetically"
+						aria-pressed={sortMode === 'alpha'}
+					>
+						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+							<path d="M2 11L5.5 3 9 11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+							<path d="M3 9h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+							<path d="M11 3v8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+							<path d="M9.5 8.5l1.5 1.5 1.5-1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+						</svg>
+					</button>
+					<!-- Custom / manual -->
+					<button
+						class="sort-btn"
+						class:active={sortMode === 'custom'}
+						onclick={() => sortModeStore.set('custom')}
+						title="Custom order (drag to reorder)"
+						aria-label="Custom order"
+						aria-pressed={sortMode === 'custom'}
+					>
+						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+							<path d="M2 4h10M2 7h7M2 10h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+							<path d="M11 8.5v-3m0 0l-1.5 1.5m1.5-1.5l1.5 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+						</svg>
+					</button>
+				</div>
+				<button class="new-btn" onclick={handleNewNote} aria-label="New note">
+					<svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+						<path d="M6.5 1v11M1 6.5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+					</svg>
+					<span>New</span>
+				</button>
+			</div>
 		</div>
 
 		<!-- Search -->
@@ -384,6 +513,10 @@
 			/>
 		</div>
 
+		{#if sortMode === 'custom'}
+			<p class="sort-hint">Drag notes to reorder</p>
+		{/if}
+
 		<!-- Note list -->
 		{#if filteredNotes.length === 0}
 			<div class="empty">
@@ -397,7 +530,12 @@
 			<ul class="note-list">
 				{#each filteredNotes as note (note.id)}
 					{@const topic = note.topicId ? topicsMap.get(note.topicId) : null}
-					<li>
+					<li
+						ondragover={(e) => sortMode === 'custom' ? onDragOver(e, note.id, 'note') : undefined}
+						ondrop={(e) => sortMode === 'custom' ? onDrop(e, note.id, 'note') : undefined}
+						ondragleave={sortMode === 'custom' ? onDragLeave : undefined}
+						class:drop-target-note={dropTarget === note.id && dropZone === 'note'}
+					>
 						<a
 							href="/note/{note.id}"
 							class="note-card"
@@ -409,10 +547,16 @@
 							ontouchend={cancelLongPress}
 							ontouchmove={cancelLongPress}
 						>
+							<!-- Topic tag: always shown; grey+dotted for uncategorised -->
 							{#if topic}
-								<span class="note-topic-tag" style="color: {topic.color}; border-color: {topic.color}20">
+								<span class="note-topic-tag" style="color: {topic.color}; border-color: {topic.color}40">
 									<span class="note-topic-dot" style="background:{topic.color}"></span>
 									{topic.name}
+								</span>
+							{:else}
+								<span class="note-topic-tag note-topic-uncategorised">
+									<span class="note-topic-dot note-topic-dot-grey"></span>
+									Uncategorised
 								</span>
 							{/if}
 							<div class="note-card-top">
@@ -429,25 +573,25 @@
 </div>
 
 <!-- ── Folder row snippet (recursive) ───────────────────────────── -->
+
 {#snippet folderRow(folder: Folder, depth: number)}
 	<div
 		class="folder-row"
-		class:drop-target-folder={dropTarget === folder.id && dropZone === 'folder'}
-		ondragover={(e) => onDragOver(e, folder.id, 'folder')}
-		ondrop={(e) => onDrop(e, folder.id, 'folder')}
-		ondragleave={onDragLeave}
+		class:drop-target-folder={dropTarget === folder.id && dropZone === 'folder' && (dragKind === 'topic' || dragKind === 'folder')}
 	>
 		<div
 			class="folder-item"
 			style="padding-left: {10 + depth * 14}px"
 			draggable="true"
+			ondragover={(e) => onDragOver(e, folder.id, 'folder')}
+			ondrop={(e) => onDrop(e, folder.id, 'folder')}
+			ondragleave={onDragLeave}
 			ondragstart={(e) => onDragStart(e, 'folder', folder.id)}
 			ondragend={onDragEnd}
 			ontouchstart={() => startLongPress('folder', folder.id)}
 			ontouchend={cancelLongPress}
 			ontouchmove={cancelLongPress}
 		>
-			<!-- Collapse toggle -->
 			<button
 				class="folder-chevron"
 				class:collapsed={folder.collapsed}
@@ -466,7 +610,7 @@
 			<span class="folder-name">{folder.name}</span>
 
 			<div class="folder-actions">
-				<button class="btn-icon folder-action-btn" onclick={() => openNewTopic(folder.id)} title="New topic in folder" aria-label="New topic">
+				<button class="btn-icon folder-action-btn" onclick={() => openNewTopic(folder.id)} title="New topic" aria-label="New topic">
 					<svg width="10" height="10" viewBox="0 0 10 10" fill="none">
 						<path d="M5 1v8M1 5h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
 					</svg>
@@ -480,11 +624,9 @@
 		</div>
 
 		{#if !folder.collapsed}
-			<!-- Child folders (recursive) -->
 			{#each childFolders(folder.id) as child (child.id)}
 				{@render folderRow(child, depth + 1)}
 			{/each}
-			<!-- Topics inside this folder -->
 			{#each topicsInFolder(folder.id) as topic (topic.id)}
 				{@render topicRow(topic, depth + 1)}
 			{/each}
@@ -493,13 +635,12 @@
 {/snippet}
 
 <!-- ── Topic row snippet ─────────────────────────────────────────── -->
+
 {#snippet topicRow(topic: Topic, depth: number)}
 	<div
 		class="topic-row"
 		class:drop-target-topic={dropTarget === topic.id && dragKind === 'note'}
-		ondragover={(e) => onDragOver(e, topic.id, 'topic')}
-		ondrop={(e) => onDrop(e, topic.id, 'topic')}
-		ondragleave={onDragLeave}
+		class:drop-target-topic-reorder={dropTarget === topic.id && dragKind === 'topic'}
 	>
 		<button
 			class="topic-item"
@@ -507,18 +648,16 @@
 			style="padding-left: {10 + depth * 14}px"
 			draggable="true"
 			onclick={() => selectTopic(topic.id)}
+			ondragover={(e) => onDragOver(e, topic.id, 'topic')}
+			ondrop={(e) => onDrop(e, topic.id, 'topic')}
+			ondragleave={onDragLeave}
 			ondragstart={(e) => onDragStart(e, 'topic', topic.id)}
 			ondragend={onDragEnd}
-			ontouchstart={(e) => {
-				// Start long-press timer. If user lifts quickly, click fires normally.
-				startLongPress('topic', topic.id);
-			}}
+			ontouchstart={() => startLongPress('topic', topic.id)}
 			ontouchend={(e) => {
-				// If long press did NOT fire, treat as a tap → allow click
 				if (!longPressActive) {
 					cancelLongPress();
 				} else {
-					// Long press active: end drag operation
 					cancelLongPress();
 					e.preventDefault();
 				}
@@ -543,28 +682,20 @@
 	<div class="modal-backdrop" onclick={() => (showTopicEditor = false)}></div>
 	<div class="modal" role="dialog" aria-modal="true" aria-label="Edit topic">
 		<h3 class="modal-title">{editingTopic ? 'Edit topic' : 'New topic'}</h3>
-
 		<div class="modal-field">
 			<label class="field-label" for="topic-name">Name</label>
 			<input id="topic-name" type="text" bind:value={topicName} placeholder="Topic name" autocorrect="off" autocapitalize="words" />
 		</div>
-
 		<div class="modal-field">
 			<label class="field-label" for="topic-color">Color</label>
 			<div class="color-row">
 				{#each ['#6b8afd','#4caf87','#e0a45c','#e05c5c','#c084fc','#38bdf8','#f472b6','#a3e635'] as c}
-					<button
-						class="color-swatch"
-						class:selected={topicColor === c}
-						style="background:{c}"
-						onclick={() => (topicColor = c)}
-						aria-label="Pick color {c}"
-					></button>
+					<button class="color-swatch" class:selected={topicColor === c} style="background:{c}"
+						onclick={() => (topicColor = c)} aria-label="Pick color {c}"></button>
 				{/each}
 				<input type="color" class="color-picker-input" bind:value={topicColor} title="Custom color" />
 			</div>
 		</div>
-
 		<div class="modal-field">
 			<label class="field-label" for="topic-folder">Folder</label>
 			<select id="topic-folder" bind:value={topicFolderId}>
@@ -574,12 +705,9 @@
 				{/each}
 			</select>
 		</div>
-
 		<div class="modal-actions">
 			{#if editingTopic}
-				<button class="btn-danger" onclick={() => { handleDeleteTopic(editingTopic!.id); showTopicEditor = false; }}>
-					Delete
-				</button>
+				<button class="btn-danger" onclick={() => { handleDeleteTopic(editingTopic!.id); showTopicEditor = false; }}>Delete</button>
 			{/if}
 			<button class="btn-ghost" onclick={() => (showTopicEditor = false)}>Cancel</button>
 			<button class="btn-primary modal-save" onclick={saveTopicModal} disabled={!topicName.trim()}>
@@ -595,12 +723,10 @@
 	<div class="modal-backdrop" onclick={() => (showFolderEditor = false)}></div>
 	<div class="modal" role="dialog" aria-modal="true" aria-label="Edit folder">
 		<h3 class="modal-title">{editingFolder ? 'Edit folder' : 'New folder'}</h3>
-
 		<div class="modal-field">
 			<label class="field-label" for="folder-name">Name</label>
 			<input id="folder-name" type="text" bind:value={folderName} placeholder="Folder name" autocorrect="off" autocapitalize="words" />
 		</div>
-
 		<div class="modal-field">
 			<label class="field-label" for="folder-parent">Parent folder</label>
 			<select id="folder-parent" bind:value={folderParentId}>
@@ -610,12 +736,9 @@
 				{/each}
 			</select>
 		</div>
-
 		<div class="modal-actions">
 			{#if editingFolder}
-				<button class="btn-danger" onclick={() => { deleteFolder(editingFolder!.id); showFolderEditor = false; }}>
-					Delete
-				</button>
+				<button class="btn-danger" onclick={() => { deleteFolder(editingFolder!.id); showFolderEditor = false; }}>Delete</button>
 			{/if}
 			<button class="btn-ghost" onclick={() => (showFolderEditor = false)}>Cancel</button>
 			<button class="btn-primary modal-save" onclick={saveFolderModal} disabled={!folderName.trim()}>
@@ -651,6 +774,7 @@
 		color: var(--text-muted);
 		cursor: pointer;
 		max-width: 160px;
+		-webkit-tap-highlight-color: transparent;
 	}
 
 	.drawer-toggle-label {
@@ -660,17 +784,12 @@
 		flex: 1;
 	}
 
-	.drawer-chevron {
-		flex-shrink: 0;
-		color: var(--text-faint);
-	}
+	.drawer-chevron { flex-shrink: 0; color: var(--text-faint); }
 
-	/* Show toggle on mobile when panel is hidden */
 	@media (max-width: 899px) {
 		.drawer-toggle { display: flex; }
 	}
 
-	/* Backdrop for mobile drawer */
 	.drawer-backdrop {
 		position: fixed;
 		inset: 0;
@@ -691,17 +810,13 @@
 		gap: 4px;
 	}
 
-	/* Desktop: always visible */
 	@media (min-width: 900px) {
 		.topics-panel {
 			display: flex;
 		}
-		.drawer-close-btn {
-			display: none;
-		}
+		.drawer-close-btn { display: none; }
 	}
 
-	/* Mobile: hidden by default, slides in as a drawer */
 	@media (max-width: 899px) {
 		.topics-panel {
 			display: flex;
@@ -716,13 +831,9 @@
 			border-right: 1px solid var(--border);
 			transform: translateX(-100%);
 			transition: transform 0.22s ease;
-			/* Extra top padding for safe area */
 			padding-top: max(20px, env(safe-area-inset-top, 14px));
 		}
-
-		.topics-panel.drawer-open {
-			transform: translateX(0);
-		}
+		.topics-panel.drawer-open { transform: translateX(0); }
 	}
 
 	.topics-header {
@@ -732,27 +843,11 @@
 		padding: 0 4px 8px;
 	}
 
-	.header-actions {
-		display: flex;
-		align-items: center;
-		gap: 2px;
-	}
+	.header-actions { display: flex; align-items: center; gap: 2px; }
 
-	.drawer-close-btn {
-		/* Shown only on mobile drawer */
-	}
+	.topic-list { display: flex; flex-direction: column; gap: 1px; }
 
-	.topic-list {
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
-	}
-
-	.topic-separator {
-		height: 1px;
-		background: var(--border);
-		margin: 6px 4px;
-	}
+	.topic-separator { height: 1px; background: var(--border); margin: 6px 4px; }
 
 	/* ── Folder rows ───────────────────────────────────────────── */
 	.folder-row {
@@ -760,23 +855,14 @@
 		flex-direction: column;
 		border-radius: var(--radius-sm);
 		transition: background 0.1s ease;
-		position: relative;
 	}
 
-	/* Drop-target for folders: bright bottom border */
-	.folder-row.drop-target-folder {
-		background: color-mix(in srgb, var(--accent) 8%, transparent);
-	}
-
-	.folder-row.drop-target-folder::after {
-		content: '';
-		position: absolute;
-		bottom: 0;
-		left: 8px;
-		right: 8px;
-		height: 2px;
-		background: var(--accent);
-		border-radius: 999px;
+	/* Folder: dragging a topic/note INTO this folder — full accent outline on header row */
+	.folder-row.drop-target-folder > .folder-item {
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
+		border-radius: var(--radius-sm);
+		outline: 1.5px solid var(--accent);
+		outline-offset: -1px;
 	}
 
 	.folder-item {
@@ -792,6 +878,7 @@
 	}
 
 	.folder-item:active { cursor: grabbing; }
+	.folder-item:hover { background: var(--bg-hover); border-radius: var(--radius-sm); }
 
 	.folder-chevron {
 		background: none;
@@ -806,14 +893,9 @@
 		transition: transform 0.15s ease;
 	}
 
-	.folder-chevron.collapsed svg {
-		transform: rotate(-90deg);
-	}
+	.folder-chevron.collapsed svg { transform: rotate(-90deg); }
 
-	.folder-icon {
-		color: var(--text-faint);
-		flex-shrink: 0;
-	}
+	.folder-icon { color: var(--text-faint); flex-shrink: 0; }
 
 	.folder-name {
 		flex: 1;
@@ -835,10 +917,7 @@
 
 	.folder-item:hover .folder-actions { opacity: 1; }
 
-	.folder-action-btn {
-		padding: 4px;
-		color: var(--text-faint);
-	}
+	.folder-action-btn { padding: 4px; color: var(--text-faint); }
 
 	/* ── Topic rows ────────────────────────────────────────────── */
 	.topic-row {
@@ -847,15 +926,21 @@
 		gap: 2px;
 		border-radius: var(--radius-sm);
 		transition: background 0.1s ease;
-		position: relative;
 	}
 
-	/* Drop-target for topics: visible border + accent fill */
-	.topic-row.drop-target-topic {
+	/* Note-over-topic: full accent outline to signal "drop note into this topic" */
+	.topic-row.drop-target-topic .topic-item {
 		background: color-mix(in srgb, var(--accent) 12%, transparent);
+		color: var(--text);
 		outline: 1.5px solid var(--accent);
 		outline-offset: -1px;
 		border-radius: var(--radius-sm);
+	}
+
+	/* Topic-over-topic reorder: bottom insertion line shows where it will land */
+	.topic-row.drop-target-topic-reorder {
+		border-bottom: 2px solid var(--accent);
+		border-radius: 0;
 	}
 
 	.topic-item {
@@ -863,27 +948,23 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		padding-top: 6px;
-		padding-bottom: 6px;
-		padding-right: 6px;
+		padding: 6px 6px 6px 0;
 		border-radius: var(--radius-sm);
 		background: none;
 		border: none;
-		cursor: pointer;
+		cursor: grab;
 		text-align: left;
 		color: var(--text-muted);
 		font-size: 13px;
 		transition: background 0.12s ease, color 0.12s ease;
 		min-width: 0;
 		user-select: none;
-		/* Ensure the tap target is large enough */
 		-webkit-tap-highlight-color: transparent;
 	}
 
-	.topic-item:hover {
-		background: var(--bg-hover);
-		color: var(--text);
-	}
+	.topic-item:active { cursor: grabbing; }
+
+	.topic-item:hover { background: var(--bg-hover); color: var(--text); }
 
 	.topic-item.active {
 		background: color-mix(in srgb, var(--accent) 12%, transparent);
@@ -897,6 +978,12 @@
 		flex-shrink: 0;
 	}
 
+	/* Uncategorised dot: grey with dashed border */
+	.topic-dot-uncategorised {
+		background: transparent !important;
+		border: 1.5px dashed var(--text-faint);
+	}
+
 	.topic-name {
 		flex: 1;
 		overflow: hidden;
@@ -905,11 +992,7 @@
 		font-size: 12.5px;
 	}
 
-	.topic-count {
-		font-size: 11px;
-		color: var(--text-faint);
-		flex-shrink: 0;
-	}
+	.topic-count { font-size: 11px; color: var(--text-faint); flex-shrink: 0; }
 
 	.topic-edit-btn {
 		opacity: 0;
@@ -921,7 +1004,6 @@
 
 	.topic-row:hover .topic-edit-btn { opacity: 1; }
 
-	/* Drag state */
 	.dragging { opacity: 0.4; }
 
 	/* ── Notes panel ───────────────────────────────────────────── */
@@ -938,20 +1020,53 @@
 		align-items: center;
 		justify-content: space-between;
 		padding: 18px 20px 0;
-		/* On mobile, shift right to make room for the drawer toggle */
-		padding-left: 20px;
 	}
 
 	@media (max-width: 899px) {
 		.notes-header {
 			padding-top: 14px;
-			padding-left: 186px; /* clear the drawer toggle */
+			padding-left: 186px;
 		}
 	}
 
-	.notes-title {
-		font-size: 16px;
-		font-weight: 600;
+	.notes-title { font-size: 16px; font-weight: 600; }
+
+	.notes-header-actions {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	/* ── Sort controls ─────────────────────────────────────────── */
+	.sort-wrap {
+		display: flex;
+		align-items: center;
+		gap: 1px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		padding: 2px;
+	}
+
+	.sort-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 5px 7px;
+		background: none;
+		border: none;
+		border-radius: calc(var(--radius-sm) - 2px);
+		color: var(--text-faint);
+		cursor: pointer;
+		transition: background 0.1s ease, color 0.1s ease;
+		-webkit-tap-highlight-color: transparent;
+	}
+
+	.sort-btn:hover { color: var(--text-muted); }
+
+	.sort-btn.active {
+		background: color-mix(in srgb, var(--accent) 15%, transparent);
+		color: var(--accent);
 	}
 
 	.new-btn {
@@ -968,17 +1083,20 @@
 		cursor: pointer;
 		transition: background 0.15s ease;
 		flex-shrink: 0;
+		-webkit-tap-highlight-color: transparent;
 	}
 
-	.new-btn:hover {
-		background: color-mix(in srgb, var(--accent) 16%, transparent);
+	.new-btn:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+
+	.sort-hint {
+		font-size: 11px;
+		color: var(--text-faint);
+		padding: 4px 20px 0;
+		text-align: right;
 	}
 
 	/* Search */
-	.search-wrap {
-		position: relative;
-		padding: 12px 20px 0;
-	}
+	.search-wrap { position: relative; padding: 12px 20px 0; }
 
 	.search-icon {
 		position: absolute;
@@ -990,10 +1108,7 @@
 		margin-top: 6px;
 	}
 
-	.search-input {
-		padding-left: 32px !important;
-		background: var(--bg-elevated);
-	}
+	.search-input { padding-left: 32px !important; background: var(--bg-elevated); }
 
 	/* Note list */
 	.note-list {
@@ -1006,6 +1121,12 @@
 		-webkit-overflow-scrolling: touch;
 		overscroll-behavior: contain;
 		flex: 1;
+	}
+
+	/* Custom sort: insertion line above the target note */
+	.drop-target-note {
+		border-top: 2px solid var(--accent);
+		border-radius: 2px;
 	}
 
 	.note-card {
@@ -1032,6 +1153,7 @@
 
 	.note-card.dragging { opacity: 0.35; cursor: grabbing; }
 
+	/* Topic tag on note card */
 	.note-topic-tag {
 		display: inline-flex;
 		align-items: center;
@@ -1045,10 +1167,21 @@
 		width: fit-content;
 	}
 
+	/* Uncategorised tag: grey text, dotted border */
+	.note-topic-uncategorised {
+		color: var(--text-faint);
+		border-color: var(--text-faint);
+		border-style: dashed;
+	}
+
 	.note-topic-dot {
 		width: 5px;
 		height: 5px;
 		border-radius: 50%;
+	}
+
+	.note-topic-dot-grey {
+		background: var(--text-faint) !important;
 	}
 
 	.note-card-top {
@@ -1067,11 +1200,7 @@
 		text-overflow: ellipsis;
 	}
 
-	.note-time {
-		font-size: 11px;
-		color: var(--text-faint);
-		flex-shrink: 0;
-	}
+	.note-time { font-size: 11px; color: var(--text-faint); flex-shrink: 0; }
 
 	.note-preview {
 		font-size: 12px;
@@ -1100,12 +1229,7 @@
 	.empty p { font-size: 13px; }
 
 	/* ── Modals ──────────────────────────────────────────────────── */
-	.modal-backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0,0,0,0.5);
-		z-index: 100;
-	}
+	.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 100; }
 
 	.modal {
 		position: fixed;
@@ -1123,16 +1247,8 @@
 		gap: 16px;
 	}
 
-	.modal-title {
-		font-size: 15px;
-		font-weight: 600;
-	}
-
-	.modal-field {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-	}
+	.modal-title { font-size: 15px; font-weight: 600; }
+	.modal-field { display: flex; flex-direction: column; gap: 6px; }
 
 	.field-label {
 		font-size: 11px;
@@ -1142,12 +1258,7 @@
 		color: var(--text-faint);
 	}
 
-	.color-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
+	.color-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 	.color-swatch {
 		width: 22px;
@@ -1174,15 +1285,6 @@
 		box-shadow: none !important;
 	}
 
-	.modal-actions {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		justify-content: flex-end;
-	}
-
-	.modal-save {
-		width: auto;
-		padding: 9px 18px;
-	}
+	.modal-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+	.modal-save { width: auto; padding: 9px 18px; }
 </style>

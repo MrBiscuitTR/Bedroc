@@ -8,6 +8,8 @@
  *    must be AES-GCM encrypted before leaving the device.
  *  - autosave.interval is read from localStorage; defaults to 1000ms.
  *    Real setting persistence wired in Phase 5.
+ *  - sortMode and customOrder are persisted to localStorage only.
+ *    Move to server-backed user preferences in Phase 5.
  *
  * ID strategy:
  *  - All note, topic, and folder IDs are crypto.randomUUID() — client-generated.
@@ -49,7 +51,16 @@ export interface Note {
 	topicId: string | null;
 	createdAt: number;   // Unix ms
 	updatedAt: number;   // Unix ms
+	/**
+	 * Position in the custom sort order within its topic group.
+	 * Only used when sortMode === 'custom'. Lower = higher in list.
+	 * PLACEHOLDER: persisted to localStorage. Move to server in Phase 5.
+	 */
+	customOrder: number;
 }
+
+/** How the note list is sorted. Persisted to localStorage. */
+export type SortMode = 'recent' | 'alpha' | 'custom';
 
 // ─── Demo data (static IDs — no crypto at module eval time) ───────
 // PLACEHOLDER: removed and replaced with empty arrays in Phase 2.
@@ -78,6 +89,7 @@ const DEFAULT_NOTES: Note[] = [
 		topicId: T_PERSONAL,
 		createdAt: Date.now() - 86400000,
 		updatedAt: Date.now() - 120000,
+		customOrder: 0,
 	},
 	{
 		id: 'b1000000-0000-0000-0000-000000000002',
@@ -86,6 +98,7 @@ const DEFAULT_NOTES: Note[] = [
 		topicId: T_WORK,
 		createdAt: Date.now() - 172800000,
 		updatedAt: Date.now() - 3600000,
+		customOrder: 0,
 	},
 	{
 		id: 'b1000000-0000-0000-0000-000000000003',
@@ -94,6 +107,7 @@ const DEFAULT_NOTES: Note[] = [
 		topicId: T_IDEAS,
 		createdAt: Date.now() - 259200000,
 		updatedAt: Date.now() - 86400000,
+		customOrder: 0,
 	},
 	{
 		id: 'b1000000-0000-0000-0000-000000000004',
@@ -102,6 +116,7 @@ const DEFAULT_NOTES: Note[] = [
 		topicId: null,
 		createdAt: Date.now() - 300000,
 		updatedAt: Date.now() - 300000,
+		customOrder: 0,
 	},
 ];
 
@@ -121,9 +136,6 @@ export const notesMap = new SvelteMap<string, Note>(
 );
 
 // ─── Autosave setting ─────────────────────────────────────────────
-// PLACEHOLDER: persisted to localStorage only. Move to server-backed
-// user preferences in Phase 5.
-//
 // Class instance pattern — required in .svelte.ts modules because
 // `export let x = $state(...)` with reassignment is not allowed by the
 // Svelte 5 compiler when the binding crosses module boundaries.
@@ -147,6 +159,29 @@ class AutosaveStore {
 }
 
 export const autosave = new AutosaveStore();
+
+// ─── Sort mode setting ─────────────────────────────────────────────
+// PLACEHOLDER: persisted to localStorage only. Phase 5: server preferences.
+
+function readSortMode(): SortMode {
+	if (typeof localStorage === 'undefined') return 'recent';
+	const raw = localStorage.getItem('bedroc_sort_mode');
+	if (raw === 'alpha' || raw === 'custom' || raw === 'recent') return raw;
+	return 'recent';
+}
+
+class SortModeStore {
+	value = $state<SortMode>(readSortMode());
+
+	set(mode: SortMode) {
+		this.value = mode;
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem('bedroc_sort_mode', mode);
+		}
+	}
+}
+
+export const sortModeStore = new SortModeStore();
 
 // ─── Folder mutations ─────────────────────────────────────────────
 
@@ -177,11 +212,9 @@ export function toggleFolderCollapsed(id: string) {
 export function deleteFolder(id: string) {
 	const folder = foldersMap.get(id);
 	if (!folder) return;
-	// Reparent child folders to this folder's parent
 	for (const [fid, f] of foldersMap) {
 		if (f.parentId === id) foldersMap.set(fid, { ...f, parentId: folder.parentId });
 	}
-	// Unfile topics that were in this folder
 	for (const [tid, t] of topicsMap) {
 		if (t.folderId === id) topicsMap.set(tid, { ...t, folderId: null });
 	}
@@ -244,6 +277,8 @@ export function moveTopic(id: string, newFolderId: string | null, afterId?: stri
 /** Create a new note and return its UUID. */
 export function createNote(topicId: string | null = null): string {
 	const id = crypto.randomUUID();
+	const siblings = [...notesMap.values()].filter(n => n.topicId === topicId);
+	const nextOrder = siblings.length > 0 ? Math.max(...siblings.map(n => n.customOrder)) + 1 : 0;
 	notesMap.set(id, {
 		id,
 		title: '',
@@ -251,6 +286,7 @@ export function createNote(topicId: string | null = null): string {
 		topicId,
 		createdAt: Date.now(),
 		updatedAt: Date.now(),
+		customOrder: nextOrder,
 	});
 	return id;
 }
@@ -265,6 +301,22 @@ export function deleteNote(id: string) {
 	notesMap.delete(id);
 }
 
+/**
+ * Reorder a note in custom sort mode.
+ * Moves `id` to appear after `afterId` within its topic group.
+ * If afterId is null, moves the note to the top.
+ */
+export function reorderNote(id: string, afterId: string | null) {
+	const note = notesMap.get(id);
+	if (!note) return;
+	const siblings = [...notesMap.values()]
+		.filter(n => n.topicId === note.topicId && n.id !== id)
+		.sort((a, b) => a.customOrder - b.customOrder);
+	const insertIdx = afterId ? siblings.findIndex(n => n.id === afterId) + 1 : 0;
+	siblings.splice(insertIdx, 0, { ...note });
+	siblings.forEach((n, i) => notesMap.set(n.id, { ...n, customOrder: i }));
+}
+
 // ─── Derived helpers ──────────────────────────────────────────────
 
 /** All folders sorted by order within each parent group. */
@@ -277,14 +329,28 @@ export function getTopics(): Topic[] {
 	return [...topicsMap.values()].sort((a, b) => a.order - b.order);
 }
 
-/** All notes sorted by newest updatedAt first. */
-export function getNotes(): Note[] {
-	return [...notesMap.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+/**
+ * All notes, sorted by the active sort mode.
+ *  - 'recent'  → newest updatedAt first (default)
+ *  - 'alpha'   → title A→Z (case-insensitive)
+ *  - 'custom'  → customOrder ascending within each topic group
+ */
+export function getNotes(mode: SortMode = 'recent'): Note[] {
+	const all = [...notesMap.values()];
+	switch (mode) {
+		case 'alpha':
+			return all.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
+		case 'custom':
+			return all.sort((a, b) => a.customOrder - b.customOrder);
+		case 'recent':
+		default:
+			return all.sort((a, b) => b.updatedAt - a.updatedAt);
+	}
 }
 
 /** Notes filtered by topic (null = uncategorised). */
-export function getNotesByTopic(topicId: string | null): Note[] {
-	return getNotes().filter((n) => n.topicId === topicId);
+export function getNotesByTopic(topicId: string | null, mode: SortMode = 'recent'): Note[] {
+	return getNotes(mode).filter((n) => n.topicId === topicId);
 }
 
 /** Format a Unix ms timestamp as a human-readable relative string. */

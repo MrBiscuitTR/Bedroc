@@ -9,19 +9,19 @@
 	const authRoutes = ['/login', '/register'];
 	let isAuthRoute = $derived(authRoutes.includes(path));
 
+	// Note editor owns its full-width toolbar on mobile, so we hide the global
+	// mobile header on that route to avoid doubling up.
+	let isNoteRoute = $derived(path.startsWith('/note'));
+
 	const navItems = [
 		{ href: '/',         label: 'Notes',    icon: 'notes' },
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
 	];
 
 	// ── Split-window state ─────────────────────────────────────────
-	// Split mode renders a resizable second pane via an iframe pointing
-	// to the same origin. This gives true independent navigation per pane
-	// without complex router interception, and naturally supports iOS Split
-	// View (both panes are in the same process/tab, sharing IndexedDB).
 	let splitActive  = $state(false);
-	let splitUrl     = $state('/');         // URL loaded in the second pane
-	let splitWidth   = $state(50);          // percentage of total width for right pane
+	let splitUrl     = $state('/');
+	let splitWidth   = $state(50);
 	let isDragging   = $state(false);
 	let splitterEl: HTMLDivElement;
 	let containerEl: HTMLDivElement;
@@ -35,7 +35,6 @@
 		splitActive = false;
 	}
 
-	// Splitter drag — pointer events for cross-device support
 	function onSplitterPointerDown(e: PointerEvent) {
 		e.preventDefault();
 		isDragging = true;
@@ -45,7 +44,6 @@
 	function onSplitterPointerMove(e: PointerEvent) {
 		if (!isDragging || !containerEl) return;
 		const rect = containerEl.getBoundingClientRect();
-		// Right pane width as percentage; clamp so each side stays at least 20%
 		const rightPct = Math.max(20, Math.min(80, ((rect.right - e.clientX) / rect.width) * 100));
 		splitWidth = rightPct;
 	}
@@ -57,17 +55,15 @@
 </script>
 
 {#if isAuthRoute}
-	<!-- Bare layout for login / register -->
 	<div class="auth-shell">
 		{@render children()}
 	</div>
 {:else}
-	<!-- Full app shell -->
 	<div class="app-shell">
 		<!-- ── Sidebar (desktop) ───────────────────────── -->
 		<aside class="sidebar">
 			<div class="sidebar-logo">
-				<span class="logo-mark">B</span>
+				<img src="/icons/appicon-96.png" alt="Bedroc" class="logo-icon" width="28" height="28" />
 				<span class="logo-text">Bedroc</span>
 			</div>
 
@@ -136,30 +132,28 @@
 			onpointermove={onSplitterPointerMove}
 			onpointerup={onSplitterPointerUp}
 		>
-			<!-- Mobile header -->
-			<header class="mobile-header">
-				<span class="mobile-title">
-					{#if path === '/'}
-						Notes
-					{:else if path.startsWith('/note')}
-						Edit note
-					{:else if path === '/settings'}
-						Settings
-					{:else}
-						Bedroc
-					{/if}
-				</span>
-				<div class="mobile-header-actions">
-					{#if path === '/'}
-						<a href="/note/new" class="btn-icon" aria-label="New note">
-							<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-								<path d="M9 3v12M3 9h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-							</svg>
-						</a>
-					{/if}
-					<!-- Split view not shown on mobile — iOS handles it natively -->
-				</div>
-			</header>
+			<!-- Mobile header — hidden on desktop and on note editor pages
+			     (the editor renders its own full-width toolbar that includes
+			     a topics drawer toggle as its first item). Height is locked to
+			     --nav-h so Notes/Settings pages are perfectly consistent. -->
+			{#if !isNoteRoute}
+				<header class="mobile-header">
+					<span class="mobile-title">
+						{#if path === '/'}Notes
+						{:else if path === '/settings'}Settings
+						{:else}Bedroc{/if}
+					</span>
+					<div class="mobile-header-actions">
+						{#if path === '/'}
+							<a href="/note/new" class="btn-icon" aria-label="New note">
+								<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+									<path d="M9 3v12M3 9h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+								</svg>
+							</a>
+						{/if}
+					</div>
+				</header>
+			{/if}
 
 			<!-- Pane container -->
 			<div class="pane-container" class:split={splitActive}>
@@ -277,17 +271,12 @@
 		border-bottom: 1px solid var(--border);
 	}
 
-	.logo-mark {
+	.logo-icon {
 		width: 28px;
 		height: 28px;
-		background: var(--accent);
-		color: #fff;
-		font-weight: 700;
-		font-size: 15px;
 		border-radius: 7px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
+		flex-shrink: 0;
+		object-fit: cover;
 	}
 
 	.logo-text {
@@ -403,12 +392,15 @@
 	}
 
 	/* ── Mobile header ────────────────────────────────── */
+	/* Fixed height (--nav-h) so Notes / Settings headers are identical.
+	   Hidden on desktop. Not rendered at all on /note/* routes (editor
+	   has its own toolbar that fills this visual role). */
 	.mobile-header {
 		display: flex;
 		align-items: flex-end;
 		justify-content: space-between;
 		min-height: var(--nav-h);
-		padding: env(safe-area-inset-top, 0px) 16px 12px;
+		padding: max(env(safe-area-inset-top, 0px), 12px) 16px 12px;
 		background: var(--bg-elevated);
 		border-bottom: 1px solid var(--border);
 		flex-shrink: 0;
@@ -422,6 +414,7 @@
 		font-size: 16px;
 		font-weight: 600;
 		color: var(--text);
+		line-height: 1;
 	}
 
 	.mobile-header-actions {
@@ -521,11 +514,15 @@
 	}
 
 	/* ── Bottom nav ───────────────────────────────────── */
+	/* background-color on .main-wrap fills the gap below safe-area on PWA home screen */
+	.main-wrap { background: var(--bg-elevated); }
+
 	.bottom-nav {
 		display: flex;
 		background: var(--bg-elevated);
 		border-top: 1px solid var(--border);
-		padding-bottom: env(safe-area-inset-bottom);
+		/* Safe area for home indicator — zero on non-notch devices */
+		padding-bottom: env(safe-area-inset-bottom, 0px);
 		flex-shrink: 0;
 	}
 
@@ -543,6 +540,7 @@
 		color: var(--text-faint);
 		text-decoration: none;
 		transition: color 0.12s ease;
+		-webkit-tap-highlight-color: transparent;
 	}
 
 	.bottom-nav-item:hover,

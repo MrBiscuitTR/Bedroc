@@ -135,3 +135,7 @@ dist
 .yarn/install-state.gz
 .pnp.*
 TODO.md
+/bedroc/.svelte-kit
+bedroc/.npmrc
+.local.env
+.prompt-notes.md

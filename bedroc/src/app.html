@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+
+		<!--
+			Viewport: initial-scale=1, no user-scalable to prevent iOS double-tap zoom.
+			We set font-size: 16px on all inputs in CSS to prevent iOS auto-zoom on focus.
+		-->
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+		/>
+
+		<!-- PWA / home screen -->
+		<meta name="mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+		<meta name="apple-mobile-web-app-title" content="Bedroc" />
+		<meta name="application-name" content="Bedroc" />
+
+		<!-- Theme color (browser chrome + Android task switcher) -->
+		<meta name="theme-color" content="#0f1117" />
+
+		<!-- Prevent phone number detection -->
+		<meta name="format-detection" content="telephone=no" />
+
+		<!-- PWA manifest -->
+		<link rel="manifest" href="/manifest.webmanifest" />
+
+		<!-- Apple touch icons (added in static/icons/) -->
+		<link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+
+		<!-- Favicons and other icons -->
+		<link rel="icon" href="/icons/favicon.ico" sizes="any" />
+		<link rel="icon" type="image/png" sizes="16x16" href="/icons/appicon-16.png" />
+		<link rel="icon" type="image/png" sizes="32x32" href="/icons/appicon-32.png" />
+		<link rel="icon" type="image/png" sizes="64x64" href="/icons/appicon-64.png" />
+		<link rel="icon" type="image/png" sizes="96x96" href="/icons/appicon-96.png" />
+		<link rel="icon" type="image/png" sizes="128x128" href="/icons/appicon-128.png" />
+		<link rel="icon" type="image/png" sizes="256x256" href="/icons/appicon-256.png" />
+		<link rel="icon" type="image/png" sizes="512x512" href="/icons/appicon-512.png" />
+		%sveltekit.head%
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

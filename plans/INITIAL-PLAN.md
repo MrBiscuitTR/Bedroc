@@ -2,7 +2,7 @@
 
 ## Context
 
-Bedroc is a green-field, open-source, self-hostable, end-to-end encrypted (E2EE) real-time notes application. The goal is to give users a fully private alternative to Google Keep / Notion, where the server never sees note contents. Zero code exists yet. This plan covers the entire project from stack selection through deployment.
+Bedroc is an open-source, self-hostable, end-to-end encrypted (E2EE) real-time notes application. The goal is to give users a fully private alternative to Google Keep / Notion, where the server never sees note contents. This plan covers the entire project from stack selection through deployment.
 
 ---
 
@@ -35,88 +35,106 @@ Bedroc is a green-field, open-source, self-hostable, end-to-end encrypted (E2EE)
 
 ## Project Directory Structure
 
+> **Confirmed layout (Option B — Docker at root).** This is the standard pattern for self-hostable apps (Gitea, Immich, n8n). A user clones the repo, copies `.env.example` → `.env`, edits a few lines, and runs `docker-compose up -d`. No hunting in subfolders.
+
 ```
-Bedroc/
-├── plans/
-│   └── INITIAL-PLAN.md
-├── apps/
-│   ├── web/                        # SvelteKit frontend
-│   │   ├── src/
-│   │   │   ├── lib/
-│   │   │   │   ├── crypto/
-│   │   │   │   │   ├── keys.ts           # Key derivation, wrapping, storage
-│   │   │   │   │   ├── encrypt.ts        # AES-GCM encrypt/decrypt
-│   │   │   │   │   └── srp.ts            # SRP/OPAQUE auth (no password to server)
-│   │   │   │   ├── db/
-│   │   │   │   │   └── indexeddb.ts      # Local offline storage
-│   │   │   │   ├── sync/
-│   │   │   │   │   ├── websocket.ts      # Real-time sync client
-│   │   │   │   │   └── conflict.ts       # Conflict resolution (CRDT/last-write-wins)
-│   │   │   │   ├── stores/
-│   │   │   │   │   ├── auth.ts           # Auth state store
-│   │   │   │   │   └── notes.ts          # Notes state store
-│   │   │   │   └── utils/
-│   │   │   │       └── export.ts         # JSON export with security warning
-│   │   │   ├── routes/
-│   │   │   │   ├── +layout.svelte        # Root layout, PWA shell
-│   │   │   │   ├── +page.svelte          # Home / note list
-│   │   │   │   ├── login/
-│   │   │   │   │   └── +page.svelte
-│   │   │   │   ├── register/
-│   │   │   │   │   └── +page.svelte
-│   │   │   │   └── note/
-│   │   │   │       └── [id]/
-│   │   │   │           └── +page.svelte  # Note editor
-│   │   │   ├── service-worker.ts         # Offline caching, background sync
-│   │   │   └── app.html                  # HTML shell (meta tags, PWA, iOS fixes)
-│   │   ├── static/
-│   │   │   ├── manifest.webmanifest      # PWA manifest
-│   │   │   ├── icons/                    # App icons (all sizes)
-│   │   │   └── fonts/                    # Self-hosted fonts
-│   │   ├── svelte.config.js
-│   │   ├── vite.config.ts
-│   │   ├── tailwind.config.ts
-│   │   └── package.json
-│   └── server/                     # Fastify backend
-│       ├── src/
-│       │   ├── routes/
-│       │   │   ├── auth.ts               # Register, login (SRP), logout, refresh
-│       │   │   ├── notes.ts              # CRUD for encrypted note blobs
-│       │   │   └── sync.ts               # WebSocket upgrade + sync handler
-│       │   ├── db/
-│       │   │   ├── client.ts             # PostgreSQL connection pool
-│       │   │   ├── migrations/           # SQL migration files
-│       │   │   │   ├── 001_init.sql
-│       │   │   │   └── 002_sessions.sql
-│       │   │   └── queries/
-│       │   │       ├── users.ts
-│       │   │       └── notes.ts
-│       │   ├── middleware/
-│       │   │   ├── auth.ts               # JWT verification middleware
-│       │   │   ├── ratelimit.ts          # Rate limiting (Redis-backed)
-│       │   │   └── csrf.ts               # CSRF protection
-│       │   ├── plugins/
-│       │   │   ├── redis.ts              # Redis plugin
-│       │   │   └── websocket.ts          # WebSocket plugin
-│       │   └── index.ts                  # Server entry point
-│       ├── package.json
-│       └── tsconfig.json
-├── docker/
-│   ├── docker-compose.yml
-│   ├── docker-compose.dev.yml
+Bedroc/                              ← root git repo
+├── bedroc/                          ← SvelteKit frontend source
+│   ├── src/
+│   │   ├── lib/
+│   │   │   ├── crypto/
+│   │   │   │   ├── keys.ts          # Key derivation, wrapping, storage
+│   │   │   │   ├── encrypt.ts       # AES-GCM encrypt/decrypt
+│   │   │   │   └── srp.ts           # SRP auth (no password to server)
+│   │   │   ├── db/
+│   │   │   │   └── indexeddb.ts     # Local offline storage
+│   │   │   ├── sync/
+│   │   │   │   ├── websocket.ts     # Real-time sync client
+│   │   │   │   └── conflict.ts      # Conflict resolution
+│   │   │   ├── stores/
+│   │   │   │   ├── auth.ts          # Auth state (server URL, session)
+│   │   │   │   └── notes.ts         # Notes state
+│   │   │   └── utils/
+│   │   │       └── export.ts        # JSON export with security warning
+│   │   ├── routes/
+│   │   │   ├── +layout.svelte       # Root layout (sidebar/bottom nav)
+│   │   │   ├── +page.svelte         # Notes list (home)
+│   │   │   ├── login/
+│   │   │   │   └── +page.svelte     # Login + server URL picker
+│   │   │   ├── register/
+│   │   │   │   └── +page.svelte     # Register + server URL picker
+│   │   │   ├── note/[id]/
+│   │   │   │   └── +page.svelte     # Note editor
+│   │   │   └── settings/
+│   │   │       └── +page.svelte     # Settings
+│   │   ├── service-worker.ts        # Offline cache, background sync
+│   │   ├── app.html                 # HTML shell (PWA meta, iOS fixes)
+│   │   └── app.css                  # Global styles, design tokens
+│   ├── static/
+│   │   ├── manifest.webmanifest     # PWA manifest
+│   │   ├── icons/                   # App icons (all sizes)
+│   │   └── robots.txt
+│   ├── svelte.config.js
+│   ├── vite.config.ts
+│   └── package.json
+├── server/                          ← Fastify backend (future phase)
+│   ├── src/
+│   │   ├── routes/
+│   │   │   ├── auth.ts              # Register, login (SRP), logout, refresh
+│   │   │   ├── notes.ts             # CRUD for encrypted note blobs
+│   │   │   └── sync.ts              # WebSocket upgrade + sync handler
+│   │   ├── db/
+│   │   │   ├── client.ts            # PostgreSQL connection pool
+│   │   │   ├── migrations/
+│   │   │   │   └── 001_init.sql
+│   │   │   └── queries/
+│   │   │       ├── users.ts
+│   │   │       └── notes.ts
+│   │   ├── middleware/
+│   │   │   ├── auth.ts              # JWT verification
+│   │   │   ├── ratelimit.ts         # Redis-backed rate limiting
+│   │   │   └── csrf.ts              # CSRF protection
+│   │   ├── plugins/
+│   │   │   ├── redis.ts
+│   │   │   └── websocket.ts
+│   │   └── index.ts                 # Server entry point
+│   ├── package.json
+│   └── tsconfig.json
+├── docker/                          ← Docker internals (not the compose file)
 │   ├── nginx/
 │   │   ├── nginx.conf
-│   │   └── ssl/                    # TLS certs (Let's Encrypt or self-signed)
+│   │   └── ssl/                     # TLS certs (Let's Encrypt or self-signed)
 │   └── postgres/
 │       └── init.sql
-├── GUIDE.md                        # Self-hosting guide (Docker, Tailscale, WireGuard/UFW)
+├── docker-compose.yml               ← at root — production
+├── docker-compose.dev.yml           ← at root — development (hot reload)
+├── .env.example                     ← at root — copy to .env and edit
+├── GUIDE.md                         ← self-hosting guide (Docker, Tailscale, WireGuard/UFW)
+├── docs/                            ← generated documentation
+├── plans/                           ← planning and decision documents
 ├── README.md
 ├── TODO.md
 ├── LICENSE
-├── .env.example
-├── .gitignore
-└── package.json                    # Root workspace (pnpm workspaces)
+└── .gitignore
 ```
+
+---
+
+## Backend Connection Model
+
+The frontend build is **always the same** regardless of where it is accessed from (website, PWA on home screen, Electron app). There are no "modes."
+
+At login and register, a subtle **server URL field** defaults to `https://api.bedroc.app` (the public hosted instance). Users change this to their own server URL to use a self-hosted backend. The chosen URL is saved to localStorage and multiple saved servers are remembered (dropdown switcher).
+
+This transparently covers all use cases:
+
+| Use case | Server URL |
+| --- | --- |
+| Public / commercial (bedroc.app) | `https://api.bedroc.app` (default) |
+| Self-hosted on VPS / public domain | `https://notes.mydomain.com` |
+| Self-hosted behind VPN / CGNAT | `https://100.x.x.x` (Tailscale) or `http://192.168.x.x:3000` |
+
+The frontend URL is irrelevant — it is either a website the user visited and added to their home screen, or the Electron desktop app. Only the API endpoint changes.
 
 ---
 
@@ -185,6 +203,75 @@ JSON.stringify → send to server
 - During session: DEK stored in memory only (JS variable, NOT localStorage, NOT sessionStorage)
 - For "remember me" / persistent login: DEK wrapped with a device-specific key derived from a random value stored in IndexedDB, then the wrapped key is stored in IndexedDB. This means keys are tied to the device and cleared if IndexedDB is cleared.
 - On logout: zero out all key material, clear IndexedDB session data, clear service worker cache
+
+---
+
+## Offline-First Architecture (IndexedDB)
+
+Bedroc must remain **fully usable offline** — not just "viewable" but also writable, with all features working. This applies to the website/PWA on mobile (iOS Safari, Chrome, Firefox) and desktop browsers. IndexedDB is the primary local data store; the server is the sync target, not the source of truth while offline. Conflicts must be resolved easily, git-like structure that allows manual, or accept local/remote options. if no conflict, sync to server.
+
+### IndexedDB as the Primary Store
+
+IndexedDB serves three roles (not just one):
+
+| Role | Description |
+| --- | --- |
+| **Primary read store** | All note list and editor views read from IndexedDB first — zero server round-trips for rendering |
+| **Primary write store** | All saves write to IndexedDB immediately (after local encryption) — the user never waits for a server |
+| **Sync queue** | Changes made offline are queued and flushed to the server when connectivity returns |
+
+This architecture works identically on:
+
+- iOS Safari in standalone PWA mode (Add to Home Screen)
+- Chrome/Chromium on Android, Windows, macOS, Linux
+- Firefox on all platforms
+- Any browser that supports IndexedDB (all modern browsers)
+
+### IndexedDB Schema
+
+```
+DB name: bedroc
+Version: 1
+
+Object stores:
+  notes           — keyPath: id (UUID)
+    id            : string (UUID, client-generated)
+    encryptedBlob : string (JSON: { iv, ciphertext }) — PLACEHOLDER: plaintext in Phase 0–1
+    topicId       : string | null
+    createdAt     : number (Unix ms)
+    updatedAt     : number (Unix ms)
+    syncedAt      : number | null (null = not yet synced to server)
+    serverVersion : number (for optimistic locking)
+
+  topics          — keyPath: id (UUID)
+    id            : string
+    name          : string
+    color         : string
+
+  syncQueue       — keyPath: id (autoincrement)
+    noteId        : string
+    op            : 'upsert' | 'delete'
+    payload       : string (encrypted blob or null for delete)
+    queuedAt      : number
+
+  keyMaterial     — keyPath: id (single record 'session')
+    wrappedDek    : ArrayBuffer
+    dekSalt       : ArrayBuffer
+    deviceKey     : ArrayBuffer
+```
+
+### Sync Strategy
+
+1. On app start (online): fetch `/api/notes/sync?since=<last_sync_ts>` — get any notes changed on other devices, write to IndexedDB, decrypt and display.
+2. On save: write to IndexedDB immediately → add to `syncQueue` → attempt server push; if it fails (offline), leave in queue.
+3. Service worker `sync` event (Background Sync API): flush `syncQueue` when connectivity returns. Falls back to polling on browsers without Background Sync support (Firefox).
+4. On note open: read from IndexedDB. If a newer server version exists (detected during sync), show a merge/conflict notice.
+
+### Service Worker Cache Strategy
+
+- **App shell** (HTML, JS, CSS, icons): Cache-first — works fully offline after first load.
+- **API calls**: Network-first with IndexedDB fallback — if offline, serve from local store.
+- **No external CDN requests**: The app has no external font/script/image requests, so no special CDN caching is needed.
 
 ---
 
@@ -316,7 +403,7 @@ WebSocket message types:
 - Receiving clients fetch the updated encrypted note and decrypt locally
 - If the local copy has a newer timestamp, it wins and re-saves
 
-**Offline queue**:
+**Offline queue (CRITICAL)**:
 - Changes made offline are queued in IndexedDB
 - Service worker detects reconnect and flushes the queue
 - Queue entries include the note blob and timestamp

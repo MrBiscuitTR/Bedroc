@@ -481,28 +481,6 @@
 </svelte:head>
 
 <div class="page" class:long-press-active={longPressActive}>
-	<!-- ── Mobile: topics drawer toggle ─────────────────────────── -->
-	<button
-		class="drawer-toggle"
-		onclick={() => (drawerOpen = true)}
-		aria-label="Open topics"
-		aria-expanded={drawerOpen}
-	>
-		<svg width="16" height="16" viewBox="0 0 18 18" fill="none">
-			<rect x="2" y="3" width="6" height="12" rx="1" stroke="currentColor" stroke-width="1.4"/>
-			<path d="M11 6h5M11 9h5M11 12h5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-		</svg>
-		<span class="drawer-toggle-label">{panelTitle}</span>
-		<svg class="drawer-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none">
-			<path d="M4 3l4 3-4 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-		</svg>
-	</button>
-
-	{#if drawerOpen}
-		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-		<div class="drawer-backdrop" onclick={() => (drawerOpen = false)}></div>
-	{/if}
-
 	<!-- ── Left panel: folders + topics ────────────────────────── -->
 	<aside
 		class="topics-panel"
@@ -576,61 +554,84 @@
 	<div class="notes-panel">
 		<!-- Header -->
 		<div class="notes-header">
-			<h2 class="notes-title">{panelTitle}</h2>
+			<!-- <h2 class="notes-title">{panelTitle}</h2> -->
 			<div class="notes-header-actions">
-				<!-- Sort mode picker -->
-				<div class="sort-wrap">
-					<!-- Recent -->
-					<button
-						class="sort-btn"
-						class:active={sortMode === 'recent'}
-						onclick={() => sortModeStore.set('recent')}
-						title="Sort by last modified"
-						aria-label="Sort by last modified"
-						aria-pressed={sortMode === 'recent'}
-					>
-						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-							<circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.3"/>
-							<path d="M7 4v3.5l2 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-						</svg>
-					</button>
-					<!-- Alphabetical -->
-					<button
-						class="sort-btn"
-						class:active={sortMode === 'alpha'}
-						onclick={() => sortModeStore.set('alpha')}
-						title="Sort alphabetically"
-						aria-label="Sort alphabetically"
-						aria-pressed={sortMode === 'alpha'}
-					>
-						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-							<path d="M2 11L5.5 3 9 11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-							<path d="M3 9h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-							<path d="M11 3v8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-							<path d="M9.5 8.5l1.5 1.5 1.5-1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-						</svg>
-					</button>
-					<!-- Custom / manual -->
-					<button
-						class="sort-btn"
-						class:active={sortMode === 'custom'}
-						onclick={() => sortModeStore.set('custom')}
-						title="Custom order (drag to reorder)"
-						aria-label="Custom order"
-						aria-pressed={sortMode === 'custom'}
-					>
-						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-							<path d="M2 4h10M2 7h7M2 10h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-							<path d="M11 8.5v-3m0 0l-1.5 1.5m1.5-1.5l1.5 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-						</svg>
-					</button>
-				</div>
-				<button class="new-btn" onclick={handleNewNote} aria-label="New note">
-					<svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-						<path d="M6.5 1v11M1 6.5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-					</svg>
-					<span>New</span>
-				</button>
+                <!-- ── Mobile: topics drawer toggle ─────────────────────────── -->
+                <button
+                    class="drawer-toggle"
+                    onclick={() => (drawerOpen = true)}
+                    aria-label="Open topics"
+                    aria-expanded={drawerOpen}
+                >
+                    <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
+                        <rect x="2" y="3" width="6" height="12" rx="1" stroke="currentColor" stroke-width="1.4"/>
+                        <path d="M11 6h5M11 9h5M11 12h5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                    </svg>
+                    <span class="drawer-toggle-label">{panelTitle}</span>
+                    <svg class="drawer-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M4 3l4 3-4 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
+
+                {#if drawerOpen}
+                    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+                    <div class="drawer-backdrop" onclick={() => (drawerOpen = false)}></div>
+                {/if}
+                <div class="notes-header-right">
+                    <!-- Sort mode picker -->
+                    <div class="sort-wrap">
+                        <!-- Recent -->
+                        <button
+                            class="sort-btn"
+                            class:active={sortMode === 'recent'}
+                            onclick={() => sortModeStore.set('recent')}
+                            title="Sort by last modified"
+                            aria-label="Sort by last modified"
+                            aria-pressed={sortMode === 'recent'}
+                        >
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                <circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.3"/>
+                                <path d="M7 4v3.5l2 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </button>
+                        <!-- Alphabetical -->
+                        <button
+                            class="sort-btn"
+                            class:active={sortMode === 'alpha'}
+                            onclick={() => sortModeStore.set('alpha')}
+                            title="Sort alphabetically"
+                            aria-label="Sort alphabetically"
+                            aria-pressed={sortMode === 'alpha'}
+                        >
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                <path d="M2 11L5.5 3 9 11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                                <path d="M3 9h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                                <path d="M11 3v8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                                <path d="M9.5 8.5l1.5 1.5 1.5-1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </button>
+                        <!-- Custom / manual -->
+                        <button
+                            class="sort-btn"
+                            class:active={sortMode === 'custom'}
+                            onclick={() => sortModeStore.set('custom')}
+                            title="Custom order (drag to reorder)"
+                            aria-label="Custom order"
+                            aria-pressed={sortMode === 'custom'}
+                        >
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                <path d="M2 4h10M2 7h7M2 10h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                                <path d="M11 8.5v-3m0 0l-1.5 1.5m1.5-1.5l1.5 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <button class="new-btn" onclick={handleNewNote} aria-label="New note">
+                        <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                            <path d="M6.5 1v11M1 6.5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                        </svg>
+                        <span>New</span>
+                    </button>
+                </div>
 			</div>
 		</div>
 
@@ -901,7 +902,7 @@
 		display: none;
 		position: absolute;
 		top: 14px;
-		left: 14px;
+		/* left: 14px; */
 		z-index: 10;
 		align-items: center;
 		gap: 6px;
@@ -1185,9 +1186,21 @@
 	@media (max-width: 899px) {
 		.notes-header {
 			padding-top: 14px;
-			padding-left: 186px;
+			/* padding-left: 186px; */
 		}
+        .notes-header-right {
+            margin-left: 118px;
+        }
 	}
+
+    .notes-header-right {
+        gap: 8px;
+        /* this div should stick to right side of the header */
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+
+    }
 
 	.notes-title { font-size: 16px; font-weight: 600; }
 
@@ -1195,6 +1208,7 @@
 		display: flex;
 		align-items: center;
 		gap: 6px;
+        justify-content: space-between;
 	}
 
 	/* ── Sort controls ─────────────────────────────────────────── */
@@ -1205,7 +1219,7 @@
 		background: var(--bg-elevated);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
-		padding: 2px;
+		padding: 4px;
 	}
 
 	.sort-btn {

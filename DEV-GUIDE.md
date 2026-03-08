@@ -270,7 +270,7 @@ All endpoints are at `/api/...`.
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| `GET` | `/health` | None | Health check |
+| `GET` | `/health` | None | Health check (nginx proxies this to Fastify — used by the frontend to confirm backend is alive) |
 | `POST` | `/api/auth/register` | None | Create account |
 | `POST` | `/api/auth/login/init` | None | SRP step 1 |
 | `POST` | `/api/auth/login/verify` | None | SRP step 2 + issue JWT |

@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import {
 		auth, login, setServerUrl, removeSavedServer,
-		normaliseServerUrl, checkServerHealth, serverStatus,
+		normaliseServerUrl, checkServerHealth, serverStatus, isSelfSignedCandidate,
 	} from '$lib/stores/auth.svelte.js';
 	import { loadFromDb, syncFromServer } from '$lib/stores/notes.svelte.js';
 
@@ -165,6 +165,9 @@
 						</span>
 						{#if serverStatus.value === 'offline'}
 							<span class="status-help">— Check the URL and make sure the server is running</span>
+							{#if isSelfSignedCandidate(auth.serverUrl)}
+								<span class="status-help">Self-signed cert? <a href={auth.serverUrl} target="_blank" rel="noopener">Open {auth.serverUrl}</a> in a new tab, accept the certificate warning, then retry.</span>
+							{/if}
 						{/if}
 					</div>
 				{/if}
@@ -194,7 +197,7 @@
 				{/if}
 
 				<p class="server-hint">
-					Enter any format: <code>10.66.66.1</code>, <code>192.168.1.5:3000</code>, or <code>https://notes.example.com</code>. Plain IPs default to http://, domain names to https://.
+					Enter any format: <code>10.66.66.1</code>, <code>192.168.1.5:3000</code>, or <code>https://notes.example.com</code>. Bare IPs and domain names default to https://.
 				</p>
 			{/if}
 		</div>

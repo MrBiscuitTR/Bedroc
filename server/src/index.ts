@@ -82,7 +82,7 @@ await app.register(fastifyHelmet, {
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"], // SvelteKit inlines critical CSS
       imgSrc: ["'self'", 'data:'],             // data: for inline SVG favicons
-      connectSrc: ["'self'", 'wss:'],          // wss: for WebSocket
+      connectSrc: ["'self'", 'https:', 'wss:'],          // https: for any self-hosted backend, wss: for WebSocket
       fontSrc: ["'self'"],
       objectSrc: ["'none'"],
       frameAncestors: ["'none'"],
@@ -113,10 +113,19 @@ await app.register(fastifyHelmet, {
 // All endpoints that need auth require a valid JWT — CORS only prevents
 // drive-by browser attacks, not API abuse from non-browser clients.
 const rawCorsOrigin = process.env.CORS_ORIGIN;
+// Support comma-separated list: CORS_ORIGIN=https://bedroc.cagancalidag.com,http://localhost:5173
+const corsOriginList = rawCorsOrigin
+  ? rawCorsOrigin.split(',').map((o) => o.trim()).filter(Boolean)
+  : [];
 await app.register(fastifyCors, {
-  origin: rawCorsOrigin && rawCorsOrigin !== '*'
-    ? rawCorsOrigin           // specific origin: e.g. "https://bedroc.cagancalidag.com"
-    : (_origin, cb) => cb(null, true),  // any origin (public frontend model)
+  origin: corsOriginList.length === 0 || corsOriginList.includes('*')
+    ? (_origin, cb) => cb(null, true)       // allow any origin
+    : (origin, cb) => {
+        // Always allow requests with no Origin header (server-to-server, curl, etc.)
+        if (!origin) return cb(null, true);
+        if (corsOriginList.includes(origin)) return cb(null, true);
+        cb(new Error(`Origin ${origin} not allowed by CORS`), false);
+      },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 });
@@ -178,8 +187,8 @@ app.log.info('Redis connected.');
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
-await app.register(authRoutes, { prefix: '/api/auth' });
-await app.register(noteRoutes, { prefix: '/api' });
+await app.register(authRoutes);
+await app.register(noteRoutes);
 await app.register(syncRoutes); // registers GET /ws
 
 // ---------------------------------------------------------------------------

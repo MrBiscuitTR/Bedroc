@@ -12,8 +12,9 @@
 --     Raw tokens are never persisted.
 -- =============================================================================
 
--- Enable UUID generation
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+-- pgcrypto is created by docker/postgres/init.sh (requires superuser).
+-- bedroc_app (the app user) lacks CREATE privilege so it cannot run this.
+-- gen_random_uuid() is available because the extension is already installed.
 
 -- ---------------------------------------------------------------------------
 -- Users
@@ -136,7 +137,7 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER users_updated_at    BEFORE UPDATE ON users    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-CREATE TRIGGER folders_updated_at  BEFORE UPDATE ON folders  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-CREATE TRIGGER topics_updated_at   BEFORE UPDATE ON topics   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER users_updated_at    BEFORE UPDATE ON users    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER folders_updated_at  BEFORE UPDATE ON folders  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER topics_updated_at   BEFORE UPDATE ON topics   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 -- (notes uses server_updated_at separately, managed by application code)

@@ -98,6 +98,10 @@ services:
       PORT: 3000
       NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL}
+      # Superuser URL used only for running migrations at startup.
+      # bedroc_app lacks CREATE ON SCHEMA PUBLIC in PG15+, so migrations
+      # must run as postgres to CREATE TABLE, CREATE INDEX, etc.
+      POSTGRES_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/bedroc
       REDIS_URL: ${REDIS_URL}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
@@ -117,7 +121,7 @@ services:
         condition: service_healthy
 
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -137,7 +141,7 @@ services:
     # Not exposed on host — nginx proxies to it.
 
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -169,12 +173,12 @@ services:
 
     depends_on:
       server:
-        condition: service_healthy
+        condition: service_started
       bedroc:
-        condition: service_healthy
+        condition: service_started
 
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- --server-response http://10.66.66.1/ 2>&1 | grep -q 'HTTP/' || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://127.0.0.1/ 2>&1 | grep -q 'HTTP\\|html' || wget -qO- http://127.0.0.1/ 2>&1 | grep -q '301\\|HTTP' || exit 1"]
       interval: 20s
       timeout: 5s
       retries: 3

@@ -5,7 +5,10 @@
  * All queries go through this pool; never create ad-hoc Client instances.
  *
  * Environment variables required:
- *   DATABASE_URL  postgresql://user:password@host:5432/dbname
+ *   DATABASE_URL       postgresql://bedroc_app:password@host:5432/dbname  (app queries)
+ *   POSTGRES_URL       postgresql://postgres:password@host:5432/dbname    (migrations only)
+ *                      Falls back to DATABASE_URL if not set, but migrations may fail
+ *                      if bedroc_app lacks CREATE ON SCHEMA PUBLIC.
  */
 
 import pg from 'pg';
@@ -44,21 +47,27 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 /**
  * Run all SQL migrations in order on startup.
  * Idempotent: each migration uses IF NOT EXISTS / CREATE OR REPLACE.
+ *
+ * Uses POSTGRES_URL (superuser) if available so migrations can CREATE EXTENSION,
+ * CREATE TABLE etc. without requiring elevated grants on bedroc_app.
  */
 export async function runMigrations(): Promise<void> {
+  const migrationUrl = process.env.POSTGRES_URL ?? process.env.DATABASE_URL;
+  const migrationClient = new pg.Client({ connectionString: migrationUrl });
+  await migrationClient.connect();
+
   const sqlPath = join(__dir, 'migrations', '001_init.sql');
   const sql = readFileSync(sqlPath, 'utf8');
-  const client = await pool.connect();
   try {
-    await client.query('BEGIN');
-    await client.query(sql);
-    await client.query('COMMIT');
+    await migrationClient.query('BEGIN');
+    await migrationClient.query(sql);
+    await migrationClient.query('COMMIT');
     console.log('[db] Migrations applied.');
   } catch (err) {
-    await client.query('ROLLBACK');
+    await migrationClient.query('ROLLBACK');
     throw err;
   } finally {
-    client.release();
+    await migrationClient.end();
   }
 }
 

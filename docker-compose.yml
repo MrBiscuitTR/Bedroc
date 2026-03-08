@@ -41,12 +41,15 @@ services:
       POSTGRES_DB: bedroc
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Passed to init.sh so it can extract the bedroc_app password
+      DATABASE_URL: ${DATABASE_URL}
 
     volumes:
       # Persistent data volume — survives container restarts and rebuilds
       - postgres_data:/var/lib/postgresql/data
       # First-boot init script: creates bedroc_app user with least-privilege access
-      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # Shell script reads DATABASE_URL to set the correct password automatically
+      - ./docker/postgres/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
 
     networks:
       - internal

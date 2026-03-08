@@ -4,13 +4,14 @@
  * Stores all user data locally so the app works fully offline.
  * The server is a sync target, not the primary store.
  *
- * Database: "bedroc" (version 1)
+ * Database: "bedroc" (version 2)
  * Object stores:
  *   notes      — NoteLocal records (decrypted title/body stored in plain text)
  *   topics     — TopicLocal records
  *   folders    — FolderLocal records
  *   syncQueue  — pending writes to be flushed to server (encrypted)
  *   keyMaterial — encrypted DEK + derivation params (one record per account)
+ *   conflicts  — ConflictRecord: both versions of a note when a sync conflict is detected
  *
  * Design decisions:
  *   - notes are stored DECRYPTED in IndexedDB (client-local only).
@@ -22,6 +23,10 @@
  *     the server plus the dekSalt needed to re-derive the master key from password.
  *     This allows the app to restore the DEK from password on next open without
  *     fetching from the server while offline.
+ *   - conflicts stores both the local and server versions of a note. The local
+ *     version is preserved until the user resolves the conflict. Resolution can
+ *     be: keep local, keep server, or write a custom merge. Resolved conflicts
+ *     are removed from this store.
  */
 
 // ---------------------------------------------------------------------------
@@ -82,13 +87,34 @@ export interface KeyMaterialRecord {
   dekSaltHex: string;     // hex 32-byte salt for PBKDF2
 }
 
+/**
+ * A conflict record created when syncFromServer() finds that the server has
+ * a newer version of a note that was also edited locally (unsynced).
+ *
+ * Both versions are stored so the user can resolve without data loss.
+ */
+export interface ConflictRecord {
+  noteId: string;           // the note's ID (also the keyPath)
+  userId: string;
+  // Local version (what the user wrote offline)
+  localTitle: string;
+  localBody: string;
+  localUpdatedAt: number;   // clientUpdatedAt from the local NoteLocal
+  // Server version (what was on the server)
+  serverTitle: string;
+  serverBody: string;
+  serverUpdatedAt: number;  // serverUpdatedAt from the incoming ServerNote
+  serverVersion: number;
+  detectedAt: number;       // when the conflict was detected
+}
+
 // ---------------------------------------------------------------------------
 // DB singleton
 // ---------------------------------------------------------------------------
 
 let db: IDBDatabase | null = null;
 const DB_NAME = 'bedroc';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 /** Open (or return cached) IndexedDB instance. */
 export function openDb(): Promise<IDBDatabase> {
@@ -99,30 +125,40 @@ export function openDb(): Promise<IDBDatabase> {
 
     req.onupgradeneeded = (event) => {
       const d = (event.target as IDBOpenDBRequest).result;
+      const oldVersion = event.oldVersion;
 
-      // notes
-      const notes = d.createObjectStore('notes', { keyPath: 'id' });
-      notes.createIndex('by_user', 'userId');
-      notes.createIndex('by_user_topic', ['userId', 'topicId']);
-      notes.createIndex('by_user_order', ['userId', 'customOrder']);
-      notes.createIndex('by_updated', ['userId', 'clientUpdatedAt']);
-      notes.createIndex('unsynced', ['userId', 'synced']);
+      if (oldVersion < 1) {
+        // notes
+        const notes = d.createObjectStore('notes', { keyPath: 'id' });
+        notes.createIndex('by_user', 'userId');
+        notes.createIndex('by_user_topic', ['userId', 'topicId']);
+        notes.createIndex('by_user_order', ['userId', 'customOrder']);
+        notes.createIndex('by_updated', ['userId', 'clientUpdatedAt']);
+        notes.createIndex('unsynced', ['userId', 'synced']);
 
-      // topics
-      const topics = d.createObjectStore('topics', { keyPath: 'id' });
-      topics.createIndex('by_user', 'userId');
+        // topics
+        const topics = d.createObjectStore('topics', { keyPath: 'id' });
+        topics.createIndex('by_user', 'userId');
 
-      // folders
-      const folders = d.createObjectStore('folders', { keyPath: 'id' });
-      folders.createIndex('by_user', 'userId');
+        // folders
+        const folders = d.createObjectStore('folders', { keyPath: 'id' });
+        folders.createIndex('by_user', 'userId');
 
-      // syncQueue
-      const queue = d.createObjectStore('syncQueue', { keyPath: 'id' });
-      queue.createIndex('by_type', 'type');
-      queue.createIndex('by_created', 'createdAt');
+        // syncQueue
+        const queue = d.createObjectStore('syncQueue', { keyPath: 'id' });
+        queue.createIndex('by_type', 'type');
+        queue.createIndex('by_created', 'createdAt');
 
-      // keyMaterial
-      d.createObjectStore('keyMaterial', { keyPath: 'id' });
+        // keyMaterial
+        d.createObjectStore('keyMaterial', { keyPath: 'id' });
+      }
+
+      if (oldVersion < 2) {
+        // conflicts — stores both versions of a note when a sync conflict is detected
+        const conflicts = d.createObjectStore('conflicts', { keyPath: 'noteId' });
+        conflicts.createIndex('by_user', 'userId');
+        conflicts.createIndex('by_detected', 'detectedAt');
+      }
     };
 
     req.onsuccess = (event) => {
@@ -288,13 +324,38 @@ export async function clearKeyMaterial(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Conflicts
+// ---------------------------------------------------------------------------
+
+export async function saveConflict(record: ConflictRecord): Promise<void> {
+  const store = await getStore('conflicts', 'readwrite');
+  await idbRequest(store.put(record));
+}
+
+export async function getConflict(noteId: string): Promise<ConflictRecord | undefined> {
+  const store = await getStore('conflicts', 'readonly');
+  return idbRequest(store.get(noteId));
+}
+
+export async function getConflictsByUser(userId: string): Promise<ConflictRecord[]> {
+  const store = await getStore('conflicts', 'readonly');
+  const idx = store.index('by_user');
+  return idbRequest<ConflictRecord[]>(idx.getAll(userId));
+}
+
+export async function deleteConflict(noteId: string): Promise<void> {
+  const store = await getStore('conflicts', 'readwrite');
+  await idbRequest(store.delete(noteId));
+}
+
+// ---------------------------------------------------------------------------
 // Full wipe (logout / account delete)
 // ---------------------------------------------------------------------------
 
 /** Clear all data for a user from every object store. */
 export async function wipeLocalData(userId: string): Promise<void> {
   const d = await openDb();
-  const tx = d.transaction(['notes', 'topics', 'folders', 'syncQueue', 'keyMaterial'], 'readwrite');
+  const tx = d.transaction(['notes', 'topics', 'folders', 'syncQueue', 'keyMaterial', 'conflicts'], 'readwrite');
 
   // Delete notes
   const noteIdx = tx.objectStore('notes').index('by_user');
@@ -332,9 +393,10 @@ export async function wipeLocalData(userId: string): Promise<void> {
     req.onerror = () => reject(req.error);
   });
 
-  // Clear entire sync queue and key material
+  // Clear entire sync queue, key material, and conflicts
   tx.objectStore('syncQueue').clear();
   tx.objectStore('keyMaterial').clear();
+  tx.objectStore('conflicts').clear();
 
   await new Promise<void>((resolve, reject) => {
     tx.oncomplete = () => resolve();

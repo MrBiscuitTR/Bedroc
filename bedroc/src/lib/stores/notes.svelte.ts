@@ -28,6 +28,7 @@ import { auth, apiFetch } from './auth.svelte.js';
 import { encryptNote, decryptNote } from '$lib/crypto/encrypt.js';
 import {
   saveNote as idbSaveNote,
+  getNoteById as idbGetNoteById,
   getNotesByUser,
   getNotesByTopic as idbGetNotesByTopic,
   markNoteDeleted as idbMarkDeleted,
@@ -41,10 +42,14 @@ import {
   dequeueSyncItem,
   getAllSyncQueue,
   incrementRetry,
+  saveConflict,
+  deleteConflict,
+  getConflictsByUser,
   type NoteLocal,
   type TopicLocal,
   type FolderLocal,
   type SyncQueueItem,
+  type ConflictRecord,
 } from '$lib/db/indexeddb.js';
 
 // ---------------------------------------------------------------------------
@@ -89,6 +94,14 @@ export const foldersMap = new SvelteMap<string, Folder>();
 
 let _syncing = $state(false);
 export const syncState = { get syncing() { return _syncing; } };
+
+// ---------------------------------------------------------------------------
+// Conflicts reactive map
+// ---------------------------------------------------------------------------
+
+export const conflictsMap = new SvelteMap<string, ConflictRecord>();
+
+export { type ConflictRecord };
 
 // ---------------------------------------------------------------------------
 // Sort mode (localStorage — user pref, not encrypted)
@@ -139,15 +152,17 @@ export async function loadFromDb(): Promise<void> {
   const userId = auth.userId;
   if (!userId) return;
 
-  const [notes, topics, folders] = await Promise.all([
+  const [notes, topics, folders, conflicts] = await Promise.all([
     getNotesByUser(userId),
     getTopicsByUser(userId),
     getFoldersByUser(userId),
+    getConflictsByUser(userId),
   ]);
 
   notesMap.clear();
   topicsMap.clear();
   foldersMap.clear();
+  conflictsMap.clear();
 
   for (const n of notes) {
     notesMap.set(n.id, localToNote(n));
@@ -158,6 +173,9 @@ export async function loadFromDb(): Promise<void> {
   for (const f of folders) {
     foldersMap.set(f.id, localToFolder(f));
   }
+  for (const c of conflicts) {
+    conflictsMap.set(c.noteId, c);
+  }
 }
 
 /** Clear reactive maps on logout. */
@@ -165,6 +183,7 @@ export function clearStore(): void {
   notesMap.clear();
   topicsMap.clear();
   foldersMap.clear();
+  conflictsMap.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +205,17 @@ function setLastSync(iso: string): void {
 /**
  * Pull changes from the server since last sync, decrypt and merge locally.
  * Safe to call at any time; skips if no DEK is available.
+ *
+ * Conflict detection:
+ *   A conflict occurs when ALL of:
+ *     1. The server has a version newer than what the local copy last saw
+ *     2. The local copy has unsynced edits (synced: false)
+ *     3. The local copy was edited after its last known server update
+ *
+ *   When detected: both versions are saved to the `conflicts` store.
+ *   The local (unsynced) note is NEVER overwritten — user must resolve.
+ *
+ *   Fast-forward (no conflict): server version is accepted and local is updated.
  */
 export async function syncFromServer(): Promise<void> {
   const dek = auth.dek;
@@ -203,8 +233,58 @@ export async function syncFromServer(): Promise<void> {
       syncedAt: string;
     };
 
-    // Decrypt and merge each note
     for (const sn of data.notes) {
+      const serverUpdatedAt = new Date(sn.server_updated_at).getTime();
+
+      // Handle server-side deletes — always accept
+      if (sn.is_deleted) {
+        await idbMarkDeleted(sn.id);
+        notesMap.delete(sn.id);
+        if (conflictsMap.has(sn.id)) {
+          conflictsMap.delete(sn.id);
+          await deleteConflict(sn.id);
+        }
+        continue;
+      }
+
+      // Load local record to check for conflicts
+      const existing = await idbGetNoteById(sn.id);
+
+      const hasLocalUnsyncedEdits =
+        existing &&
+        !existing.synced &&
+        existing.clientUpdatedAt > (existing.serverUpdatedAt || 0);
+
+      const serverIsNewer =
+        !existing ||
+        serverUpdatedAt > (existing.serverUpdatedAt || 0);
+
+      if (hasLocalUnsyncedEdits && serverIsNewer) {
+        // --- CONFLICT ---
+        const { title: serverTitle, body: serverBody } = await decryptNote(
+          sn.encrypted_title, sn.encrypted_body, dek
+        );
+
+        const conflict: ConflictRecord = {
+          noteId: sn.id,
+          userId,
+          localTitle: existing.title,
+          localBody: existing.body,
+          localUpdatedAt: existing.clientUpdatedAt,
+          serverTitle,
+          serverBody,
+          serverUpdatedAt,
+          serverVersion: sn.version,
+          detectedAt: Date.now(),
+        };
+
+        await saveConflict(conflict);
+        conflictsMap.set(sn.id, conflict);
+        // Do NOT overwrite the local note — user must resolve the conflict
+        continue;
+      }
+
+      // --- Fast-forward (no conflict) ---
       const { title, body } = await decryptNote(sn.encrypted_title, sn.encrypted_body, dek);
 
       const local: NoteLocal = {
@@ -215,18 +295,19 @@ export async function syncFromServer(): Promise<void> {
         body,
         customOrder: sn.custom_order,
         clientUpdatedAt: new Date(sn.client_updated_at).getTime(),
-        serverUpdatedAt: new Date(sn.server_updated_at).getTime(),
-        isDeleted: sn.is_deleted,
+        serverUpdatedAt,
+        isDeleted: false,
         version: sn.version,
         synced: true,
       };
 
       await idbSaveNote(local);
+      notesMap.set(sn.id, localToNote(local));
 
-      if (sn.is_deleted) {
-        notesMap.delete(sn.id);
-      } else {
-        notesMap.set(sn.id, localToNote(local));
+      // Clear any stale conflict for this note
+      if (conflictsMap.has(sn.id)) {
+        conflictsMap.delete(sn.id);
+        await deleteConflict(sn.id);
       }
     }
 
@@ -241,6 +322,66 @@ export async function syncFromServer(): Promise<void> {
   } finally {
     _syncing = false;
   }
+}
+
+/**
+ * Resolve a conflict by choosing which version to keep, or providing a merge.
+ *
+ * @param noteId     - the conflicted note's ID
+ * @param resolution - 'local' | 'server' | { title, body } for a custom merge
+ */
+export async function resolveConflict(
+  noteId: string,
+  resolution: 'local' | 'server' | { title: string; body: string }
+): Promise<void> {
+  const conflict = conflictsMap.get(noteId);
+  if (!conflict) return;
+
+  const dek = auth.dek!;
+  const userId = auth.userId!;
+
+  let title: string;
+  let body: string;
+
+  if (resolution === 'local') {
+    title = conflict.localTitle;
+    body = conflict.localBody;
+  } else if (resolution === 'server') {
+    title = conflict.serverTitle;
+    body = conflict.serverBody;
+  } else {
+    title = resolution.title;
+    body = resolution.body;
+  }
+
+  const now = Date.now();
+  const existing = await idbGetNoteById(noteId);
+
+  const local: NoteLocal = {
+    id: noteId,
+    userId,
+    topicId: existing?.topicId ?? null,
+    title,
+    body,
+    customOrder: existing?.customOrder ?? 0,
+    clientUpdatedAt: now,
+    serverUpdatedAt: conflict.serverUpdatedAt,
+    isDeleted: false,
+    version: conflict.serverVersion,
+    synced: false,
+  };
+
+  await idbSaveNote(local);
+  notesMap.set(noteId, localToNote(local));
+
+  // Remove the conflict record
+  conflictsMap.delete(noteId);
+  await deleteConflict(noteId);
+
+  // Push the resolved version to the server
+  const { encryptedTitle, encryptedBody } = await encryptNote(title, body, dek);
+  await queueNoteUpsert(noteId, userId, local.topicId, encryptedTitle, encryptedBody, local.customOrder, now);
+  await tryServerUpsertNote(noteId, userId, local.topicId, encryptedTitle, encryptedBody, local.customOrder, now);
 }
 
 async function syncTopicsFromServer(): Promise<void> {
@@ -307,11 +448,8 @@ export async function flushSyncQueue(): Promise<void> {
           if (res.ok) {
             await dequeueSyncItem(item.id);
             // Mark as synced in IndexedDB
-            const existing = notesMap.get(item.id);
-            if (existing) {
-              const n = await import('$lib/db/indexeddb.js').then(m => m.getNoteById(item.id));
-              if (n) await idbSaveNote({ ...n, synced: true });
-            }
+            const n = await idbGetNoteById(item.id);
+            if (n) await idbSaveNote({ ...n, synced: true });
           } else {
             await incrementRetry(item.id);
           }

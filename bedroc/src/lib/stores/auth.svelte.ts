@@ -558,3 +558,93 @@ export async function unlockWithPassword(password: string): Promise<void> {
     _loading = false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Change password
+// ---------------------------------------------------------------------------
+
+/**
+ * Change the user's password.
+ *
+ * 1. Verify the current password by unwrapping the DEK with it.
+ * 2. Generate a new dekSalt and re-derive a new Master Key from the new password.
+ * 3. Re-wrap the same DEK with the new Master Key → new encryptedDek.
+ * 4. Re-compute the SRP salt + verifier from the new password.
+ * 5. POST new material to /api/auth/change-password.
+ * 6. Update IndexedDB key material for offline use.
+ *
+ * The DEK itself does not change — all notes stay encrypted and accessible.
+ *
+ * @throws if the current password is wrong or the server request fails.
+ */
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  _loading = true;
+  _error = null;
+
+  try {
+    // Step 1: Verify current password by unwrapping DEK
+    const km = await loadKeyMaterial();
+    if (!km) throw new Error('No local key material. Please log in again.');
+
+    const oldSaltBytes = fromHex(km.dekSaltHex);
+    const oldMasterKey = await deriveMasterKey(currentPassword, oldSaltBytes);
+    // This throws if the password is wrong
+    const dekRaw = await (async () => {
+      const { fromBase64 } = await import('$lib/crypto/keys.js');
+      const { iv, ct } = JSON.parse(km.encryptedDek) as { iv: string; ct: string };
+      const raw = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: fromBase64(iv) },
+        oldMasterKey,
+        fromBase64(ct)
+      );
+      return new Uint8Array(raw);
+    })();
+
+    if (!_username) throw new Error('Not logged in.');
+
+    // Step 2: New salt + new master key
+    const newDekSaltBytes = randomBytes(32);
+    const newDekSaltHex = toHex(newDekSaltBytes);
+    const newMasterKey = await deriveMasterKey(newPassword, newDekSaltBytes);
+
+    // Step 3: Re-wrap the same DEK bytes with new master key
+    const newEncryptedDek = await wrapDek(dekRaw, newMasterKey);
+
+    // Step 4: New SRP verifier for new password
+    const { salt: newSrpSalt, verifier: newSrpVerifier } = await srpRegister(_username, newPassword);
+
+    // Step 5: Send to server
+    const res = await apiFetch('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({
+        srpSalt:      newSrpSalt,
+        srpVerifier:  newSrpVerifier,
+        encryptedDek: newEncryptedDek,
+        dekSalt:      newDekSaltHex,
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(body.error ?? 'Failed to change password. Please try again.');
+    }
+
+    // Step 6: Update in-memory DEK + IndexedDB
+    const { unwrapDek: unwrap } = await import('$lib/crypto/keys.js');
+    _dek = await unwrap(newEncryptedDek, newMasterKey);
+
+    await saveKeyMaterial({
+      id: 'current',
+      username: _username,
+      serverUrl: _serverUrl,
+      encryptedDek: newEncryptedDek,
+      dekSaltHex: newDekSaltHex,
+    });
+
+  } catch (err) {
+    _error = (err as Error).message;
+    throw err;
+  } finally {
+    _loading = false;
+  }
+}

@@ -4,6 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { auth, restoreSession } from '$lib/stores/auth.svelte.js';
+	import { connect as wsConnect, disconnect as wsDisconnect } from '$lib/sync/websocket.js';
 
 	let { children } = $props();
 
@@ -16,15 +17,41 @@
 	// mobile header on that route to avoid doubling up.
 	let isNoteRoute = $derived(path.startsWith('/note'));
 
-	// ── Auth guard ────────────────────────────────────────────────
+	// ── Service worker registration ───────────────────────────────
+	// Runs once on mount. Safe on all platforms (iOS 11.3+, Android, desktop).
+	onMount(() => {
+		if ('serviceWorker' in navigator) {
+			navigator.serviceWorker.register('/sw.js').catch(() => {
+				// Registration failure is non-fatal — app still works without SW
+			});
+		}
+	});
+
+	// ── Auth guard + WebSocket ─────────────────────────────────────
 	// On mount, try to restore session from httpOnly refresh cookie.
 	// If that fails (or DEK is missing), redirect to /login.
-	// isAuthRoute pages (login/register) skip the guard.
+	// On success, open the WebSocket connection for real-time sync.
 	onMount(async () => {
 		if (isAuthRoute) return;
 		await restoreSession();
 		if (!auth.isLoggedIn) {
 			goto('/login');
+		} else {
+			wsConnect();
+		}
+
+		// Disconnect WebSocket on page unload (tab close, navigate away)
+		return () => {
+			wsDisconnect();
+		};
+	});
+
+	// Reconnect when auth state changes (e.g. token refreshed, login from another tab)
+	$effect(() => {
+		if (auth.isLoggedIn && !isAuthRoute) {
+			wsConnect();
+		} else {
+			wsDisconnect();
 		}
 	});
 

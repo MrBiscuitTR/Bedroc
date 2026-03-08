@@ -34,8 +34,8 @@ RUN rm /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/build /usr/share/nginx/html
 
 # Simple nginx config: serve static files, SPA fallback to index.html
-# The real reverse-proxy config lives in docker/nginx/nginx.conf
-COPY docker/nginx-static.conf /etc/nginx/conf.d/app.conf
+# nginx-static.conf lives in bedroc/ (same build context as this Dockerfile)
+COPY nginx-static.conf /etc/nginx/conf.d/app.conf
 
 EXPOSE 8080
 

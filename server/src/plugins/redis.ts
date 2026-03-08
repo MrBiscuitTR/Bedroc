@@ -21,7 +21,7 @@ export async function getRedis(): Promise<RedisClientType> {
     socket: {
       reconnectStrategy: (retries) => Math.min(retries * 100, 3000),
     },
-  }) as RedisClientType;
+  }); //as RedisClientType;
 
   client.on('error', (err: Error) => console.error('[redis] Error:', err.message));
   client.on('connect', () => console.log('[redis] Connected.'));

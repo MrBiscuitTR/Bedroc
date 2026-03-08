@@ -20,10 +20,12 @@ WORKDIR /app
 
 # Copy dependency manifests first for better layer caching.
 # Rebuilds node_modules only when package.json changes.
-COPY package.json package-lock.json ./
+# package-lock.json is optional — copy it if present, fall back to npm install.
+COPY package.json ./
+COPY package-lock.jso[n] ./
 
 # Install ALL deps (including devDeps like typescript, tsx) for the build
-RUN npm ci
+RUN npm install --prefer-offline 2>/dev/null || npm install
 
 # Copy source
 COPY tsconfig.json ./
@@ -38,8 +40,9 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 
 # Only production deps in the final image
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+COPY package.json ./
+COPY package-lock.jso[n] ./
+RUN npm install --omit=dev --prefer-offline 2>/dev/null || npm install --omit=dev
 
 # Copy compiled output from builder stage
 COPY --from=builder /app/dist ./dist

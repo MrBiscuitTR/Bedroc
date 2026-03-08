@@ -243,8 +243,8 @@ const LoginInitSchema  = z.object({ username: z.string().min(1) });
 
 const LoginVerifySchema = z.object({
   username:   z.string().min(1),
-  clientA:    z.string().min(1),   // A hex
-  clientM1:   z.string().min(1),   // M1 hex
+  A:          z.string().min(1),   // client ephemeral public key hex
+  M1:         z.string().min(1),   // client proof hex
 });
 
 // ---------------------------------------------------------------------------
@@ -265,7 +265,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     const existing = await getUserByUsername(username);
     if (existing) return reply.code(409).send({ error: 'Username already taken' });
 
-    await createUser({
+    const user = await createUser({
       username,
       srpSalt:     Buffer.from(srpSalt, 'hex'),
       srpVerifier: Buffer.from(srpVerifier, 'hex'),
@@ -273,7 +273,32 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
       dekSalt:     Buffer.from(dekSalt, 'hex'),
     });
 
-    return reply.code(201).send({ ok: true });
+    // Auto-login: issue tokens so the client is immediately authenticated
+    const { accessToken, refreshToken, accessExpiresAt } = issueTokens(fastify, user.id);
+    const deviceInfo = ((req.headers['user-agent'] as string) ?? '').slice(0, 200);
+    await createSession({
+      userId:     user.id,
+      tokenHash:  hashToken(accessToken),
+      deviceInfo: deviceInfo || null,
+      expiresAt:  accessExpiresAt,
+    });
+
+    reply.setCookie('bedroc_refresh', refreshToken, {
+      httpOnly: true,
+      secure:   process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      path:     '/api/auth/refresh',
+      maxAge:   7 * 24 * 3600,
+    });
+
+    return reply.code(201).send({
+      accessToken,
+      expiresAt: accessExpiresAt.toISOString(),
+      userId:    user.id,
+      username:  user.username,
+      encryptedDek,
+      dekSalt,
+    });
   });
 
   // ── Login step 1: client sends username → server returns salt + B ────────
@@ -288,7 +313,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     if (!user) {
       const fakeSalt = randomBytes(32).toString('hex');
       const fakeB    = randomBytes(384).toString('hex');
-      return reply.code(200).send({ srpSalt: fakeSalt, serverB: fakeB });
+      return reply.code(200).send({ salt: fakeSalt, B: fakeB });
     }
 
     const { b, B } = serverEphemeral(user.srp_verifier);
@@ -303,8 +328,8 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     );
 
     return reply.code(200).send({
-      srpSalt:  user.srp_salt.toString('hex'),
-      serverB:  serverBHex,
+      salt: user.srp_salt.toString('hex'),
+      B:    serverBHex,
     });
   });
 
@@ -313,7 +338,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
   fastify.post('/api/auth/login/verify', async (req: FastifyRequest, reply: FastifyReply) => {
     const parse = LoginVerifySchema.safeParse(req.body);
     if (!parse.success) return reply.code(400).send({ error: 'Invalid request' });
-    const { username, clientA, clientM1 } = parse.data;
+    const { username, A: clientA, M1: clientM1 } = parse.data;
 
     // Retrieve ephemeral from Redis
     const challengeKey = `srp:${sha256Hex(username)}`;
@@ -371,9 +396,11 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     return reply.code(200).send({
       accessToken,
       expiresAt:    accessExpiresAt.toISOString(),
+      userId:       user.id,
+      username:     user.username,
       encryptedDek: user.encrypted_dek,
       dekSalt:      user.dek_salt.toString('hex'),
-      serverM2:     M2.toString('hex'),
+      M2:           M2.toString('hex'),
     });
   });
 

@@ -173,9 +173,9 @@ services:
 
     depends_on:
       server:
-        condition: service_healthy
+        condition: service_started
       bedroc:
-        condition: service_healthy
+        condition: service_started
 
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://127.0.0.1/ 2>&1 | grep -q 'HTTP\\|html' || wget -qO- http://127.0.0.1/ 2>&1 | grep -q '301\\|HTTP' || exit 1"]

@@ -327,12 +327,14 @@ docker compose logs postgres
 
 ### If using WireGuard
 
+> **Important:** `10.66.66.1` is your WireGuard VPN IP — it is only reachable from devices connected to WireGuard. You **must** connect to WireGuard first on every device before the app can reach your server.
+
 1. Connect your device to the WireGuard VPN
-2. Open the Bedroc app (visit `https://bedroc.cagancalidag.com` or your own frontend URL)
+2. Open the Bedroc app (visit `https://bedroc.cagancalidag.com` — you don't need to host the frontend yourself)
 3. On the login/register page, tap/click **"Server: api.bedroc.app ▾"** to expand the server field
-4. Enter `https://10.66.66.1` as your server URL
-5. Your browser will warn about the self-signed certificate — this is expected. Click "Advanced" → "Proceed" (Chrome/Edge) or "Accept the Risk and Continue" (Firefox) or "Visit Website" (Safari)
-6. Register an account and start using Bedroc
+4. Enter `10.66.66.1` as your server URL (the app automatically adds `https://`)
+5. **Accept the self-signed certificate:** open `https://10.66.66.1` in a new tab, click "Advanced" → "Proceed" (Chrome/Edge) or "Accept the Risk and Continue" (Firefox) or "Visit Website" (Safari), then close that tab and return to the app
+6. The server status dot should turn green (Online). Register an account and start using Bedroc
 
 ### If using a public domain
 
@@ -354,11 +356,12 @@ On the login/register page, tap the **"Server: ..."** line to expand it. Type yo
 
 | What you type | What Bedroc uses |
 |---|---|
-| `10.66.66.1` | `http://10.66.66.1` |
-| `10.66.66.1:3000` | `http://10.66.66.1:3000` |
+| `10.66.66.1` | `https://10.66.66.1` |
+| `10.66.66.1:3000` | `https://10.66.66.1:3000` |
 | `api.yourdomain.com` | `https://api.yourdomain.com` |
 | `https://api.yourdomain.com` | `https://api.yourdomain.com` |
-| `100.64.1.5` (Tailscale IP) | `http://100.64.1.5` |
+| `http://10.66.66.1` | `http://10.66.66.1` (kept as-is) |
+| `100.64.1.5` (Tailscale IP) | `https://100.64.1.5` |
 
 The app saves your server URL so you only need to enter it once. Multiple saved servers are remembered.
 
@@ -457,12 +460,19 @@ Add this line to back up every day at 3am:
 
 ## Troubleshooting
 
-### "Cannot reach server" in the app
+### "Cannot reach server" / "Unreachable" in the app
+
+**If you're using a WireGuard backend (10.66.66.1):**
+
+- `10.66.66.1` is a VPN-private IP. It is **only reachable from devices connected to WireGuard**. If you open the public Bedroc frontend (`https://bedroc.cagancalidag.com`) on a device that is NOT connected to WireGuard, the app correctly reports "Unreachable" — the browser cannot route to that IP. Connect to WireGuard first.
+- If you ARE connected to WireGuard and still see "Unreachable": you may need to accept the self-signed certificate first. Open `https://10.66.66.1` directly in a new tab, click through the certificate warning, then retry.
+
+**General checklist:**
 
 1. Check that the server field shows the correct URL (tap it on the login page)
 2. Make sure you're connected to WireGuard (if using VPN setup)
-3. Check that all Docker containers are running: `docker compose ps`
-4. Test the health endpoint from your server: `curl http://localhost:3000/health`
+3. Check that all Docker containers are running: `docker compose ps` — all should show `healthy`
+4. Test the health endpoint from the server itself: `curl -k https://10.66.66.1/health` (or `curl http://localhost:3000/health` inside the server container)
 5. Check the server logs: `docker compose logs server`
 
 ### "Certificate error" / browser warning

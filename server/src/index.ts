@@ -187,8 +187,8 @@ app.log.info('Redis connected.');
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
-await app.register(authRoutes, { prefix: '/api/auth' });
-await app.register(noteRoutes, { prefix: '/api' });
+await app.register(authRoutes);
+await app.register(noteRoutes);
 await app.register(syncRoutes); // registers GET /ws
 
 // ---------------------------------------------------------------------------

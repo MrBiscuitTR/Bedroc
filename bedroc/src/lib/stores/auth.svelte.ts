@@ -330,24 +330,27 @@ export async function register(username: string, password: string): Promise<void
       body: JSON.stringify({
         username,
         srpSalt,
-        verifier,
+        srpVerifier: verifier,
         encryptedDek,
         dekSalt: dekSaltHex,
       }),
     });
 
     if (!res.ok) {
-      const body = await res.json().catch(() => ({})) as { message?: string };
+      const body = await res.json().catch(() => ({})) as { error?: string; message?: string };
       if (res.status === 409) throw new Error('Username already taken. Choose a different one.');
-      if (res.status === 400) throw new Error(body.message ?? 'Invalid registration details.');
+      if (res.status === 400) throw new Error(body.error ?? body.message ?? 'Invalid registration details.');
       if (res.status >= 500) throw new Error('Server error. Please try again later.');
-      throw new Error(body.message ?? 'Registration failed.');
+      throw new Error(body.error ?? body.message ?? 'Registration failed.');
     }
 
     const data = await res.json() as {
       accessToken: string;
+      expiresAt: string;
       userId: string;
       username: string;
+      encryptedDek: string;
+      dekSalt: string;
     };
 
     // Store DEK and access token in memory

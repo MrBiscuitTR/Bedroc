@@ -330,11 +330,10 @@ docker compose logs postgres
 > **Important:** `10.66.66.1` is your WireGuard VPN IP — it is only reachable from devices connected to WireGuard. You **must** connect to WireGuard first on every device before the app can reach your server.
 
 1. Connect your device to the WireGuard VPN
-2. Open the Bedroc app (visit `https://bedroc.cagancalidag.com` — you don't need to host the frontend yourself)
-3. On the login/register page, tap/click **"Server: api.bedroc.app ▾"** to expand the server field
-4. Enter `10.66.66.1` as your server URL (the app automatically adds `https://`)
-5. **Accept the self-signed certificate:** open `https://10.66.66.1` in a new tab, click "Advanced" → "Proceed" (Chrome/Edge) or "Accept the Risk and Continue" (Firefox) or "Visit Website" (Safari), then close that tab and return to the app
-6. The server status dot should turn green (Online). Register an account and start using Bedroc
+2. Navigate directly to `https://10.66.66.1` in your browser. Accept the certificate warning ("Advanced → Proceed", "Accept the Risk and Continue", or "Visit Website" depending on browser). This takes you to the Bedroc login page served by your own server.
+3. Register an account and start using Bedroc.
+
+> **Why use `https://10.66.66.1` directly?** When your backend has a self-signed certificate, browsers block `fetch()` requests to it from any other origin (including `bedroc.cagancalidag.com`) — this is a hard browser security rule with no workaround. Using the app from `https://10.66.66.1` means all requests are same-origin, so there are no cross-origin restrictions. Once the cert is accepted, bookmark it and install as a PWA from that URL for the best experience.
 
 ### If using a public domain
 

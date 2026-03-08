@@ -32,6 +32,7 @@ import {
   createUser, getUserByUsername, getUserById,
   createSession, revokeSession, revokeAllSessions,
   getSessionsForUser, revokeSessionById, updateUserCredentials,
+  pruneExpiredSessions,
 } from '../db/queries/users.js';
 import { hashToken, verifyAuth } from '../middleware/auth.js';
 import { getRedis } from '../plugins/redis.js';
@@ -208,7 +209,7 @@ function issueTokens(
   );
   const refreshToken = fastify.jwt.sign(
     { sub: userId, type: 'refresh' },
-    { key: process.env.JWT_REFRESH_SECRET ?? 'changeme-refresh',
+    { key: process.env.JWT_REFRESH_SECRET!,
       expiresIn: refreshTtl }
   );
 
@@ -413,7 +414,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     let payload: { sub: string; type?: string };
     try {
       payload = fastify.jwt.verify(refreshToken, {
-        key: process.env.JWT_REFRESH_SECRET ?? 'changeme-refresh',
+        key: process.env.JWT_REFRESH_SECRET!,
       }) as { sub: string; type?: string };
     } catch {
       return reply.code(401).send({ error: 'Invalid refresh token' });
@@ -432,6 +433,10 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
       deviceInfo: null,
       expiresAt:  accessExpiresAt,
     });
+
+    // Prune expired/revoked sessions for this user on each refresh (lazy GC).
+    // Keeps the sessions table from growing unboundedly.
+    await pruneExpiredSessions(user.id);
 
     reply.setCookie('bedroc_refresh', newRefresh, {
       httpOnly: true,

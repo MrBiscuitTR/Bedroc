@@ -221,7 +221,7 @@
 						{#if serverStatus.value === 'offline'}
 							<span class="status-help">— Check the URL and make sure the server is running</span>
 							{#if isSelfSignedCandidate(auth.serverUrl)}
-								<span class="status-help">Self-signed cert? <a href={auth.serverUrl} target="_blank" rel="noopener">Open {auth.serverUrl}</a> in a new tab, accept the certificate warning, then retry.</span>
+								<span class="status-help">Self-signed cert? <a href="{auth.serverUrl}/health" target="_blank" rel="noopener">Open {auth.serverUrl}/health</a> in a new tab, accept the certificate warning, then come back and check again.</span>
 							{/if}
 						{/if}
 					</div>

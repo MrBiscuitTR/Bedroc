@@ -6,11 +6,25 @@ This guide walks you through running your own Bedroc server so only you (and peo
 
 ---
 
+## How Bedroc works
+
+Bedroc has two parts:
+
+- **Frontend** — the app itself. Available publicly at `https://bedroc.cagancalidag.com`. You don't need to host this — it works from any browser or as a PWA (add to home screen).
+- **Backend** — the server that stores your encrypted notes. This is what you self-host.
+
+When you log in or register, there is a **Server** field that lets you point the app at your own backend. The default is the public hosted server. Change it to your own URL to use your self-hosted instance.
+
+This means you can use the public frontend URL and just change the server — no need to host the frontend at all.
+
+---
+
 ## What you need
 
-- A computer or VPS (Virtual Private Server) to act as the server
-  - Any Linux VPS from DigitalOcean, Hetzner, Linode, Vultr, etc. works — the cheapest tier (~$5/month) is plenty
-  - You can also self-host on a home server or a spare machine
+- A machine to run the server on:
+  - A Linux VPS from DigitalOcean, Hetzner, Linode, Vultr, etc. (~$5/month, cheapest tier is plenty)
+  - A home server, Raspberry Pi, or spare computer
+  - A Windows or macOS machine (for testing; a VPS is better for 24/7 availability)
 - **Docker** and **Docker Compose** installed on that machine
 - Basic comfort opening a terminal
 
@@ -37,7 +51,7 @@ Pick your platform below:
 ### macOS
 
 1. Go to [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop) and download **Docker Desktop for Mac**
-   - Choose "Apple Chip" if you have an M1/M2/M3 Mac, or "Intel Chip" otherwise
+   - Choose "Apple Chip" if you have an M1/M2/M3/M4 Mac, or "Intel Chip" otherwise
 2. Open the downloaded `.dmg`, drag Docker to Applications, then launch it
 3. Wait for the whale icon in the menu bar to stop animating
 4. Open **Terminal** and run:
@@ -83,6 +97,22 @@ docker --version
 docker compose version
 ```
 
+### Linux (Fedora / RHEL / CentOS)
+
+```bash
+sudo dnf -y install dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
+sudo dnf install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+```
+
+Log out and back in, then verify:
+```bash
+docker --version
+docker compose version
+```
+
 ---
 
 ## Part 2 — Set up WireGuard (recommended for private access)
@@ -91,20 +121,47 @@ Bedroc's default setup uses [WireGuard](https://www.wireguard.com/) — a modern
 
 If you just want to test locally or on a LAN, you can skip this and come back to it later. Jump to Part 3 — but note that without WireGuard or a domain with HTTPS, the setup will use plain HTTP.
 
-### Install WireGuard on your server (Linux)
+### Option A — Use the wg-easy web UI (easiest)
+
+[wg-easy](https://github.com/wg-easy/wg-easy) is a Docker container that gives you a web dashboard for managing WireGuard peers. It's the easiest way to get WireGuard running.
+
+```bash
+docker run -d \
+  --name=wg-easy \
+  -e LANG=en \
+  -e WG_HOST=YOUR_VPS_PUBLIC_IP \
+  -e PASSWORD_HASH='YOUR_BCRYPT_HASH' \
+  -v ~/.wg-easy:/etc/wireguard \
+  -p 51820:51820/udp \
+  -p 51821:51821/tcp \
+  --cap-add=NET_ADMIN \
+  --cap-add=SYS_MODULE \
+  --sysctl="net.ipv4.conf.all.src_valid_mark=1" \
+  --sysctl="net.ipv6.conf.all.disable_ipv6=1" \
+  --restart unless-stopped \
+  ghcr.io/wg-easy/wg-easy
+```
+
+Open `http://YOUR_VPS_IP:51821` to manage clients. Download the config file for each device and import it into the WireGuard app.
+
+Make sure UDP port 51820 is open in your firewall.
+
+### Option B — Manual WireGuard (more control)
+
+#### Install WireGuard on your server (Linux)
 
 ```bash
 sudo apt-get install -y wireguard
 ```
 
-### Generate server keys
+#### Generate server keys
 
 ```bash
 wg genkey | sudo tee /etc/wireguard/server_private.key | wg pubkey | sudo tee /etc/wireguard/server_public.key
 sudo chmod 600 /etc/wireguard/server_private.key
 ```
 
-### Create `/etc/wireguard/wg0.conf`
+#### Create `/etc/wireguard/wg0.conf`
 
 Replace `YOUR_SERVER_PRIVATE_KEY` with the contents of `/etc/wireguard/server_private.key`:
 
@@ -122,7 +179,7 @@ PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING 
 
 > If your network interface is not `eth0`, replace it with the correct name (`ip link` to check).
 
-### Start WireGuard
+#### Start WireGuard
 
 ```bash
 sudo systemctl enable wg-quick@wg0
@@ -134,7 +191,7 @@ Verify it's running:
 sudo wg show
 ```
 
-### Open the WireGuard port in your firewall
+#### Open the WireGuard port in your firewall
 
 If using `ufw`:
 ```bash
@@ -143,7 +200,7 @@ sudo ufw allow 51820/udp
 
 If your VPS has a cloud firewall (DigitalOcean, Hetzner, etc.), also open UDP port 51820 in the control panel.
 
-### Adding a device (phone, laptop, etc.)
+#### Adding a device (phone, laptop, etc.)
 
 On the **server**, generate a key pair for the new device:
 
@@ -169,9 +226,11 @@ sudo wg syncconf wg0 <(sudo wg-quick strip wg0)
 ```
 
 On the **device**, install the WireGuard app:
-- iPhone/iPad: [App Store](https://apps.apple.com/app/wireguard/id1441195209)
-- Android: [Play Store](https://play.google.com/store/apps/details?id=com.wireguard.android)
+
+- iPhone/iPad: App Store → "WireGuard"
+- Android: Play Store → "WireGuard"
 - Windows/Mac: [wireguard.com/install](https://www.wireguard.com/install/)
+- Linux: `sudo apt install wireguard` or equivalent
 
 Create a tunnel with this config (replace the placeholders):
 
@@ -205,7 +264,7 @@ Or download and extract the ZIP from GitHub.
 
 ### Create the SSL certificate
 
-Even with WireGuard, the app needs HTTPS so the browser allows access to encrypted storage (IndexedDB, Service Workers, etc.). A self-signed certificate is fine — WireGuard peers trust it because they're connecting over an already-encrypted tunnel.
+Even with WireGuard, the app needs HTTPS so the browser allows access to encrypted storage and service workers (required for offline/PWA functionality). A self-signed certificate is fine — WireGuard peers trust it because they're connecting over an already-encrypted tunnel.
 
 ```bash
 mkdir -p docker/ssl
@@ -232,11 +291,12 @@ Open `.env` in a text editor and fill in:
 | `DATABASE_URL` | Replace `CHANGE_THIS_DB_PASSWORD` with the same string you put in `POSTGRES_PASSWORD` |
 | `JWT_ACCESS_SECRET` | Run `openssl rand -hex 32` and paste the output |
 | `JWT_REFRESH_SECRET` | Run `openssl rand -hex 32` **again** (must be different from above) |
-| `CORS_ORIGIN` | `https://10.66.66.1` (or your domain: `https://notes.yourdomain.com`) |
+| `CORS_ORIGIN` | Leave **empty** to accept any frontend (recommended), or set to your specific frontend URL for strict mode |
 
-Leave everything else as-is unless you know what you're changing.
+**Leave `CORS_ORIGIN` empty** if you want to use the public Bedroc frontend (`https://bedroc.cagancalidag.com`) or any other frontend with your server. Set it to a specific URL only if you want to restrict access to one frontend.
 
 **How to generate secrets:**
+
 ```bash
 openssl rand -hex 32
 ```
@@ -268,10 +328,11 @@ docker compose logs postgres
 ### If using WireGuard
 
 1. Connect your device to the WireGuard VPN
-2. Open the Bedroc app (or visit `https://10.66.66.1` in your browser)
-3. Your browser will warn about the self-signed certificate — this is expected. Click "Advanced" → "Proceed" (Chrome) or "Accept the Risk and Continue" (Firefox)
-4. On the login/register page, the "Server" field should already show `https://10.66.66.1`
-5. Register an account and start using Bedroc
+2. Open the Bedroc app (visit `https://bedroc.cagancalidag.com` or your own frontend URL)
+3. On the login/register page, tap/click **"Server: api.bedroc.app ▾"** to expand the server field
+4. Enter `https://10.66.66.1` as your server URL
+5. Your browser will warn about the self-signed certificate — this is expected. Click "Advanced" → "Proceed" (Chrome/Edge) or "Accept the Risk and Continue" (Firefox) or "Visit Website" (Safari)
+6. Register an account and start using Bedroc
 
 ### If using a public domain
 
@@ -279,27 +340,37 @@ docker compose logs postgres
 2. Generate a real SSL certificate with Certbot:
    ```bash
    sudo apt-get install -y certbot
-   sudo certbot certonly --standalone -d notes.yourdomain.com
-   sudo cp /etc/letsencrypt/live/notes.yourdomain.com/fullchain.pem docker/ssl/cert.pem
-   sudo cp /etc/letsencrypt/live/notes.yourdomain.com/privkey.pem docker/ssl/key.pem
+   sudo certbot certonly --standalone -d api.yourdomain.com
+   sudo cp /etc/letsencrypt/live/api.yourdomain.com/fullchain.pem docker/ssl/cert.pem
+   sudo cp /etc/letsencrypt/live/api.yourdomain.com/privkey.pem docker/ssl/key.pem
    ```
-3. In `.env`, change `CORS_ORIGIN=https://notes.yourdomain.com`
-4. Update `docker/nginx/nginx.conf` — change `10.66.66.1` to `0.0.0.0` in the `listen` directives, and set the `server_name` to your domain
-5. Run `docker compose up -d --build`
-6. Open `https://notes.yourdomain.com` in your browser
+3. Update `docker/nginx/nginx.conf` — change `10.66.66.1` to `0.0.0.0` in the `listen` directives, and set the `server_name` to your domain
+4. Run `docker compose up -d --build`
+5. Open `https://bedroc.cagancalidag.com`, tap **Server**, and enter `https://api.yourdomain.com`
 
-### From the Bedroc app or website
+### Entering your server URL
 
-In the Server field on the login/register page, enter your server address in any format:
+On the login/register page, tap the **"Server: ..."** line to expand it. Type your server address in any format:
 
 | What you type | What Bedroc uses |
 |---|---|
 | `10.66.66.1` | `http://10.66.66.1` |
 | `10.66.66.1:3000` | `http://10.66.66.1:3000` |
-| `notes.yourdomain.com` | `https://notes.yourdomain.com` |
-| `https://notes.yourdomain.com` | `https://notes.yourdomain.com` |
+| `api.yourdomain.com` | `https://api.yourdomain.com` |
+| `https://api.yourdomain.com` | `https://api.yourdomain.com` |
+| `100.64.1.5` (Tailscale IP) | `http://100.64.1.5` |
 
-The app saves your server URL so you only need to enter it once.
+The app saves your server URL so you only need to enter it once. Multiple saved servers are remembered.
+
+### Using Bedroc as a PWA (add to home screen)
+
+Bedroc works as an installable app on any device:
+
+- **iOS (Safari):** Open `https://bedroc.cagancalidag.com` → tap the Share button → "Add to Home Screen"
+- **Android (Chrome):** Open the site → tap the three-dot menu → "Add to Home Screen" or "Install App"
+- **Desktop (Chrome/Edge):** Click the install icon in the address bar, or menu → "Install Bedroc"
+
+Once installed, the app works offline and loads instantly from cache. Notes you've already opened are available without a network connection. New notes written offline are queued and synced automatically when you reconnect.
 
 ---
 
@@ -388,18 +459,37 @@ Add this line to back up every day at 3am:
 
 ### "Cannot reach server" in the app
 
-1. Make sure you're connected to WireGuard (if using VPN setup)
-2. Check that all Docker containers are running: `docker compose ps`
-3. Test the health endpoint from your server: `curl http://localhost:3000/health`
-4. Check the server logs: `docker compose logs server`
+1. Check that the server field shows the correct URL (tap it on the login page)
+2. Make sure you're connected to WireGuard (if using VPN setup)
+3. Check that all Docker containers are running: `docker compose ps`
+4. Test the health endpoint from your server: `curl http://localhost:3000/health`
+5. Check the server logs: `docker compose logs server`
 
 ### "Certificate error" / browser warning
 
 Expected with a self-signed certificate. Click through the warning once. The connection is still encrypted — the warning just means the certificate wasn't issued by a public certificate authority.
 
+On iOS/Safari, you may need to go to Settings → General → VPN & Device Management → trust the certificate.
+
+### App won't install as PWA on iOS
+
+The app must be served over HTTPS for PWA installation to work. If you're using a self-signed cert on WireGuard, you need to trust the certificate first (see above). Once trusted, the "Add to Home Screen" option will work.
+
+### Offline notes not syncing when back online
+
+The app syncs automatically when it detects a network connection. If sync is stuck:
+
+1. Open the app and wait a moment — sync runs on page load and when reconnecting
+2. Check Settings → the server status indicator should turn green when online
+3. If the server is unreachable, check your WireGuard connection or VPS status
+
+### Conflict resolution
+
+If you edited the same note on two devices while offline, the app will detect the conflict when syncing. A conflict notice will appear on the note, letting you choose which version to keep (or manually merge changes). Conflicts are never silently discarded.
+
 ### Forgot to save my server address
 
-The app shows a "Server" toggle on the login page. Click it to see or change the server URL.
+The server field is on the login page. Tap the "Server: ..." line to see or change it.
 
 ### Database won't start
 
@@ -430,3 +520,5 @@ Then connect to `https://10.66.66.1:8443` instead.
 - WireGuard means no attack surface on the public internet — the server is literally unreachable without a valid VPN peer key.
 - Back up your WireGuard private key (`/etc/wireguard/server_private.key`) separately from the server. If you lose it, connected devices can no longer reach the server until you regenerate and redistribute keys.
 - **Password loss = data loss.** The encryption key is derived from your password. There is no account recovery. Use a password manager.
+- **CORS:** By default, `CORS_ORIGIN` is empty — any frontend (including the public hosted one) can connect to your server. Security is enforced by JWT tokens, not CORS. Set `CORS_ORIGIN` to a specific URL to restrict to one frontend only.
+- You can change your password in Settings → Security → Change Password. This re-derives the master key and re-wraps the encryption key. To invalidate all existing sessions after a password change, also use "Revoke all sessions" in Settings.

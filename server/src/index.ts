@@ -96,10 +96,27 @@ await app.register(fastifyHelmet, {
 // ---------------------------------------------------------------------------
 // CORS
 // ---------------------------------------------------------------------------
-// Only allow requests from the frontend origin.
-// Credentials: true is required so the browser sends the refresh cookie.
+// Bedroc uses a "public frontend, self-hosted backend" model:
+// The frontend is served from any origin (hosted, Vercel, Electron, PWA),
+// and users point it at their own backend URL.
+//
+// CORS_ORIGIN in .env controls the policy:
+//   - Set to a specific URL (e.g. https://bedroc.cagancalidag.com) to allow
+//     only that frontend (strictest — recommended for single-user servers).
+//   - Set to '*' to allow any origin (needed if you want any frontend to work).
+//   - Unset: defaults to allow any origin (open self-hosting model).
+//
+// Note: credentials:true + origin:'*' is not allowed by browsers, so we use
+// an origin callback that returns true for all origins instead.
+//
+// Security note: CORS is a browser protection, not a server auth mechanism.
+// All endpoints that need auth require a valid JWT — CORS only prevents
+// drive-by browser attacks, not API abuse from non-browser clients.
+const rawCorsOrigin = process.env.CORS_ORIGIN;
 await app.register(fastifyCors, {
-  origin: process.env.CORS_ORIGIN ?? false,
+  origin: rawCorsOrigin && rawCorsOrigin !== '*'
+    ? rawCorsOrigin           // specific origin: e.g. "https://bedroc.cagancalidag.com"
+    : (_origin, cb) => cb(null, true),  // any origin (public frontend model)
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 });
@@ -154,7 +171,7 @@ app.log.info('Migrations complete.');
 // Redis connectivity check
 // ---------------------------------------------------------------------------
 app.log.info('Checking Redis connectivity…');
-const redis = getRedis();
+const redis = await getRedis();
 await redis.ping(); // throws if Redis is unreachable — fail fast
 app.log.info('Redis connected.');
 

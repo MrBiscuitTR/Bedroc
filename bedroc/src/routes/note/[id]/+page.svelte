@@ -2,19 +2,53 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import {
-		notesMap, topicsMap, foldersMap,
+		notesMap, topicsMap, foldersMap, conflictsMap,
 		getNotes, getTopics, getFolders,
 		createNote, createTopic, saveTopic, deleteTopic,
 		createFolder, saveFolder, toggleFolderCollapsed, deleteFolder,
 		moveTopic,
-		saveNote,
+		saveNote, resolveConflict,
 		relativeTime,
-		type Topic, type Folder
+		type Topic, type Folder, type ConflictRecord
 	} from '$lib/stores/notes.svelte';
 
 	// ── Note identity ─────────────────────────────────────────────
 	let noteId  = $derived(page.params.id);
 	let isNew   = $derived(noteId === 'new');
+
+	// ── Conflict resolution ───────────────────────────────────────
+	let conflict = $derived(noteId && !isNew ? conflictsMap.get(noteId) : undefined);
+	let showConflict = $derived(!!conflict);
+	// 'banner' = collapsed notice, 'diff' = full diff view
+	let conflictView = $state<'banner' | 'diff'>('banner');
+	// Custom merge text (used in diff view when user edits the merge area)
+	let mergeTitle = $state('');
+	let mergeBody = $state('');
+	let mergeDirty = $state(false);
+	let conflictResolving = $state(false);
+
+	$effect(() => {
+		if (conflict) {
+			mergeTitle = conflict.localTitle;
+			mergeBody = conflict.localBody;
+			mergeDirty = false;
+		}
+	});
+
+	async function handleResolveConflict(choice: 'local' | 'server' | 'merge') {
+		if (!noteId || !conflict) return;
+		conflictResolving = true;
+		try {
+			if (choice === 'merge') {
+				await resolveConflict(noteId, { title: mergeTitle, body: mergeBody });
+			} else {
+				await resolveConflict(noteId, choice);
+			}
+			conflictView = 'banner';
+		} finally {
+			conflictResolving = false;
+		}
+	}
 
 	// ── Load note ─────────────────────────────────────────────────
 	// Notes are stored decrypted in IndexedDB; encryption happens at sync time.
@@ -329,6 +363,122 @@
 		spellcheck="true"
 		autocapitalize="sentences"
 	/>
+
+	<!-- ── Conflict notice ──────────────────────────────────────── -->
+	{#if showConflict && conflict}
+		{#if conflictView === 'banner'}
+			<div class="conflict-banner" role="alert">
+				<div class="conflict-banner-icon" aria-hidden="true">
+					<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+						<path d="M7 1L13 12H1L7 1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+						<path d="M7 5v3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+						<circle cx="7" cy="10.5" r="0.6" fill="currentColor"/>
+					</svg>
+				</div>
+				<div class="conflict-banner-text">
+					<span class="conflict-banner-title">Sync conflict</span>
+					<span class="conflict-banner-desc">
+						This note was edited on another device while you were offline.
+					</span>
+				</div>
+				<div class="conflict-banner-actions">
+					<button class="conflict-btn-resolve" onclick={() => (conflictView = 'diff')}>
+						Resolve
+					</button>
+					<button class="conflict-btn-dismiss" onclick={() => handleResolveConflict('local')} title="Keep your version and discard server version">
+						Keep mine
+					</button>
+				</div>
+			</div>
+		{:else}
+			<!-- Full diff view -->
+			<div class="conflict-diff">
+				<div class="conflict-diff-header">
+					<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+						<path d="M7 1L13 12H1L7 1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+						<path d="M7 5v3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+						<circle cx="7" cy="10.5" r="0.6" fill="currentColor"/>
+					</svg>
+					<span>Resolve sync conflict</span>
+					<button class="conflict-diff-close" onclick={() => (conflictView = 'banner')} aria-label="Collapse conflict view">
+						<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+							<path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+						</svg>
+					</button>
+				</div>
+
+				<div class="conflict-versions">
+					<!-- Your version -->
+					<div class="conflict-version conflict-version-local">
+						<div class="conflict-version-label">
+							Your version
+							<span class="conflict-version-time">
+								{relativeTime(conflict.localUpdatedAt)}
+							</span>
+						</div>
+						<div class="conflict-version-title">{conflict.localTitle || '(no title)'}</div>
+						<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+						<div class="conflict-version-body">{@html conflict.localBody || '<em>(empty)</em>'}</div>
+						<button
+							class="conflict-pick-btn"
+							onclick={() => handleResolveConflict('local')}
+							disabled={conflictResolving}
+						>
+							Use this version
+						</button>
+					</div>
+
+					<!-- Server version -->
+					<div class="conflict-version conflict-version-server">
+						<div class="conflict-version-label">
+							Server version
+							<span class="conflict-version-time">
+								{relativeTime(conflict.serverUpdatedAt)}
+							</span>
+						</div>
+						<div class="conflict-version-title">{conflict.serverTitle || '(no title)'}</div>
+						<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+						<div class="conflict-version-body">{@html conflict.serverBody || '<em>(empty)</em>'}</div>
+						<button
+							class="conflict-pick-btn"
+							onclick={() => handleResolveConflict('server')}
+							disabled={conflictResolving}
+						>
+							Use this version
+						</button>
+					</div>
+				</div>
+
+				<!-- Manual merge -->
+				<div class="conflict-merge">
+					<div class="conflict-merge-label">Or write a custom merge:</div>
+					<input
+						class="conflict-merge-title"
+						type="text"
+						placeholder="Title"
+						bind:value={mergeTitle}
+						oninput={() => (mergeDirty = true)}
+					/>
+					<div
+						class="conflict-merge-body"
+						contenteditable="true"
+						role="textbox"
+						aria-label="Merge body"
+						aria-multiline="true"
+						data-placeholder="Merge content…"
+						oninput={(e) => { mergeBody = (e.currentTarget as HTMLElement).innerHTML; mergeDirty = true; }}
+					></div>
+					<button
+						class="conflict-pick-btn conflict-pick-btn-merge"
+						onclick={() => handleResolveConflict('merge')}
+						disabled={conflictResolving || !mergeDirty}
+					>
+						{conflictResolving ? 'Saving…' : 'Save merged version'}
+					</button>
+				</div>
+			</div>
+		{/if}
+	{/if}
 
 	<!-- ── Formatting toolbar ──────────────────────────────────── -->
 	<div class="format-bar" role="toolbar" aria-label="Text formatting">
@@ -748,6 +898,272 @@
 
 	.title-input:focus { border: none; box-shadow: none; }
 	.title-input::placeholder { color: var(--text-faint); font-weight: 400; }
+
+	/* ── Conflict banner ──────────────────────────────────────── */
+	.conflict-banner {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		margin: 0 20px 12px;
+		padding: 10px 14px;
+		background: color-mix(in srgb, #e09a3c 12%, transparent);
+		border: 1px solid color-mix(in srgb, #e09a3c 40%, transparent);
+		border-radius: var(--radius-sm);
+		font-size: 13px;
+	}
+
+	.conflict-banner-icon {
+		color: #e09a3c;
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+
+	.conflict-banner-text {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.conflict-banner-title {
+		font-weight: 600;
+		color: #e09a3c;
+		font-size: 12.5px;
+	}
+
+	.conflict-banner-desc {
+		color: var(--text-muted);
+		font-size: 12px;
+		line-height: 1.4;
+	}
+
+	.conflict-banner-actions {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		flex-shrink: 0;
+	}
+
+	.conflict-btn-resolve {
+		padding: 4px 10px;
+		font-size: 12px;
+		font-weight: 600;
+		background: #e09a3c;
+		color: #0f1117;
+		border: none;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		transition: opacity 0.12s ease;
+	}
+
+	.conflict-btn-resolve:hover { opacity: 0.85; }
+
+	.conflict-btn-dismiss {
+		padding: 4px 10px;
+		font-size: 12px;
+		font-weight: 500;
+		background: transparent;
+		color: var(--text-muted);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		transition: color 0.12s ease, border-color 0.12s ease;
+	}
+
+	.conflict-btn-dismiss:hover {
+		color: var(--text);
+		border-color: var(--text-muted);
+	}
+
+	/* ── Conflict diff view ───────────────────────────────────── */
+	.conflict-diff {
+		margin: 0 20px 16px;
+		border: 1px solid color-mix(in srgb, #e09a3c 40%, transparent);
+		border-radius: var(--radius-sm);
+		overflow: hidden;
+		font-size: 13px;
+	}
+
+	.conflict-diff-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 14px;
+		background: color-mix(in srgb, #e09a3c 12%, transparent);
+		border-bottom: 1px solid color-mix(in srgb, #e09a3c 30%, transparent);
+		color: #e09a3c;
+		font-weight: 600;
+		font-size: 12.5px;
+	}
+
+	.conflict-diff-close {
+		margin-left: auto;
+		background: transparent;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 2px;
+		display: flex;
+		align-items: center;
+	}
+
+	.conflict-diff-close:hover { color: var(--text); }
+
+	.conflict-versions {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		border-bottom: 1px solid var(--border);
+	}
+
+	@media (max-width: 600px) {
+		.conflict-versions { grid-template-columns: 1fr; }
+	}
+
+	.conflict-version {
+		padding: 12px 14px;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.conflict-version-local {
+		border-right: 1px solid var(--border);
+	}
+
+	@media (max-width: 600px) {
+		.conflict-version-local {
+			border-right: none;
+			border-bottom: 1px solid var(--border);
+		}
+	}
+
+	.conflict-version-label {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--text-muted);
+	}
+
+	.conflict-version-time {
+		font-weight: 400;
+		text-transform: none;
+		letter-spacing: 0;
+		color: var(--text-faint);
+	}
+
+	.conflict-version-title {
+		font-weight: 600;
+		font-size: 14px;
+		color: var(--text);
+	}
+
+	.conflict-version-body {
+		font-size: 12.5px;
+		color: var(--text-muted);
+		line-height: 1.5;
+		max-height: 120px;
+		overflow-y: auto;
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+
+	.conflict-pick-btn {
+		margin-top: auto;
+		padding: 5px 12px;
+		font-size: 12px;
+		font-weight: 600;
+		background: var(--bg-hover);
+		color: var(--text);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		transition: background 0.12s ease, border-color 0.12s ease;
+		align-self: flex-start;
+	}
+
+	.conflict-pick-btn:hover:not(:disabled) {
+		background: var(--accent);
+		color: #fff;
+		border-color: var(--accent);
+	}
+
+	.conflict-pick-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	.conflict-merge {
+		padding: 12px 14px;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		background: var(--bg);
+	}
+
+	.conflict-merge-label {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--text-muted);
+	}
+
+	.conflict-merge-title {
+		border: 1px solid var(--border);
+		background: var(--bg-elevated);
+		color: var(--text);
+		padding: 6px 10px;
+		border-radius: var(--radius-sm);
+		font-size: 13px;
+		font-family: inherit;
+		outline: none;
+	}
+
+	.conflict-merge-title:focus {
+		border-color: var(--accent);
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+	}
+
+	.conflict-merge-body {
+		min-height: 80px;
+		max-height: 200px;
+		overflow-y: auto;
+		border: 1px solid var(--border);
+		background: var(--bg-elevated);
+		color: var(--text);
+		padding: 8px 10px;
+		border-radius: var(--radius-sm);
+		font-size: 13px;
+		line-height: 1.5;
+		outline: none;
+	}
+
+	.conflict-merge-body:focus {
+		border-color: var(--accent);
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+	}
+
+	.conflict-merge-body:empty::before {
+		content: attr(data-placeholder);
+		color: var(--text-faint);
+		pointer-events: none;
+	}
+
+	.conflict-pick-btn-merge {
+		background: color-mix(in srgb, var(--accent) 20%, transparent);
+		border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+		color: var(--accent);
+	}
+
+	.conflict-pick-btn-merge:hover:not(:disabled) {
+		background: var(--accent);
+		color: #fff;
+		border-color: var(--accent);
+	}
 
 	/* ── Formatting toolbar ───────────────────────────────────── */
 	.format-bar {

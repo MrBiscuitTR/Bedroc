@@ -71,6 +71,21 @@ export async function deleteUser(id: string): Promise<void> {
   await query('DELETE FROM users WHERE id = $1', [id]);
 }
 
+export async function updateUserCredentials(params: {
+  id: string;
+  srpSalt: Buffer;
+  srpVerifier: Buffer;
+  encryptedDek: string;
+  dekSalt: Buffer;
+}): Promise<void> {
+  await query(
+    `UPDATE users
+     SET srp_salt = $2, srp_verifier = $3, encrypted_dek = $4, dek_salt = $5
+     WHERE id = $1`,
+    [params.id, params.srpSalt, params.srpVerifier, params.encryptedDek, params.dekSalt]
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------

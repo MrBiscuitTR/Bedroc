@@ -17,7 +17,7 @@ All Phase 1 placeholders have been replaced. See `lib/crypto/`, `lib/stores/auth
 | `lib/crypto/keys.ts` | ✅ Done | PBKDF2 (600k iterations) master key + AES-256-GCM DEK wrap/unwrap |
 | `lib/crypto/srp.ts` | ✅ Done | SRP-6a client (3072-bit MODP, pure BigInt, no external libraries) |
 | `lib/crypto/encrypt.ts` | ✅ Done | AES-256-GCM per-field encryption for note title + body |
-| `lib/db/indexeddb.ts` | ✅ Done | Full offline-first IndexedDB layer with sync queue |
+| `lib/db/indexeddb.ts` | ✅ Done | Full offline-first IndexedDB layer with sync queue + conflicts store (v2) |
 
 ---
 
@@ -36,35 +36,40 @@ All Phase 1 placeholders have been replaced. See `lib/crypto/`, `lib/stores/auth
 
 ---
 
-## Phase 3 — Real-time Sync
+## Phase 3 — Real-time Sync ✅ COMPLETE
 
-| File | What is placeholder | Replace with |
+| File | Status | Implementation |
 | --- | --- | --- |
-| `lib/stores/notes.svelte.ts` | No WebSocket integration | Connect to `lib/sync/websocket.ts` on login |
-| `routes/+layout.svelte` | Split-window secondary pane is an `<iframe>` sharing in-memory stores via same-origin | With IndexedDB as the source of truth, the iframe naturally shares the same DB; no extra wiring needed |
+| `lib/stores/notes.svelte.ts` | ✅ Done | WebSocket integration via `lib/sync/websocket.ts`; connect/disconnect wired in `+layout.svelte` |
+| `lib/sync/websocket.ts` | ✅ Done | WebSocket client with auto-reconnect, exponential backoff, 30s keepalive ping |
+| `routes/+layout.svelte` | ✅ Done | `wsConnect()` called after login; `wsDisconnect()` on logout; `$effect` reconnects on auth state change |
+| `lib/stores/notes.svelte.ts` | ✅ Done | Conflict detection in `syncFromServer()` — preserves local edits, stores both versions, never silently overwrites |
+| `lib/stores/notes.svelte.ts` | ✅ Done | `resolveConflict()` — user resolves with local/server/custom merge; pushes resolved version to server |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Conflict resolution UI — banner + full diff view showing both versions side-by-side |
 
 ---
 
-## Phase 4 — Offline / Service Worker
+## Phase 4 — Offline / Service Worker ✅ COMPLETE
 
-| File | What is placeholder | Replace with |
+| File | Status | Implementation |
 | --- | --- | --- |
-| (none yet) | No service worker | `static/sw.js` — cache shell + static assets; serve IndexedDB data when offline |
+| `static/sw.js` | ✅ Done | Service worker: cache-first for static assets, network-first with shell fallback for navigation, never caches API/WS |
+| `routes/+layout.svelte` | ✅ Done | `navigator.serviceWorker.register('/sw.js')` on mount; works on iOS 11.3+, Android, all desktop browsers |
 
 ---
 
-## Phase 5 — Settings / Security
+## Phase 5 — Settings / Security ✅ COMPLETE
 
-| File | What is placeholder | Replace with |
+| File | Status | Implementation |
 | --- | --- | --- |
-| `routes/settings/+page.svelte` | Username shown as static string "username" | Read from auth store |
-| `routes/settings/+page.svelte` | Sessions list is hardcoded demo array | Fetch from `GET /api/auth/sessions` |
-| `routes/settings/+page.svelte` | Revoke button is a no-op | `DELETE /api/auth/sessions/:id` |
-| `routes/settings/+page.svelte` | Log out button is a no-op | Clear DEK from memory, clear IndexedDB, revoke token |
-| `routes/settings/+page.svelte` | Delete account button is a no-op | `DELETE /api/auth/account` + clear all local data |
-| `routes/settings/+page.svelte` | Change password button is a no-op | Re-derive Master Key, re-encrypt DEK, update server |
-| `routes/settings/+page.svelte` | Export notes button is a no-op | Decrypt all notes → JSON download with warning modal |
-| `lib/stores/notes.svelte.ts` | `autosave.interval` persisted to `localStorage` only | Server-backed user preferences |
+| `routes/settings/+page.svelte` | ✅ Done | Username shown from `auth.username` |
+| `routes/settings/+page.svelte` | ✅ Done | Sessions list fetched from `GET /api/auth/sessions` |
+| `routes/settings/+page.svelte` | ✅ Done | Revoke individual session — `DELETE /api/auth/sessions/:id` |
+| `routes/settings/+page.svelte` | ✅ Done | Log out — clears DEK from memory, wipes IndexedDB, revokes token |
+| `routes/settings/+page.svelte` | ✅ Done | Delete account — `DELETE /api/auth/account` + clear all local data |
+| `routes/settings/+page.svelte` | ✅ Done | Change password — re-derives master key, re-encrypts DEK, new SRP verifier |
+| `routes/settings/+page.svelte` | ✅ Done | Export notes — decrypts all notes, downloads as categorised JSON |
+| `lib/stores/notes.svelte.ts` | Deferred | `autosave.interval` persisted to `localStorage` only — server-backed user preferences deferred to Phase 5b |
 
 ---
 

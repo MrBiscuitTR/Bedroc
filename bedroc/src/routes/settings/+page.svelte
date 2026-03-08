@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { autosave } from '$lib/stores/notes.svelte';
-	import { auth, logout, apiFetch } from '$lib/stores/auth.svelte.js';
+	import { autosave, notesMap, topicsMap } from '$lib/stores/notes.svelte';
+	import { auth, logout, apiFetch, changePassword } from '$lib/stores/auth.svelte.js';
 	import { clearStore } from '$lib/stores/notes.svelte.js';
 
 	let confirmLogout = $state(false);
@@ -21,12 +21,14 @@
 	async function loadSessions() {
 		try {
 			const res = await apiFetch('/api/auth/sessions');
-			if (res.ok) sessions = await res.json() as Session[];
-		} catch { /* offline — no sessions list */ }
+			if (res.ok) {
+				const data = await res.json() as { sessions: Session[] };
+				sessions = data.sessions ?? [];
+			}
+		} catch { /* offline */ }
 		sessionsLoading = false;
 	}
 
-	// Load on mount
 	$effect(() => { loadSessions(); });
 
 	async function revokeSession(id: string) {
@@ -52,9 +54,7 @@
 	}
 
 	// ── Autosave settings ─────────────────────────────────────────
-	// autosave.interval === 0 means disabled.
 	let autosaveEnabled = $state(autosave.interval > 0);
-	// Display value in seconds for the UI input.
 	let autosaveSeconds = $state(autosave.interval > 0 ? autosave.interval / 1000 : 1);
 
 	function handleAutosaveToggle() {
@@ -65,6 +65,87 @@
 	function handleAutosaveSecondsChange() {
 		autosaveSeconds = Math.max(0.5, autosaveSeconds);
 		if (autosaveEnabled) autosave.set(Math.round(autosaveSeconds * 1000));
+	}
+
+	// ── Change password ────────────────────────────────────────────
+	let showChangePw = $state(false);
+	let cpCurrent = $state('');
+	let cpNew = $state('');
+	let cpConfirm = $state('');
+	let cpError = $state<string | null>(null);
+	let cpSuccess = $state(false);
+	let cpLoading = $state(false);
+
+	async function handleChangePassword() {
+		cpError = null;
+		cpSuccess = false;
+		if (!cpCurrent) { cpError = 'Enter your current password.'; return; }
+		if (cpNew.length < 8) { cpError = 'New password must be at least 8 characters.'; return; }
+		if (cpNew !== cpConfirm) { cpError = 'New passwords do not match.'; return; }
+		if (cpNew === cpCurrent) { cpError = 'New password must be different from current.'; return; }
+		cpLoading = true;
+		try {
+			await changePassword(cpCurrent, cpNew);
+			cpSuccess = true;
+			cpCurrent = ''; cpNew = ''; cpConfirm = '';
+			setTimeout(() => { showChangePw = false; cpSuccess = false; }, 1800);
+		} catch (err) {
+			cpError = (err as Error).message;
+		} finally {
+			cpLoading = false;
+		}
+	}
+
+	// ── Export notes ───────────────────────────────────────────────
+	let exportLoading = $state(false);
+	let exportError = $state<string | null>(null);
+
+	async function handleExport() {
+		if (!auth.dek) { exportError = 'Vault is locked. Please log in again.'; return; }
+		exportLoading = true;
+		exportError = null;
+		try {
+			const notes = [...notesMap.values()];
+			const items = notes.map((note) => {
+				const topic = note.topicId ? topicsMap.get(note.topicId) : null;
+				return {
+					id: note.id,
+					title: note.title || 'Untitled',
+					body: note.body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+					bodyHtml: note.body,
+					topic: topic ? { id: topic.id, name: topic.name, color: topic.color } : null,
+					createdAt: new Date(note.createdAt).toISOString(),
+					updatedAt: new Date(note.updatedAt).toISOString(),
+				};
+			});
+
+			// Group by topic name
+			const byTopic: Record<string, typeof items> = {};
+			for (const n of items) {
+				const key = n.topic?.name ?? 'Uncategorised';
+				if (!byTopic[key]) byTopic[key] = [];
+				byTopic[key].push(n);
+			}
+
+			const payload = {
+				exportedAt: new Date().toISOString(),
+				username: auth.username,
+				noteCount: items.length,
+				notes: byTopic,
+			};
+
+			const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `bedroc-export-${new Date().toISOString().slice(0, 10)}.json`;
+			a.click();
+			URL.revokeObjectURL(url);
+		} catch (err) {
+			exportError = (err as Error).message;
+		} finally {
+			exportLoading = false;
+		}
 	}
 </script>
 
@@ -144,23 +225,64 @@
 	<section class="section">
 		<h3 class="section-title">Security</h3>
 		<div class="card">
-			<button class="row row-btn">
+			<button class="row row-btn" onclick={() => { showChangePw = !showChangePw; cpError = null; cpSuccess = false; }}>
 				<div class="row-info">
 					<span class="row-label">Change password</span>
 					<span class="row-sub">Re-encrypts your data with the new password</span>
 				</div>
-				<svg width="14" height="14" viewBox="0 0 14 14" fill="none" class="chevron-right">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none" class="chevron-right" class:rotated={showChangePw}>
 					<path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
 				</svg>
 			</button>
+			{#if showChangePw}
+				<div class="divider-inner"></div>
+				<div class="change-pw-form">
+					{#if cpSuccess}
+						<p class="cp-success">Password changed successfully.</p>
+					{:else}
+						{#if cpError}
+							<p class="cp-error">{cpError}</p>
+						{/if}
+						<input
+							type="password"
+							placeholder="Current password"
+							bind:value={cpCurrent}
+							autocomplete="current-password"
+							disabled={cpLoading}
+						/>
+						<input
+							type="password"
+							placeholder="New password"
+							bind:value={cpNew}
+							autocomplete="new-password"
+							disabled={cpLoading}
+						/>
+						<input
+							type="password"
+							placeholder="Confirm new password"
+							bind:value={cpConfirm}
+							autocomplete="new-password"
+							disabled={cpLoading}
+						/>
+						<div class="cp-actions">
+							<button class="btn-ghost" onclick={() => { showChangePw = false; cpError = null; }} disabled={cpLoading}>Cancel</button>
+							<button class="btn-primary cp-save" onclick={handleChangePassword} disabled={cpLoading}>
+								{cpLoading ? 'Saving…' : 'Save'}
+							</button>
+						</div>
+					{/if}
+				</div>
+			{/if}
 			<div class="divider-inner"></div>
-			<button class="row row-btn">
+			<button class="row row-btn" onclick={handleExport} disabled={exportLoading}>
 				<div class="row-info">
 					<span class="row-label">Export notes</span>
-					<span class="row-sub">Download all notes as decrypted JSON</span>
+					<span class="row-sub">{exportLoading ? 'Preparing export…' : 'Download all notes as decrypted JSON'}</span>
+					{#if exportError}<span class="cp-error">{exportError}</span>{/if}
 				</div>
 				<svg width="14" height="14" viewBox="0 0 14 14" fill="none" class="chevron-right">
-					<path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+					<path d="M7 1v8M4 6l3 3 3-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+					<path d="M2 11h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
 				</svg>
 			</button>
 		</div>
@@ -481,5 +603,48 @@
 		color: var(--text-faint);
 		text-align: center;
 		padding-top: 8px;
+	}
+
+	/* Change password form */
+	.change-pw-form {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		padding: 14px;
+	}
+
+	.change-pw-form input {
+		width: 100%;
+	}
+
+	.cp-actions {
+		display: flex;
+		gap: 8px;
+		justify-content: flex-end;
+	}
+
+	.cp-save {
+		width: auto;
+		padding: 8px 16px;
+	}
+
+	.cp-error {
+		font-size: 12px;
+		color: var(--danger);
+	}
+
+	.cp-success {
+		font-size: 13px;
+		color: var(--success);
+		text-align: center;
+		padding: 4px 0;
+	}
+
+	.chevron-right {
+		transition: transform 0.15s ease;
+	}
+
+	.chevron-right.rotated {
+		transform: rotate(90deg);
 	}
 </style>

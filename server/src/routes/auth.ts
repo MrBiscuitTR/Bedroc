@@ -31,7 +31,7 @@ import { z } from 'zod';
 import {
   createUser, getUserByUsername, getUserById,
   createSession, revokeSession, revokeAllSessions,
-  getSessionsForUser, revokeSessionById,
+  getSessionsForUser, revokeSessionById, updateUserCredentials,
 } from '../db/queries/users.js';
 import { hashToken, verifyAuth } from '../middleware/auth.js';
 import { getRedis } from '../plugins/redis.js';
@@ -208,7 +208,7 @@ function issueTokens(
   );
   const refreshToken = fastify.jwt.sign(
     { sub: userId, type: 'refresh' },
-    { secret: process.env.JWT_REFRESH_SECRET ?? 'changeme-refresh',
+    { key: process.env.JWT_REFRESH_SECRET ?? 'changeme-refresh',
       expiresIn: refreshTtl }
   );
 
@@ -472,6 +472,38 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     const { deleteUser } = await import('../db/queries/users.js');
     await deleteUser(userId);
     reply.clearCookie('bedroc_refresh', { path: '/api/auth/refresh' });
+    return reply.code(200).send({ ok: true });
+  });
+
+  // ── Change password (protected) ──────────────────────────────────────────
+  // Client re-derives everything with the new password and sends new material.
+  // The server atomically replaces srp_salt, srp_verifier, encrypted_dek, dek_salt.
+  // All existing sessions remain valid (access tokens are unaffected).
+
+  const ChangePasswordSchema = z.object({
+    srpSalt:      z.string().min(64).max(64),
+    srpVerifier:  z.string().min(1).max(2048),
+    encryptedDek: z.string().min(1),
+    dekSalt:      z.string().min(64).max(64),
+  });
+
+  fastify.post('/api/auth/change-password', async (req: FastifyRequest, reply: FastifyReply) => {
+    await verifyAuth(req, reply);
+    if (reply.sent) return;
+    const userId = (req as FastifyRequest & { userId: string }).userId;
+
+    const parse = ChangePasswordSchema.safeParse(req.body);
+    if (!parse.success) return reply.code(400).send({ error: 'Invalid request', details: parse.error.flatten() });
+    const { srpSalt, srpVerifier, encryptedDek, dekSalt } = parse.data;
+
+    await updateUserCredentials({
+      id: userId,
+      srpSalt:     Buffer.from(srpSalt, 'hex'),
+      srpVerifier: Buffer.from(srpVerifier, 'hex'),
+      encryptedDek,
+      dekSalt:     Buffer.from(dekSalt, 'hex'),
+    });
+
     return reply.code(200).send({ ok: true });
   });
 }

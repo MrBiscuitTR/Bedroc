@@ -11,6 +11,7 @@
 		type Topic, type Folder, type Note, type SortMode
 	} from '$lib/stores/notes.svelte';
 	import { goto } from '$app/navigation';
+	import { serverStatus } from '$lib/stores/auth.svelte.js';
 
 	// ── Filter / navigation state ──────────────────────────────────
 	let search        = $state('');
@@ -625,6 +626,15 @@
                             </svg>
                         </button>
                     </div>
+                    <!-- Server status dot -->
+                    {#if serverStatus.value !== 'unknown'}
+                        <span
+                            class="srv-dot srv-dot-{serverStatus.value}"
+                            title={serverStatus.value === 'online' ? 'Server online' : serverStatus.value === 'checking' ? 'Checking server…' : 'Server unreachable'}
+                            aria-label={serverStatus.value === 'online' ? 'Server online' : 'Server unreachable'}
+                        ></span>
+                    {/if}
+
                     <button class="new-btn" onclick={handleNewNote} aria-label="New note">
                         <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
                             <path d="M6.5 1v11M1 6.5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
@@ -1203,6 +1213,23 @@
     }
 
 	.notes-title { font-size: 16px; font-weight: 600; }
+
+	/* Server status dot in notes header */
+	.srv-dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		flex-shrink: 0;
+		display: inline-block;
+	}
+	.srv-dot-checking { background: var(--accent); animation: srv-pulse 1s ease-in-out infinite; }
+	.srv-dot-online   { background: var(--success); }
+	.srv-dot-offline  { background: var(--danger); }
+
+	@keyframes srv-pulse {
+		0%, 100% { opacity: 1; }
+		50%       { opacity: 0.3; }
+	}
 
 	.notes-header-actions {
 		display: flex;

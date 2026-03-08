@@ -17,7 +17,7 @@
 	let isNew   = $derived(noteId === 'new');
 
 	// ── Load note ─────────────────────────────────────────────────
-	// PLACEHOLDER: no decryption — Phase 2 will AES-GCM decrypt the body.
+	// Notes are stored decrypted in IndexedDB; encryption happens at sync time.
 	let title = $state('');
 	let saved = $state(true);
 	let bodyEl: HTMLDivElement;
@@ -37,7 +37,6 @@
 	});
 
 	// ── Autosave ──────────────────────────────────────────────────
-	// PLACEHOLDER: saves to in-memory store only.
 	import { autosave } from '$lib/stores/notes.svelte';
 
 	let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -48,19 +47,19 @@
 		autosaveTimer = setTimeout(doSave, autosave.interval);
 	}
 
-	function doSave() {
+	async function doSave() {
 		if (saved) return;
 		const body = bodyEl?.innerHTML ?? '';
 		if (isNew) {
-			const id = createNote(null);
+			const id = await createNote(null);
 			const created = notesMap.get(id)!;
-			saveNote({ ...created, title: dedupTitle(title.trim() || 'Untitled', null, id), body });
+			await saveNote({ ...created, title: dedupTitle(title.trim() || 'Untitled', null, id), body });
 			saved = true;
 			goto(`/note/${id}`, { replaceState: true });
 		} else {
 			const existing = notesMap.get(noteId!);
 			if (!existing) return;
-			saveNote({ ...existing, title: dedupTitle(title.trim() || 'Untitled', existing.topicId, existing.id), body });
+			await saveNote({ ...existing, title: dedupTitle(title.trim() || 'Untitled', existing.topicId, existing.id), body });
 			saved = true;
 		}
 	}
@@ -91,22 +90,21 @@
 	function handleTitleInput() { saved = false; scheduleAutosave(); }
 	function handleBodyInput()  { saved = false; scheduleAutosave(); updateFormatState(); }
 
-	function handleSave() {
+	async function handleSave() {
 		if (autosaveTimer) { clearTimeout(autosaveTimer); autosaveTimer = null; }
-		doSave();
+		await doSave();
 	}
 
-	function handleBack() {
-		if (!saved) doSave();
+	async function handleBack() {
+		if (!saved) await doSave();
 		goto('/');
 	}
 
-	function handleDelete() {
+	async function handleDelete() {
 		if (isNew) { goto('/'); return; }
-		import('$lib/stores/notes.svelte').then(({ deleteNote }) => {
-			deleteNote(noteId!);
-			goto('/');
-		});
+		const { deleteNote } = await import('$lib/stores/notes.svelte');
+		await deleteNote(noteId!);
+		goto('/');
 	}
 
 	// ── Rich text commands ────────────────────────────────────────

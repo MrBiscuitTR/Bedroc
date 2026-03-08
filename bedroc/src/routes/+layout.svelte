@@ -1,6 +1,9 @@
 <script lang="ts">
 	import '../app.css';
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
+	import { auth, restoreSession } from '$lib/stores/auth.svelte.js';
 
 	let { children } = $props();
 
@@ -12,6 +15,18 @@
 	// Note editor owns its full-width toolbar on mobile, so we hide the global
 	// mobile header on that route to avoid doubling up.
 	let isNoteRoute = $derived(path.startsWith('/note'));
+
+	// ── Auth guard ────────────────────────────────────────────────
+	// On mount, try to restore session from httpOnly refresh cookie.
+	// If that fails (or DEK is missing), redirect to /login.
+	// isAuthRoute pages (login/register) skip the guard.
+	onMount(async () => {
+		if (isAuthRoute) return;
+		await restoreSession();
+		if (!auth.isLoggedIn) {
+			goto('/login');
+		}
+	});
 
 	const navItems = [
 		{ href: '/',         label: 'Notes',    icon: 'notes' },

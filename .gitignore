@@ -79,6 +79,12 @@ web_modules/
 .env.production.local
 .env.local
 
+# TLS private keys and certificates — never commit to git
+docker/ssl/
+*.pem
+*.key
+*.crt
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache

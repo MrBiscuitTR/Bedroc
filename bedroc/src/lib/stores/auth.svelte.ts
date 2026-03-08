@@ -1,0 +1,560 @@
+/**
+ * lib/stores/auth.svelte.ts — Authentication state and API client.
+ *
+ * Manages:
+ *   - Server URL with saved-server list (persisted in localStorage)
+ *   - Access token (in memory only — never written to localStorage)
+ *   - DEK (Data Encryption Key) — in memory only, never persisted
+ *   - Login flow (SRP-6a two-step)
+ *   - Register flow (SRP verifier generation + DEK creation)
+ *   - Logout (clears memory state + wipes IndexedDB)
+ *   - Token refresh (called automatically on 401)
+ *   - apiFetch() — authenticated fetch with auto-refresh
+ *
+ * Security properties:
+ *   - Access token in memory → cleared on page unload / logout
+ *   - DEK in memory → derived from password on each login; never written to disk
+ *   - Key material (encryptedDek + dekSalt) saved to IndexedDB → allows
+ *     restoring the DEK from password without a server round-trip when offline
+ *   - Refresh token is httpOnly cookie → not readable from JS
+ *   - Server URL saved to localStorage (not sensitive)
+ */
+
+import { goto } from '$app/navigation';
+import {
+  deriveMasterKey,
+  generateDek,
+  wrapDek,
+  unwrapDek,
+  randomBytes,
+  toHex,
+  fromHex,
+} from '$lib/crypto/keys.js';
+import {
+  srpRegister,
+  srpClientEphemeral,
+  srpClientProof,
+  srpVerifyServer,
+} from '$lib/crypto/srp.js';
+import {
+  saveKeyMaterial,
+  loadKeyMaterial,
+  clearKeyMaterial,
+  wipeLocalData,
+} from '$lib/db/indexeddb.js';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const DEFAULT_SERVER = 'https://api.bedroc.app';
+const LS_SERVERS_KEY = 'bedroc_servers';      // saved server list
+const LS_LAST_SERVER_KEY = 'bedroc_last_srv'; // most recently used server URL
+const REQUEST_TIMEOUT_MS = 12_000;            // 12s before treating as unreachable
+
+/** Fetch with an AbortController timeout. Throws a user-friendly error on timeout. */
+async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') {
+      throw new Error('Server did not respond. Check the server URL and your connection.');
+    }
+    // Network error (DNS failure, connection refused, etc.)
+    throw new Error('Cannot reach server. Is it running and the URL correct?');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// State (Svelte 5 runes)
+// ---------------------------------------------------------------------------
+
+let _accessToken = $state<string | null>(null);
+let _dek = $state<CryptoKey | null>(null);
+let _userId = $state<string | null>(null);
+let _username = $state<string | null>(null);
+let _serverUrl = $state<string>(loadLastServer());
+let _savedServers = $state<string[]>(loadSavedServers());
+let _loading = $state(false);
+let _error = $state<string | null>(null);
+
+// ---------------------------------------------------------------------------
+// Exported reactive getters
+// ---------------------------------------------------------------------------
+
+export const auth = {
+  get accessToken() { return _accessToken; },
+  get dek() { return _dek; },
+  get userId() { return _userId; },
+  get username() { return _username; },
+  get serverUrl() { return _serverUrl; },
+  get savedServers() { return _savedServers; },
+  get loading() { return _loading; },
+  get error() { return _error; },
+  get isLoggedIn() { return _accessToken !== null && _dek !== null; },
+};
+
+// ---------------------------------------------------------------------------
+// Server URL management
+// ---------------------------------------------------------------------------
+
+function loadLastServer(): string {
+  if (typeof localStorage === 'undefined') return DEFAULT_SERVER;
+  return localStorage.getItem(LS_LAST_SERVER_KEY) ?? DEFAULT_SERVER;
+}
+
+function loadSavedServers(): string[] {
+  if (typeof localStorage === 'undefined') return [DEFAULT_SERVER];
+  try {
+    const raw = localStorage.getItem(LS_SERVERS_KEY);
+    const list = raw ? (JSON.parse(raw) as string[]) : [DEFAULT_SERVER];
+    if (!list.includes(DEFAULT_SERVER)) list.unshift(DEFAULT_SERVER);
+    return list;
+  } catch {
+    return [DEFAULT_SERVER];
+  }
+}
+
+/**
+ * Normalise any form of server URL the user might type:
+ *   "10.66.66.1"          → "http://10.66.66.1"
+ *   "10.66.66.1:3000"     → "http://10.66.66.1:3000"
+ *   "192.168.1.5"         → "http://192.168.1.5"
+ *   "notes.example.com"   → "https://notes.example.com"
+ *   "https://foo.com/"    → "https://foo.com"
+ *   "http://foo.com"      → "http://foo.com"
+ *
+ * Rules:
+ *   - If the input already has http:// or https://, keep it as-is.
+ *   - If the input looks like an IP address (v4), default to http://.
+ *   - Otherwise (domain name), default to https://.
+ *   - Always strip trailing slash.
+ */
+export function normaliseServerUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/$/, '');
+  if (!trimmed) return DEFAULT_SERVER;
+
+  // Already has a scheme
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+
+  // Looks like an IPv4 address (with optional port)
+  const ipv4Re = /^(\d{1,3}\.){3}\d{1,3}(:\d+)?$/;
+  if (ipv4Re.test(trimmed)) return `http://${trimmed}`;
+
+  // localhost / 127.x.x.x
+  if (trimmed.startsWith('localhost') || trimmed.startsWith('127.')) return `http://${trimmed}`;
+
+  // Default: assume https for domain names
+  return `https://${trimmed}`;
+}
+
+export function setServerUrl(url: string): void {
+  const normalized = normaliseServerUrl(url) || DEFAULT_SERVER;
+  _serverUrl = normalized;
+  localStorage.setItem(LS_LAST_SERVER_KEY, normalized);
+
+  // Add to saved list if not already there
+  if (!_savedServers.includes(normalized)) {
+    _savedServers = [normalized, ..._savedServers];
+    localStorage.setItem(LS_SERVERS_KEY, JSON.stringify(_savedServers));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Health check
+// ---------------------------------------------------------------------------
+
+export type ServerStatus = 'unknown' | 'checking' | 'online' | 'offline';
+
+let _serverStatus = $state<ServerStatus>('unknown');
+export const serverStatus = { get value() { return _serverStatus; } };
+
+/**
+ * Ping GET /health on the given (or current) server URL.
+ * Updates the reactive _serverStatus.
+ * Resolves to true if the server responded OK, false otherwise.
+ * Has a 5-second timeout.
+ */
+export async function checkServerHealth(url?: string): Promise<boolean> {
+  const target = url ? normaliseServerUrl(url) : _serverUrl;
+  _serverStatus = 'checking';
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(`${target}/health`, {
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+    clearTimeout(timer);
+    _serverStatus = res.ok ? 'online' : 'offline';
+    return res.ok;
+  } catch {
+    _serverStatus = 'offline';
+    return false;
+  }
+}
+
+export function removeSavedServer(url: string): void {
+  if (url === DEFAULT_SERVER) return; // never remove default
+  _savedServers = _savedServers.filter((s) => s !== url);
+  localStorage.setItem(LS_SERVERS_KEY, JSON.stringify(_savedServers));
+}
+
+// ---------------------------------------------------------------------------
+// HTTP helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Authenticated fetch with automatic token refresh on 401.
+ * Always sends the access token from memory; never from localStorage.
+ * Credentials: 'include' sends the httpOnly refresh cookie on all requests.
+ */
+export async function apiFetch(
+  path: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  const url = `${_serverUrl}${path}`;
+  const headers = new Headers(init.headers);
+  if (_accessToken) {
+    headers.set('Authorization', `Bearer ${_accessToken}`);
+  }
+  headers.set('Content-Type', 'application/json');
+
+  const res = await fetch(url, {
+    ...init,
+    headers,
+    credentials: 'include', // send httpOnly refresh cookie
+  });
+
+  // On 401, attempt token refresh once
+  if (res.status === 401 && _accessToken) {
+    const refreshed = await tryRefreshToken();
+    if (refreshed) {
+      headers.set('Authorization', `Bearer ${_accessToken}`);
+      return fetch(url, { ...init, headers, credentials: 'include' });
+    }
+    // Refresh failed — force logout
+    await logout();
+    goto('/login');
+  }
+
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+// Token refresh
+// ---------------------------------------------------------------------------
+
+async function tryRefreshToken(): Promise<boolean> {
+  try {
+    const res = await fetch(`${_serverUrl}/api/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    if (!res.ok) return false;
+    const data = await res.json() as { accessToken: string };
+    _accessToken = data.accessToken;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+/**
+ * Register a new account.
+ *
+ * 1. Generate DEK (random 32 bytes)
+ * 2. Derive Master Key from password + random dekSalt
+ * 3. Wrap DEK with Master Key → encryptedDek
+ * 4. Generate SRP salt + verifier from password
+ * 5. POST to /api/auth/register
+ * 6. On success, save key material to IndexedDB for offline use
+ */
+export async function register(username: string, password: string): Promise<void> {
+  _loading = true;
+  _error = null;
+
+  try {
+    // Client-side validation
+    if (username.trim().length < 3) throw new Error('Username must be at least 3 characters.');
+    if (password.length < 8) throw new Error('Password must be at least 8 characters.');
+    // Key material
+    const dekSaltBytes = randomBytes(32);
+    const dekSaltHex = toHex(dekSaltBytes);
+    const masterKey = await deriveMasterKey(password, dekSaltBytes);
+    const { dek, dekRaw } = await generateDek();
+    const encryptedDek = await wrapDek(dekRaw, masterKey);
+
+    // SRP verifier
+    const { salt: srpSalt, verifier } = await srpRegister(username, password);
+
+    // POST to server
+    const res = await fetchWithTimeout(`${_serverUrl}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        username,
+        srpSalt,
+        verifier,
+        encryptedDek,
+        dekSalt: dekSaltHex,
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({})) as { message?: string };
+      if (res.status === 409) throw new Error('Username already taken. Choose a different one.');
+      if (res.status === 400) throw new Error(body.message ?? 'Invalid registration details.');
+      if (res.status >= 500) throw new Error('Server error. Please try again later.');
+      throw new Error(body.message ?? 'Registration failed.');
+    }
+
+    const data = await res.json() as {
+      accessToken: string;
+      userId: string;
+      username: string;
+    };
+
+    // Store DEK and access token in memory
+    _accessToken = data.accessToken;
+    _dek = dek;
+    _userId = data.userId;
+    _username = data.username;
+
+    // Save key material to IndexedDB for next login (allows offline DEK restore)
+    await saveKeyMaterial({
+      id: 'current',
+      username,
+      serverUrl: _serverUrl,
+      encryptedDek,
+      dekSaltHex,
+    });
+
+    setServerUrl(_serverUrl); // persist server URL
+
+  } catch (err) {
+    _error = (err as Error).message;
+    throw err;
+  } finally {
+    _loading = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Login (SRP-6a two-step)
+// ---------------------------------------------------------------------------
+
+/**
+ * Log in with SRP-6a.
+ *
+ * Step 1: Send username + A to server → receive salt + B
+ * Step 2: Compute M1 + session key, send M1 → receive access token + M2
+ * Step 3: Verify M2 (proves server knows password)
+ * Step 4: Derive master key → unwrap DEK from encryptedDek
+ */
+export async function login(username: string, password: string): Promise<void> {
+  _loading = true;
+  _error = null;
+
+  try {
+    // --- Step 1: Client ephemeral ---
+    const { a, A } = srpClientEphemeral();
+
+    const initRes = await fetchWithTimeout(`${_serverUrl}/api/auth/login/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, A }),
+    });
+
+    if (!initRes.ok) {
+      if (initRes.status === 429) throw new Error('Too many login attempts. Please wait a minute and try again.');
+      if (initRes.status >= 500) throw new Error('Server error. Please try again later.');
+      // Intentionally vague for 400/404 — don't reveal whether username exists
+      throw new Error('Invalid username or password.');
+    }
+
+    const initData = await initRes.json() as {
+      salt: string;
+      B: string;
+    };
+
+    // --- Step 2: Client proof ---
+    const { M1, sessionKey } = await srpClientProof({
+      username,
+      password,
+      saltHex: initData.salt,
+      AHex: A,
+      BHex: initData.B,
+      a,
+    });
+
+    const verifyRes = await fetchWithTimeout(`${_serverUrl}/api/auth/login/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include', // receive httpOnly refresh cookie
+      body: JSON.stringify({ username, A, M1 }),
+    });
+
+    if (!verifyRes.ok) {
+      if (verifyRes.status === 429) throw new Error('Too many login attempts. Please wait a minute and try again.');
+      if (verifyRes.status >= 500) throw new Error('Server error. Please try again later.');
+      throw new Error('Invalid username or password.');
+    }
+
+    const verifyData = await verifyRes.json() as {
+      accessToken: string;
+      M2: string;
+      userId: string;
+      username: string;
+      encryptedDek: string;
+      dekSalt: string; // hex
+    };
+
+    // --- Step 3: Verify server proof (mutual authentication) ---
+    try {
+      await srpVerifyServer(A, M1, sessionKey, verifyData.M2);
+    } catch {
+      throw new Error('Login failed: server verification error. Please try again.');
+    }
+
+    // --- Step 4: Unwrap DEK ---
+    const dekSaltBytes = fromHex(verifyData.dekSalt);
+    const masterKey = await deriveMasterKey(password, dekSaltBytes);
+    const dek = await unwrapDek(verifyData.encryptedDek, masterKey);
+
+    // Store in memory
+    _accessToken = verifyData.accessToken;
+    _dek = dek;
+    _userId = verifyData.userId;
+    _username = verifyData.username;
+
+    // Persist key material for offline DEK restore
+    await saveKeyMaterial({
+      id: 'current',
+      username,
+      serverUrl: _serverUrl,
+      encryptedDek: verifyData.encryptedDek,
+      dekSaltHex: verifyData.dekSalt,
+    });
+
+    setServerUrl(_serverUrl);
+
+  } catch (err) {
+    _error = (err as Error).message;
+    throw err;
+  } finally {
+    _loading = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Logout
+// ---------------------------------------------------------------------------
+
+export async function logout(): Promise<void> {
+  const userId = _userId;
+
+  // Clear memory first
+  _accessToken = null;
+  _dek = null;
+  _userId = null;
+  _username = null;
+
+  // Revoke server session (best-effort; don't block on failure)
+  try {
+    await fetch(`${_serverUrl}/api/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+  } catch {
+    // Offline logout — session will expire naturally
+  }
+
+  // Wipe local IndexedDB data
+  if (userId) {
+    try {
+      await wipeLocalData(userId);
+    } catch {
+      // Ignore wipe errors — worst case stale data remains
+    }
+  }
+
+  await clearKeyMaterial();
+}
+
+// ---------------------------------------------------------------------------
+// Restore session on page load
+// ---------------------------------------------------------------------------
+
+/**
+ * Try to restore the session from the httpOnly refresh cookie.
+ * Called once in +layout.svelte on mount.
+ *
+ * If the refresh token is still valid, the server issues a new access token.
+ * We then load cached key material from IndexedDB (encryptedDek + dekSalt)
+ * but we CAN'T re-derive the DEK without the password!
+ *
+ * Resolution: after restoring the access token, we stay in a "locked" state
+ * where the DEK is null. The app prompts the user to re-enter their password
+ * to "unlock" the vault (like Bitwarden's vault unlock screen).
+ *
+ * `isLoggedIn` checks both accessToken AND dek — so a locked state will
+ * redirect to /login where the user can unlock with their password.
+ * The login form detects that a session exists and shows "Unlock" instead of "Log in".
+ */
+export async function restoreSession(): Promise<void> {
+  const refreshed = await tryRefreshToken();
+  if (!refreshed) return;
+
+  // Load saved identity from IndexedDB
+  const km = await loadKeyMaterial();
+  if (km) {
+    _username = km.username;
+    _serverUrl = km.serverUrl;
+    // _dek remains null — user must unlock with password
+  }
+
+  // Get userId from the access token (decode without verify — browser already verified via HTTPS)
+  if (_accessToken) {
+    try {
+      const payload = JSON.parse(atob(_accessToken.split('.')[1])) as { sub: string };
+      _userId = payload.sub;
+    } catch {
+      // Malformed token — treat as logged out
+      _accessToken = null;
+    }
+  }
+}
+
+/**
+ * Unlock the vault with the user's password.
+ * Used when session is restored but DEK is not in memory.
+ *
+ * @throws if password is wrong (DEK decryption will fail)
+ */
+export async function unlockWithPassword(password: string): Promise<void> {
+  _loading = true;
+  _error = null;
+
+  try {
+    const km = await loadKeyMaterial();
+    if (!km) throw new Error('No local key material — please log in again');
+
+    const dekSaltBytes = fromHex(km.dekSaltHex);
+    const masterKey = await deriveMasterKey(password, dekSaltBytes);
+    const dek = await unwrapDek(km.encryptedDek, masterKey);
+
+    _dek = dek;
+  } finally {
+    _loading = false;
+  }
+}

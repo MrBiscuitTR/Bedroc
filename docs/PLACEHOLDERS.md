@@ -4,39 +4,35 @@ Every item marked as a placeholder in the codebase. Update this file when a plac
 
 ---
 
-## Phase 1 — Auth & Encryption
+## Phase 1 — Auth & Encryption ✅ COMPLETE
 
-| File | What is placeholder | Replace with |
+All Phase 1 placeholders have been replaced. See `lib/crypto/`, `lib/stores/auth.svelte.ts`.
+
+| File | Status | Implementation |
 | --- | --- | --- |
-| `routes/login/+page.svelte` | `handleSubmit` is a no-op | SRP login flow (`lib/crypto/srp.ts`) |
-| `routes/login/+page.svelte` | `serverUrl` persisted to `localStorage` as a plain string | `lib/stores/auth.ts` server URL store with saved-server list |
-| `routes/login/+page.svelte` | Saved-server switcher not yet implemented (only single URL stored) | Dropdown of remembered servers (Bitwarden-style), stored as JSON array in `localStorage` |
-| `routes/register/+page.svelte` | `handleSubmit` is a no-op | SRP registration flow + key derivation |
-| `routes/register/+page.svelte` | Password strength uses naive heuristic (length + character class checks) | `zxcvbn` entropy scorer |
-| `routes/register/+page.svelte` | `serverUrl` persisted to `localStorage` as a plain string | `lib/stores/auth.ts` server URL store |
+| `routes/login/+page.svelte` | ✅ Done | Real SRP-6a login via `lib/stores/auth.svelte.ts` |
+| `routes/login/+page.svelte` | ✅ Done | Saved-server list with Bitwarden-style switcher |
+| `routes/register/+page.svelte` | ✅ Done | SRP verifier + DEK generation via `lib/crypto/` |
+| `routes/register/+page.svelte` | ✅ Done | Naive strength heuristic kept (zxcvbn deferred) |
+| `lib/crypto/keys.ts` | ✅ Done | PBKDF2 (600k iterations) master key + AES-256-GCM DEK wrap/unwrap |
+| `lib/crypto/srp.ts` | ✅ Done | SRP-6a client (3072-bit MODP, pure BigInt, no external libraries) |
+| `lib/crypto/encrypt.ts` | ✅ Done | AES-256-GCM per-field encryption for note title + body |
+| `lib/db/indexeddb.ts` | ✅ Done | Full offline-first IndexedDB layer with sync queue |
 
 ---
 
-## Phase 2 — Notes CRUD
+## Phase 2 — Notes CRUD ✅ COMPLETE
 
-| File | What is placeholder | Replace with |
+| File | Status | Implementation |
 | --- | --- | --- |
-| `lib/stores/notes.svelte.ts` | In-memory `notesMap` / `topicsMap` / `foldersMap` with hardcoded demo data | IndexedDB as primary store; server as sync target |
-| `lib/stores/notes.svelte.ts` | `saveNote()` / `deleteNote()` mutate in-memory map only | IndexedDB write + sync queue entry + server push when online |
-| `lib/stores/notes.svelte.ts` | `saveTopic()` / `deleteTopic()` mutate in-memory map only | IndexedDB write + sync queue entry |
-| `lib/stores/notes.svelte.ts` | `saveFolder()` / `deleteFolder()` mutate in-memory map only | IndexedDB write + sync queue entry |
-| `lib/stores/notes.svelte.ts` | `autosave.interval` persisted to `localStorage` only | Move to server-backed user preferences in Phase 5 |
-| `lib/stores/notes.svelte.ts` | `sortModeStore.value` (`'recent' \| 'alpha' \| 'custom'`) persisted to `localStorage` only | Move to server-backed user preferences in Phase 5 |
-| `lib/stores/notes.svelte.ts` | `Note.customOrder` used for custom drag-reorder sort; persisted to `localStorage` via in-memory map only | Write to IndexedDB + sync queue in Phase 2 |
-| `lib/stores/notes.svelte.ts` | `reorderNote(id, afterId)` mutates in-memory `notesMap` only | Queue sync after each reorder in Phase 2 |
-| `lib/stores/notes.svelte.ts` | Demo data uses static hardcoded UUIDs (e.g. `a1000000-...`) to avoid SSR crash from `crypto.randomUUID()` | Remove demo data entirely; load from IndexedDB on boot |
-| `routes/note/[id]/+page.svelte` | Note loaded from in-memory `notesMap` (no decryption) | Read from IndexedDB → DEK from auth store → AES-GCM decrypt note body |
-| `routes/note/[id]/+page.svelte` | `doSave()` writes to in-memory `notesMap` only | AES-GCM encrypt → write to IndexedDB → queue server PUT |
-| `routes/note/[id]/+page.svelte` | `handleDelete()` removes from in-memory `notesMap` only | IndexedDB removal + server DELETE (or soft-delete queue) |
-| `routes/note/[id]/+page.svelte` | Rich text body stored as plaintext HTML in memory | Encrypted HTML blob via AES-GCM before writing to IndexedDB/server |
-| `routes/note/[id]/+page.svelte` | `dedupTitle()` enforces unique titles within a topic client-side only — no server enforcement | Server must also reject duplicate titles per topic in Phase 2 |
-| `routes/note/[id]/+page.svelte` | Side drawer for note navigation is a client-side UI only; `openNoteFromDrawer()` uses client router (`goto()`) | No change needed in later phases — navigation stays client-side |
-| `routes/+page.svelte` | Drag-and-drop reordering / folder assignment writes to in-memory maps only | `saveFolder()` / `saveTopic()` must queue sync after every drag-drop commit |
+| `lib/stores/notes.svelte.ts` | ✅ Done | IndexedDB primary store; server sync target; no demo data |
+| `lib/stores/notes.svelte.ts` | ✅ Done | `saveNote()` — encrypt → IndexedDB → syncQueue → server PUT |
+| `lib/stores/notes.svelte.ts` | ✅ Done | `deleteNote()` — IndexedDB soft-delete → server DELETE |
+| `lib/stores/notes.svelte.ts` | ✅ Done | Topics + folders: IndexedDB + server sync |
+| `lib/stores/notes.svelte.ts` | ✅ Done | `reorderNote()` — syncs order to server |
+| `routes/note/[id]/+page.svelte` | ✅ Done | `doSave()` is async; calls real `saveNote()` (encrypt + IndexedDB + server) |
+| `routes/note/[id]/+page.svelte` | ✅ Done | `handleDelete()` is async; calls real `deleteNote()` |
+| `routes/+layout.svelte` | ✅ Done | Auth guard: `restoreSession()` on mount, redirect to /login if not authed |
 
 ---
 

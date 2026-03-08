@@ -1,20 +1,55 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { autosave } from '$lib/stores/notes.svelte';
+	import { auth, logout, apiFetch } from '$lib/stores/auth.svelte.js';
+	import { clearStore } from '$lib/stores/notes.svelte.js';
 
-	// Settings page — shell only. Actual logic wired in Phase 5/6.
 	let confirmLogout = $state(false);
 	let confirmDelete = $state(false);
 
-	const serverUrl =
-		typeof localStorage !== 'undefined'
-			? (localStorage.getItem('bedroc_server') ?? 'https://api.bedroc.app')
-			: 'https://api.bedroc.app';
+	// ── Sessions ──────────────────────────────────────────────────
+	interface Session {
+		id: string;
+		device_info: string | null;
+		created_at: string;
+		expires_at: string;
+	}
 
-	// Placeholder session list — real data from server in Phase 5.
-	const sessions = [
-		{ id: '1', device: 'Chrome on macOS',  location: 'Current session', current: true },
-		{ id: '2', device: 'Safari on iPhone', location: 'Last seen 2h ago', current: false },
-	];
+	let sessions = $state<Session[]>([]);
+	let sessionsLoading = $state(true);
+
+	async function loadSessions() {
+		try {
+			const res = await apiFetch('/api/auth/sessions');
+			if (res.ok) sessions = await res.json() as Session[];
+		} catch { /* offline — no sessions list */ }
+		sessionsLoading = false;
+	}
+
+	// Load on mount
+	$effect(() => { loadSessions(); });
+
+	async function revokeSession(id: string) {
+		try {
+			await apiFetch(`/api/auth/sessions/${id}`, { method: 'DELETE' });
+			sessions = sessions.filter(s => s.id !== id);
+		} catch { /* ignore */ }
+	}
+
+	async function handleLogout() {
+		clearStore();
+		await logout();
+		goto('/login');
+	}
+
+	async function handleDeleteAccount() {
+		try {
+			await apiFetch('/api/auth/account', { method: 'DELETE' });
+		} catch { /* ignore */ }
+		clearStore();
+		await logout();
+		goto('/login');
+	}
 
 	// ── Autosave settings ─────────────────────────────────────────
 	// autosave.interval === 0 means disabled.
@@ -47,14 +82,14 @@
 			<div class="row">
 				<div class="row-info">
 					<span class="row-label">Username</span>
-					<span class="row-value">username</span>
+					<span class="row-value">{auth.username ?? '—'}</span>
 				</div>
 			</div>
 			<div class="divider-inner"></div>
 			<div class="row">
 				<div class="row-info">
 					<span class="row-label">Server</span>
-					<span class="row-value muted">{serverUrl}</span>
+					<span class="row-value muted">{auth.serverUrl}</span>
 				</div>
 			</div>
 		</div>
@@ -138,23 +173,28 @@
 	<section class="section">
 		<h3 class="section-title">Active sessions</h3>
 		<div class="card">
-			{#each sessions as session, i (session.id)}
-				{#if i > 0}<div class="divider-inner"></div>{/if}
-				<div class="row">
-					<div class="row-info">
-						<span class="row-label">
-							{session.device}
-							{#if session.current}
-								<span class="badge">This device</span>
-							{/if}
-						</span>
-						<span class="row-sub">{session.location}</span>
+			{#if sessionsLoading}
+				<div class="row"><span class="row-sub">Loading…</span></div>
+			{:else if sessions.length === 0}
+				<div class="row"><span class="row-sub">No sessions found.</span></div>
+			{:else}
+				{#each sessions as session, i (session.id)}
+					{#if i > 0}<div class="divider-inner"></div>{/if}
+					<div class="row">
+						<div class="row-info">
+							<span class="row-label">
+								{session.device_info ?? 'Unknown device'}
+							</span>
+							<span class="row-sub">
+								Active until {new Date(session.expires_at).toLocaleDateString()}
+							</span>
+						</div>
+						<button class="btn-ghost revoke-btn" onclick={() => revokeSession(session.id)}>
+							Revoke
+						</button>
 					</div>
-					{#if !session.current}
-						<button class="btn-ghost revoke-btn">Revoke</button>
-					{/if}
-				</div>
-			{/each}
+				{/each}
+			{/if}
 		</div>
 	</section>
 
@@ -175,7 +215,7 @@
 				{:else}
 					<div class="confirm-row">
 						<span class="confirm-text">Sure?</span>
-						<button class="btn-danger confirm-yes">Yes, log out</button>
+						<button class="btn-danger confirm-yes" onclick={handleLogout}>Yes, log out</button>
 						<button class="btn-ghost" onclick={() => (confirmLogout = false)}>Cancel</button>
 					</div>
 				{/if}
@@ -194,7 +234,7 @@
 				{:else}
 					<div class="confirm-row">
 						<span class="confirm-text">Sure?</span>
-						<button class="btn-danger confirm-yes">Delete forever</button>
+						<button class="btn-danger confirm-yes" onclick={handleDeleteAccount}>Delete forever</button>
 						<button class="btn-ghost" onclick={() => (confirmDelete = false)}>Cancel</button>
 					</div>
 				{/if}

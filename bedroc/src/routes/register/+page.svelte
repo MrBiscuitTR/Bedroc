@@ -1,9 +1,10 @@
 <script lang="ts">
-	let serverUrl = $state(
-		typeof localStorage !== 'undefined'
-			? (localStorage.getItem('bedroc_server') ?? 'https://api.bedroc.app')
-			: 'https://api.bedroc.app'
-	);
+	import { goto } from '$app/navigation';
+	import {
+		auth, register, setServerUrl,
+		normaliseServerUrl, checkServerHealth, serverStatus,
+	} from '$lib/stores/auth.svelte.js';
+	import { loadFromDb } from '$lib/stores/notes.svelte.js';
 
 	let serverExpanded = $state(false);
 	let showPassword = $state(false);
@@ -11,9 +12,12 @@
 	let username = $state('');
 	let password = $state('');
 	let confirm = $state('');
+	let newServerInput = $state(auth.serverUrl);
 
-	// Naive strength score 0–4 used to render the strength bar.
-	// Will be replaced by zxcvbn in Phase 1.
+	let localError = $state<string | null>(null);
+	let displayError = $derived(localError ?? auth.error);
+
+	// Password strength 0–4
 	let strength = $derived((() => {
 		if (password.length === 0) return 0;
 		let score = 0;
@@ -27,17 +31,47 @@
 	const strengthLabels = ['', 'Weak', 'Fair', 'Good', 'Strong'];
 	const strengthColors = ['', '#e05c5c', '#e0a45c', '#6b8afd', '#4caf87'];
 
+	let passwordTooWeak = $derived(password.length > 0 && strength < 2);
 	let passwordsMatch = $derived(confirm.length > 0 && password === confirm);
 	let passwordMismatch = $derived(confirm.length > 0 && password !== confirm);
+	let submitDisabled = $derived(auth.loading || (confirm.length > 0 && passwordMismatch) || passwordTooWeak);
 
-	function saveServer() {
-		localStorage.setItem('bedroc_server', serverUrl);
+	async function saveServer() {
+		const url = normaliseServerUrl(newServerInput.trim());
+		newServerInput = url;
+		setServerUrl(url);
 		serverExpanded = false;
+		await checkServerHealth(url);
 	}
 
-	function handleSubmit(e: Event) {
+	$effect(() => { if (serverExpanded) checkServerHealth(); });
+
+	const statusDot: Record<string, string> = {
+		unknown: 'dot-unknown', checking: 'dot-checking',
+		online:  'dot-online',  offline:  'dot-offline',
+	};
+	const statusLabel: Record<string, string> = {
+		unknown: '', checking: 'Checking…', online: 'Online', offline: 'Unreachable',
+	};
+
+	async function handleSubmit(e: Event) {
 		e.preventDefault();
-		// Auth logic wired in Phase 1 — placeholder for now.
+		localError = null;
+
+		if (!username.trim()) { localError = 'Please choose a username.'; return; }
+		if (username.trim().length < 3) { localError = 'Username must be at least 3 characters.'; return; }
+		if (/\s/.test(username.trim())) { localError = 'Username cannot contain spaces.'; return; }
+		if (password.length < 8) { localError = 'Password must be at least 8 characters.'; return; }
+		if (strength < 2) { localError = 'Password is too weak. Add uppercase letters, numbers, or symbols.'; return; }
+		if (password !== confirm) { localError = 'Passwords do not match.'; return; }
+
+		try {
+			await register(username.trim(), password);
+			await loadFromDb();
+			goto('/');
+		} catch {
+			// error already set in auth.error
+		}
 	}
 </script>
 
@@ -53,6 +87,10 @@
 	</div>
 
 	<form class="form" onsubmit={handleSubmit}>
+		{#if displayError}
+			<div class="error-banner" role="alert">{displayError}</div>
+		{/if}
+
 		<div class="field">
 			<label for="username" class="field-label">Username</label>
 			<input
@@ -64,6 +102,7 @@
 				spellcheck="false"
 				placeholder="choose a username"
 				bind:value={username}
+				disabled={auth.loading}
 				required
 			/>
 		</div>
@@ -77,6 +116,7 @@
 					autocomplete="new-password"
 					placeholder="••••••••••••"
 					bind:value={password}
+					disabled={auth.loading}
 					required
 				/>
 				<button
@@ -96,7 +136,6 @@
 				</button>
 			</div>
 
-			<!-- Strength bar -->
 			{#if password.length > 0}
 				<div class="strength-bar-wrap">
 					<div class="strength-bar">
@@ -111,6 +150,9 @@
 						{strengthLabels[strength]}
 					</span>
 				</div>
+				{#if passwordTooWeak}
+					<p class="field-warning">Use at least 8 characters with uppercase, numbers, or symbols.</p>
+				{/if}
 			{/if}
 		</div>
 
@@ -123,6 +165,7 @@
 					autocomplete="new-password"
 					placeholder="••••••••••••"
 					bind:value={confirm}
+					disabled={auth.loading}
 					class:input-error={passwordMismatch}
 					class:input-ok={passwordsMatch}
 					required
@@ -152,17 +195,28 @@
 		<div class="server-row">
 			<button type="button" class="server-toggle" onclick={() => (serverExpanded = !serverExpanded)}>
 				<span class="server-label">Server</span>
-				<span class="server-url">{serverUrl}</span>
+				<span class="server-url">{auth.serverUrl}</span>
 				<svg width="12" height="12" viewBox="0 0 12 12" fill="none" class="chevron" class:rotated={serverExpanded}>
 					<path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 				</svg>
 			</button>
 			{#if serverExpanded}
 				<div class="server-input-wrap">
-					<input type="url" class="server-input" placeholder="https://api.bedroc.app" bind:value={serverUrl} spellcheck="false" autocorrect="off" autocapitalize="off"/>
+					<input type="text" class="server-input" placeholder="https://api.bedroc.app or 10.66.66.1" bind:value={newServerInput} spellcheck="false" autocorrect="off" autocapitalize="off"/>
 					<button type="button" class="btn-ghost server-save" onclick={saveServer}>Save</button>
 				</div>
-				<p class="server-hint">Enter your self-hosted backend URL, or leave as default to use bedroc.app.</p>
+				{#if serverStatus.value !== 'unknown'}
+					<div class="server-status">
+						<span class="status-dot {statusDot[serverStatus.value]}"></span>
+						<span class="status-text" class:status-offline={serverStatus.value === 'offline'}>
+							{statusLabel[serverStatus.value]}
+						</span>
+						{#if serverStatus.value === 'offline'}
+							<span class="status-help">— Check the URL and make sure the server is running</span>
+						{/if}
+					</div>
+				{/if}
+				<p class="server-hint">Enter any format: <code>10.66.66.1</code>, <code>192.168.1.5:3000</code>, or <code>https://notes.example.com</code>. Plain IPs default to http://, domain names to https://.</p>
 			{/if}
 		</div>
 
@@ -175,7 +229,9 @@
 			<span>Your notes are encrypted with your password before leaving your device. <strong>If you lose your password, your data cannot be recovered.</strong> Use a password manager.</span>
 		</div>
 
-		<button type="submit" class="btn-primary">Create account</button>
+		<button type="submit" class="btn-primary" disabled={submitDisabled}>
+			{auth.loading ? 'Creating account…' : 'Create account'}
+		</button>
 	</form>
 
 	<p class="auth-switch">
@@ -219,6 +275,15 @@
 		color: var(--text-muted);
 	}
 
+	.error-banner {
+		background: color-mix(in srgb, var(--danger) 12%, transparent);
+		border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+		border-radius: var(--radius-md);
+		padding: 10px 12px;
+		font-size: 13px;
+		color: var(--danger);
+	}
+
 	.form {
 		display: flex;
 		flex-direction: column;
@@ -240,6 +305,46 @@
 	.field-error {
 		font-size: 11px;
 		color: var(--danger);
+	}
+
+	.field-warning {
+		font-size: 11px;
+		color: var(--text-muted);
+	}
+
+	.server-status {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 12px;
+	}
+
+	.status-dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	.dot-unknown  { background: var(--text-faint); }
+	.dot-checking { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+	.dot-online   { background: var(--success); }
+	.dot-offline  { background: var(--danger); }
+
+	@keyframes pulse {
+		0%, 100% { opacity: 1; }
+		50%       { opacity: 0.3; }
+	}
+
+	.status-text    { color: var(--text-muted); }
+	.status-offline { color: var(--danger); }
+	.status-help    { color: var(--text-faint); font-size: 11px; }
+
+	.server-hint code {
+		font-family: monospace;
+		background: var(--bg-hover);
+		padding: 1px 4px;
+		border-radius: 3px;
 	}
 
 	.input-wrap {
@@ -265,7 +370,6 @@
 		border-color: var(--success) !important;
 	}
 
-	/* Strength bar */
 	.strength-bar-wrap {
 		display: flex;
 		align-items: center;
@@ -292,7 +396,6 @@
 		transition: color 0.2s ease;
 	}
 
-	/* Server row — same as login */
 	.server-row {
 		display: flex;
 		flex-direction: column;
@@ -363,7 +466,6 @@
 		line-height: 1.5;
 	}
 
-	/* E2EE notice */
 	.notice {
 		display: flex;
 		gap: 8px;

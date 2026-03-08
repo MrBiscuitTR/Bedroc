@@ -9,11 +9,13 @@
  * Environment variable: REDIS_URL  (e.g. redis://localhost:6379)
  */
 
-import { createClient, type RedisClientType } from 'redis';
+import { createClient } from 'redis';
 
-let _client: RedisClientType | null = null;
+type RedisClient = ReturnType<typeof createClient>;
 
-export async function getRedis(): Promise<RedisClientType> {
+let _client: RedisClient | null = null;
+
+export async function getRedis(): Promise<RedisClient> {
   if (_client) return _client;
 
   const client = createClient({
@@ -21,7 +23,7 @@ export async function getRedis(): Promise<RedisClientType> {
     socket: {
       reconnectStrategy: (retries) => Math.min(retries * 100, 3000),
     },
-  }); //as RedisClientType;
+  });
 
   client.on('error', (err: Error) => console.error('[redis] Error:', err.message));
   client.on('connect', () => console.log('[redis] Connected.'));

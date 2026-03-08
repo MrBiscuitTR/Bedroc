@@ -221,7 +221,7 @@
 						{#if serverStatus.value === 'offline'}
 							<span class="status-help">— Check the URL and make sure the server is running</span>
 							{#if isSelfSignedCandidate(auth.serverUrl)}
-								<span class="status-help">Self-signed cert? <a href="{auth.serverUrl}/health" target="_blank" rel="noopener">Open {auth.serverUrl}/health</a> in a new tab, accept the certificate warning, then come back and check again.</span>
+								<span class="status-help">Self-signed cert: browsers block cross-origin requests to self-signed HTTPS. <a href="{auth.serverUrl}/register" target="_blank" rel="noopener">Open the app directly at {auth.serverUrl}/register</a> — same-origin requests always work.</span>
 							{/if}
 						{/if}
 					</div>

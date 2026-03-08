@@ -121,34 +121,28 @@ function loadSavedServers(): string[] {
 
 /**
  * Normalise any form of server URL the user might type:
- *   "10.66.66.1"          → "http://10.66.66.1"
- *   "10.66.66.1:3000"     → "http://10.66.66.1:3000"
- *   "192.168.1.5"         → "http://192.168.1.5"
+ *   "10.66.66.1"          → "https://10.66.66.1"
+ *   "10.66.66.1:3000"     → "https://10.66.66.1:3000"
+ *   "192.168.1.5"         → "https://192.168.1.5"
  *   "notes.example.com"   → "https://notes.example.com"
  *   "https://foo.com/"    → "https://foo.com"
  *   "http://foo.com"      → "http://foo.com"
  *
  * Rules:
  *   - If the input already has http:// or https://, keep it as-is.
- *   - If the input looks like an IP address (v4), default to http://.
- *   - Otherwise (domain name), default to https://.
+ *   - Otherwise always default to https:// (browsers block mixed content
+ *     when the frontend is served over HTTPS, so http:// backends fail).
  *   - Always strip trailing slash.
  */
 export function normaliseServerUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/$/, '');
   if (!trimmed) return DEFAULT_SERVER;
 
-  // Already has a scheme
+  // Already has a scheme — keep it (user explicitly chose http:// or https://)
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
 
-  // Looks like an IPv4 address (with optional port)
-  const ipv4Re = /^(\d{1,3}\.){3}\d{1,3}(:\d+)?$/;
-  if (ipv4Re.test(trimmed)) return `http://${trimmed}`;
-
-  // localhost / 127.x.x.x
-  if (trimmed.startsWith('localhost') || trimmed.startsWith('127.')) return `http://${trimmed}`;
-
-  // Default: assume https for domain names
+  // Everything else: default to https://
+  // (covers IPs, localhost, domain names — https is required for mixed-content)
   return `https://${trimmed}`;
 }
 
@@ -174,28 +168,60 @@ let _serverStatus = $state<ServerStatus>('unknown');
 export const serverStatus = { get value() { return _serverStatus; } };
 
 /**
+ * Returns true if the current server URL is https:// on a bare IP —
+ * meaning it is likely using a self-signed certificate that the browser
+ * hasn't accepted yet. Used to show a targeted "accept cert" hint.
+ */
+export function isSelfSignedCandidate(url?: string): boolean {
+  const target = url ?? _serverUrl;
+  return /^https:\/\/(\d{1,3}\.){3}\d{1,3}(:\d+)?($|\/)/.test(target);
+}
+
+/**
  * Ping GET /health on the given (or current) server URL.
  * Updates the reactive _serverStatus.
  * Resolves to true if the server responded OK, false otherwise.
  * Has a 5-second timeout.
  */
-export async function checkServerHealth(url?: string): Promise<boolean> {
-  const target = url ? normaliseServerUrl(url) : _serverUrl;
-  _serverStatus = 'checking';
+async function tryHealthFetch(target: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
     const res = await fetch(`${target}/health`, {
       signal: controller.signal,
       cache: 'no-store',
     });
     clearTimeout(timer);
-    _serverStatus = res.ok ? 'online' : 'offline';
     return res.ok;
   } catch {
-    _serverStatus = 'offline';
+    clearTimeout(timer);
     return false;
   }
+}
+
+export async function checkServerHealth(url?: string): Promise<boolean> {
+  const base = url ? normaliseServerUrl(url) : _serverUrl;
+  _serverStatus = 'checking';
+
+  // Try the primary URL (always https:// after normalisation)
+  if (await tryHealthFetch(base)) {
+    if (base !== _serverUrl) setServerUrl(base);
+    _serverStatus = 'online';
+    return true;
+  }
+
+  // If https:// failed, try http:// as fallback (useful on LAN / WireGuard)
+  if (base.startsWith('https://')) {
+    const httpFallback = base.replace(/^https:\/\//, 'http://');
+    if (await tryHealthFetch(httpFallback)) {
+      setServerUrl(httpFallback); // commit the working URL
+      _serverStatus = 'online';
+      return true;
+    }
+  }
+
+  _serverStatus = 'offline';
+  return false;
 }
 
 export function removeSavedServer(url: string): void {

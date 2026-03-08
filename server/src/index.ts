@@ -82,7 +82,7 @@ await app.register(fastifyHelmet, {
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"], // SvelteKit inlines critical CSS
       imgSrc: ["'self'", 'data:'],             // data: for inline SVG favicons
-      connectSrc: ["'self'", 'wss:'],          // wss: for WebSocket
+      connectSrc: ["'self'", 'https:', 'wss:'],          // https: for any self-hosted backend, wss: for WebSocket
       fontSrc: ["'self'"],
       objectSrc: ["'none'"],
       frameAncestors: ["'none'"],

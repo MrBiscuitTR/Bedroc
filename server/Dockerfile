@@ -62,7 +62,7 @@ EXPOSE 3000
 
 # Health check — used by Docker Compose to gate dependent service startup
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
-  CMD wget -qO- http://localhost:3000/health || exit 1
+  CMD wget -qO- http://127.0.0.1:3000/health || exit 1
 
 # Use exec form (no /bin/sh) — signals go directly to the Node process
 ENTRYPOINT ["node", "dist/index.js"]

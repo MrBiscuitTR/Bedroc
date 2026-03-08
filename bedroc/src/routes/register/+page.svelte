@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import {
 		auth, register, setServerUrl,
-		normaliseServerUrl, checkServerHealth, serverStatus,
+		normaliseServerUrl, checkServerHealth, serverStatus, isSelfSignedCandidate,
 	} from '$lib/stores/auth.svelte.js';
 	import { loadFromDb } from '$lib/stores/notes.svelte.js';
 
@@ -34,7 +34,14 @@
 	let passwordTooWeak = $derived(password.length > 0 && strength < 2);
 	let passwordsMatch = $derived(confirm.length > 0 && password === confirm);
 	let passwordMismatch = $derived(confirm.length > 0 && password !== confirm);
-	let submitDisabled = $derived(auth.loading || (confirm.length > 0 && passwordMismatch) || passwordTooWeak);
+	// passwordTooWeak is shown as a visual warning but does NOT block submission
+	let submitDisabled = $derived(
+		auth.loading ||
+		!username.trim() ||
+		!password ||
+		!confirm ||
+		passwordMismatch
+	);
 
 	async function saveServer() {
 		const url = normaliseServerUrl(newServerInput.trim());
@@ -213,10 +220,13 @@
 						</span>
 						{#if serverStatus.value === 'offline'}
 							<span class="status-help">— Check the URL and make sure the server is running</span>
+							{#if isSelfSignedCandidate(auth.serverUrl)}
+								<span class="status-help">Self-signed cert? <a href={auth.serverUrl} target="_blank" rel="noopener">Open {auth.serverUrl}</a> in a new tab, accept the certificate warning, then retry.</span>
+							{/if}
 						{/if}
 					</div>
 				{/if}
-				<p class="server-hint">Enter any format: <code>10.66.66.1</code>, <code>192.168.1.5:3000</code>, or <code>https://notes.example.com</code>. Plain IPs default to http://, domain names to https://.</p>
+				<p class="server-hint">Enter any format: <code>10.66.66.1</code>, <code>192.168.1.5:3000</code>, or <code>https://notes.example.com</code>. Bare IPs and domain names default to https://.</p>
 			{/if}
 		</div>
 

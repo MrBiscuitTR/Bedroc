@@ -26,8 +26,8 @@ import { notifyClients } from './sync.js';
 const NoteUpsertSchema = z.object({
   id:               z.string().uuid(),
   topicId:          z.string().uuid().nullable(),
-  encryptedTitle:   z.string().min(1),     // JSON { iv, ct }
-  encryptedBody:    z.string().min(1),     // JSON { iv, ct }
+  encryptedTitle:   z.string().min(1).max(2000),   // JSON { iv, ct } — title max ~1400 chars encrypted
+  encryptedBody:    z.string().min(1).max(2_000_000), // JSON { iv, ct } — max ~1.4MB plaintext
   customOrder:      z.number().int().min(0),
   clientUpdatedAt:  z.string().datetime(),
   version:          z.number().int().min(1),

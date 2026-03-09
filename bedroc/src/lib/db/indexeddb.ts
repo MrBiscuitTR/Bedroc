@@ -82,6 +82,7 @@ export interface SyncQueueItem {
 export interface KeyMaterialRecord {
   id: 'current';          // singleton record
   username: string;
+  userId: string;         // stored for offline unlock (can't decode JWT offline)
   serverUrl: string;
   encryptedDek: string;   // JSON blob from server (iv + ciphertext)
   dekSaltHex: string;     // hex 32-byte salt for PBKDF2

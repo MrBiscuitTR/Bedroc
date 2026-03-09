@@ -240,12 +240,12 @@ const RegisterSchema = z.object({
   dekSalt:      z.string().min(1).max(128),        // 32 bytes hex = 64 chars
 });
 
-const LoginInitSchema  = z.object({ username: z.string().min(1) });
+const LoginInitSchema  = z.object({ username: z.string().min(1).max(32) });
 
 const LoginVerifySchema = z.object({
-  username:   z.string().min(1),
-  A:          z.string().min(1),   // client ephemeral public key hex
-  M1:         z.string().min(1),   // client proof hex
+  username:   z.string().min(1).max(32),
+  A:          z.string().min(1).max(768),   // 3072-bit hex = 768 chars
+  M1:         z.string().min(64).max(64),   // SHA-256 hex = 64 chars exactly
 });
 
 // ---------------------------------------------------------------------------
@@ -257,7 +257,9 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
 
   // ── Register ─────────────────────────────────────────────────────────────
 
-  fastify.post('/api/auth/register', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.post('/api/auth/register', {
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     const parse = RegisterSchema.safeParse(req.body);
     if (!parse.success) return reply.code(400).send({ error: 'Invalid request', details: parse.error.flatten() });
     const { username, srpSalt, srpVerifier, encryptedDek, dekSalt } = parse.data;
@@ -304,7 +306,9 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
 
   // ── Login step 1: client sends username → server returns salt + B ────────
 
-  fastify.post('/api/auth/login/init', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.post('/api/auth/login/init', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     const parse = LoginInitSchema.safeParse(req.body);
     if (!parse.success) return reply.code(400).send({ error: 'Invalid request' });
     const { username } = parse.data;
@@ -336,7 +340,9 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
 
   // ── Login step 2: client sends A + M1 → server verifies + issues JWT ────
 
-  fastify.post('/api/auth/login/verify', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.post('/api/auth/login/verify', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     const parse = LoginVerifySchema.safeParse(req.body);
     if (!parse.success) return reply.code(400).send({ error: 'Invalid request' });
     const { username, A: clientA, M1: clientM1 } = parse.data;

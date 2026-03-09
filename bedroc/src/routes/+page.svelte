@@ -135,28 +135,49 @@
 
 	let longPressTimer: ReturnType<typeof setTimeout> | null = null;
 	let longPressActive = $state(false);
+	// Track touch start position to allow small finger movement without cancelling
+	let touchStartX = 0;
+	let touchStartY = 0;
+	const LONG_PRESS_MOVE_THRESHOLD = 8; // px — allow slight movement during press
 
-	function startLongPress(kind: DragKind, id: string) {
+	function startLongPress(kind: DragKind, id: string, e?: TouchEvent) {
 		cancelLongPress();
+		if (e?.touches?.[0]) {
+			touchStartX = e.touches[0].clientX;
+			touchStartY = e.touches[0].clientY;
+		}
 		longPressTimer = setTimeout(() => {
 			longPressActive = true;
 			dragKind = kind;
 			dragId   = id;
+			// Vibrate on activation so user knows drag mode started
+			if (navigator.vibrate) navigator.vibrate(30);
 			// Add touch listeners to emulate dragover on touch devices
 			document.addEventListener('touchmove', onTouchMove, { passive: false });
 			document.addEventListener('touchend', onTouchEnd);
-		}, 500);
+		}, 400);
 	}
 
-	function cancelLongPress() {
+	function resetDragState() {
 		if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-		if (!longPressActive) return;
 		longPressActive = false;
 		dragKind = null;
 		dragId   = null;
 		dropTarget = null; dropSide = null; dropZone = null;
 		document.removeEventListener('touchmove', onTouchMove);
 		document.removeEventListener('touchend', onTouchEnd);
+	}
+
+	function cancelLongPress(e?: TouchEvent) {
+		// If drag is already active, document-level onTouchMove handles tracking — don't cancel here
+		if (longPressActive) return;
+		// Allow small movement (scroll wiggle) without cancelling the long press timer
+		if (longPressTimer && e?.touches?.[0]) {
+			const dx = Math.abs(e.touches[0].clientX - touchStartX);
+			const dy = Math.abs(e.touches[0].clientY - touchStartY);
+			if (dx < LONG_PRESS_MOVE_THRESHOLD && dy < LONG_PRESS_MOVE_THRESHOLD) return;
+		}
+		resetDragState();
 	}
 
 	function elementClosestClass(el: Element | null, cls: string) {
@@ -274,7 +295,7 @@
 				}
 			}
 		}
-		cancelLongPress();
+		resetDragState();
 		onDragEnd();
 	}
 
@@ -692,9 +713,9 @@
 							draggable="true"
 							ondragstart={(e) => onDragStart(e, 'note', note.id)}
 							ondragend={onDragEnd}
-							ontouchstart={() => startLongPress('note', note.id)}
-							ontouchend={cancelLongPress}
-							ontouchmove={cancelLongPress}
+							ontouchstart={(e) => startLongPress('note', note.id, e)}
+							ontouchend={(e) => cancelLongPress(e)}
+							ontouchmove={(e) => cancelLongPress(e)}
 						>
 							<!-- Topic tag: always shown; grey+dotted for uncategorised -->
 							{#if topic}
@@ -730,6 +751,7 @@
 	>
 		<div
 			class="folder-item"
+			data-folder-id={folder.id}
 			style="padding-left: {10 + depth * 14}px"
 			draggable="true"
 			ondragover={(e) => onDragOver(e, folder.id, 'folder')}
@@ -737,9 +759,9 @@
 			ondragleave={onDragLeave}
 			ondragstart={(e) => onDragStart(e, 'folder', folder.id)}
 			ondragend={onDragEnd}
-			ontouchstart={() => startLongPress('folder', folder.id)}
-			ontouchend={cancelLongPress}
-			ontouchmove={cancelLongPress}
+			ontouchstart={(e) => startLongPress('folder', folder.id, e)}
+			ontouchend={(e) => cancelLongPress(e)}
+			ontouchmove={(e) => cancelLongPress(e)}
 		>
 			<button
 				class="folder-chevron"
@@ -796,6 +818,7 @@
 		<button
 			class="topic-item"
 			class:active={activeTopicId === topic.id}
+			data-topic-id={topic.id}
 			style="padding-left: {14 + depth * 14}px"
 			draggable="true"
 			onclick={() => selectTopic(topic.id)}
@@ -804,7 +827,7 @@
 			ondragleave={onDragLeave}
 			ondragstart={(e) => onDragStart(e, 'topic', topic.id)}
 			ondragend={onDragEnd}
-			ontouchstart={() => startLongPress('topic', topic.id)}
+			ontouchstart={(e) => startLongPress('topic', topic.id, e)}
 			ontouchend={(e) => {
 				if (!longPressActive) {
 					cancelLongPress();
@@ -813,7 +836,7 @@
 					e.preventDefault();
 				}
 			}}
-			ontouchmove={cancelLongPress}
+			ontouchmove={(e) => cancelLongPress(e)}
 		>
 			<span class="topic-dot" style="background: {topic.color}"></span>
 			<span class="topic-name">{topic.name}</span>

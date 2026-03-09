@@ -245,6 +245,20 @@ export async function apiFetch(
 ): Promise<Response> {
   const url = `${_serverUrl}${path}`;
   const headers = new Headers(init.headers);
+
+  // 'offline' is the sentinel for an offline-unlocked session — no Bearer token yet.
+  // Attempt a token refresh first; if that succeeds, use the real token.
+  if (_accessToken === 'offline') {
+    const refreshed = await tryRefreshToken();
+    if (!refreshed) {
+      // Still offline — return a synthetic 503 so callers fail gracefully
+      return new Response(JSON.stringify({ error: 'Offline' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  }
+
   if (_accessToken) {
     headers.set('Authorization', `Bearer ${_accessToken}`);
   }
@@ -366,6 +380,7 @@ export async function register(username: string, password: string): Promise<void
     await saveKeyMaterial({
       id: 'current',
       username,
+      userId: data.userId,
       serverUrl: _serverUrl,
       encryptedDek,
       dekSaltHex,
@@ -473,6 +488,7 @@ export async function login(username: string, password: string): Promise<void> {
     await saveKeyMaterial({
       id: 'current',
       username,
+      userId: verifyData.userId,
       serverUrl: _serverUrl,
       encryptedDek: verifyData.encryptedDek,
       dekSaltHex: verifyData.dekSalt,
@@ -531,39 +547,55 @@ export async function logout(): Promise<void> {
  * Try to restore the session from the httpOnly refresh cookie.
  * Called once in +layout.svelte on mount.
  *
- * If the refresh token is still valid, the server issues a new access token.
- * We then load cached key material from IndexedDB (encryptedDek + dekSalt)
- * but we CAN'T re-derive the DEK without the password!
+ * Online path:
+ *   The server issues a new access token from the refresh cookie. We load
+ *   key material from IndexedDB but CAN'T re-derive the DEK without the
+ *   password. The app redirects to /login which shows an "Unlock" prompt.
  *
- * Resolution: after restoring the access token, we stay in a "locked" state
- * where the DEK is null. The app prompts the user to re-enter their password
- * to "unlock" the vault (like Bitwarden's vault unlock screen).
- *
- * `isLoggedIn` checks both accessToken AND dek — so a locked state will
- * redirect to /login where the user can unlock with their password.
- * The login form detects that a session exists and shows "Unlock" instead of "Log in".
+ * Offline path:
+ *   The refresh request fails due to no network. If key material exists in
+ *   IndexedDB we know the user was previously logged in. We set a sentinel
+ *   accessToken ('offline') so the login page shows the unlock prompt.
+ *   After the user enters their password, the DEK is re-derived locally —
+ *   the app then works fully offline from IndexedDB. When connectivity
+ *   returns, the next API call will get a 401 and trigger a real token
+ *   refresh via tryRefreshToken().
  */
 export async function restoreSession(): Promise<void> {
   const refreshed = await tryRefreshToken();
-  if (!refreshed) return;
 
-  // Load saved identity from IndexedDB
-  const km = await loadKeyMaterial();
-  if (km) {
-    _username = km.username;
-    _serverUrl = km.serverUrl;
-    // _dek remains null — user must unlock with password
-  }
-
-  // Get userId from the access token (decode without verify — browser already verified via HTTPS)
-  if (_accessToken) {
-    try {
-      const payload = JSON.parse(atob(_accessToken.split('.')[1])) as { sub: string };
-      _userId = payload.sub;
-    } catch {
-      // Malformed token — treat as logged out
-      _accessToken = null;
+  if (refreshed) {
+    // Online: load saved identity from IndexedDB
+    const km = await loadKeyMaterial();
+    if (km) {
+      _username = km.username;
+      _serverUrl = km.serverUrl;
+      // _dek remains null — user must unlock with password
     }
+
+    // Get userId from the access token (decode without verify — browser already verified via HTTPS)
+    if (_accessToken) {
+      try {
+        const payload = JSON.parse(atob(_accessToken.split('.')[1])) as { sub: string };
+        _userId = payload.sub;
+      } catch {
+        // Malformed token — treat as logged out
+        _accessToken = null;
+      }
+    }
+  } else {
+    // Offline or server unreachable — check for locally stored key material
+    const km = await loadKeyMaterial();
+    if (km && km.userId) {
+      // User was previously logged in; let them unlock with password locally
+      _username = km.username;
+      _userId = km.userId;
+      _serverUrl = km.serverUrl;
+      // Sentinel value: signals "offline locked" to the login page unlock flow
+      _accessToken = 'offline';
+      // _dek remains null — user must unlock with password
+    }
+    // If no key material, user has never logged in on this device — show login form
   }
 }
 
@@ -583,9 +615,18 @@ export async function unlockWithPassword(password: string): Promise<void> {
 
     const dekSaltBytes = fromHex(km.dekSaltHex);
     const masterKey = await deriveMasterKey(password, dekSaltBytes);
+    // Throws DOMException if password is wrong (AES-GCM auth tag mismatch)
     const dek = await unwrapDek(km.encryptedDek, masterKey);
 
     _dek = dek;
+
+    // Restore identity fields in case we unlocked offline (state only partially set)
+    if (!_username) _username = km.username;
+    if (!_userId && km.userId) _userId = km.userId;
+    if (km.serverUrl) _serverUrl = km.serverUrl;
+
+    // Keep 'offline' sentinel so isLoggedIn stays true; real token
+    // will arrive after the first successful API call triggers a refresh.
   } finally {
     _loading = false;
   }
@@ -668,6 +709,7 @@ export async function changePassword(currentPassword: string, newPassword: strin
     await saveKeyMaterial({
       id: 'current',
       username: _username,
+      userId: _userId ?? '',
       serverUrl: _serverUrl,
       encryptedDek: newEncryptedDek,
       dekSaltHex: newDekSaltHex,

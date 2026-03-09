@@ -230,7 +230,7 @@ export async function syncFromServer(): Promise<void> {
 
     const data = await res.json() as {
       notes: ServerNote[];
-      syncedAt: string;
+      serverTime: string;
     };
 
     for (const sn of data.notes) {
@@ -311,7 +311,7 @@ export async function syncFromServer(): Promise<void> {
       }
     }
 
-    setLastSync(data.syncedAt);
+    setLastSync(data.serverTime);
 
     // Also sync topics and folders
     await syncTopicsFromServer();
@@ -380,8 +380,8 @@ export async function resolveConflict(
 
   // Push the resolved version to the server
   const { encryptedTitle, encryptedBody } = await encryptNote(title, body, dek);
-  await queueNoteUpsert(noteId, userId, local.topicId, encryptedTitle, encryptedBody, local.customOrder, now);
-  await tryServerUpsertNote(noteId, userId, local.topicId, encryptedTitle, encryptedBody, local.customOrder, now);
+  await queueNoteUpsert(noteId, userId, local.topicId, encryptedTitle, encryptedBody, local.customOrder, now, local.version);
+  await tryServerUpsertNote(noteId, userId, local.topicId, encryptedTitle, encryptedBody, local.customOrder, now, local.version);
 }
 
 async function syncTopicsFromServer(): Promise<void> {
@@ -517,8 +517,8 @@ export async function createNote(topicId: string | null = null): Promise<string>
 
   // Encrypt and queue for server
   const { encryptedTitle, encryptedBody } = await encryptNote('', '', dek);
-  await queueNoteUpsert(id, userId, topicId, encryptedTitle, encryptedBody, nextOrder, now);
-  await tryServerUpsertNote(id, userId, topicId, encryptedTitle, encryptedBody, nextOrder, now);
+  await queueNoteUpsert(id, userId, topicId, encryptedTitle, encryptedBody, nextOrder, now, 1);
+  await tryServerUpsertNote(id, userId, topicId, encryptedTitle, encryptedBody, nextOrder, now, 1);
 
   return id;
 }
@@ -530,19 +530,24 @@ export async function saveNote(note: Note): Promise<void> {
   const now = Date.now();
   const updated = { ...note, updatedAt: now };
 
+  // Preserve existing serverUpdatedAt and version from IndexedDB (don't reset them)
+  const existing = await idbGetNoteById(note.id);
+  const serverUpdatedAt = existing?.serverUpdatedAt ?? 0;
+  const version = existing?.version ?? 1;
+
   // Write plaintext to IndexedDB
   const local: NoteLocal = {
     id: note.id, userId, topicId: note.topicId,
     title: note.title, body: note.body, customOrder: note.customOrder,
-    clientUpdatedAt: now, serverUpdatedAt: 0, isDeleted: false, version: 1, synced: false,
+    clientUpdatedAt: now, serverUpdatedAt, isDeleted: false, version, synced: false,
   };
   await idbSaveNote(local);
   notesMap.set(note.id, updated);
 
   // Encrypt and send to server
   const { encryptedTitle, encryptedBody } = await encryptNote(note.title, note.body, dek);
-  await queueNoteUpsert(note.id, userId, note.topicId, encryptedTitle, encryptedBody, note.customOrder, now);
-  await tryServerUpsertNote(note.id, userId, note.topicId, encryptedTitle, encryptedBody, note.customOrder, now);
+  await queueNoteUpsert(note.id, userId, note.topicId, encryptedTitle, encryptedBody, note.customOrder, now, version);
+  await tryServerUpsertNote(note.id, userId, note.topicId, encryptedTitle, encryptedBody, note.customOrder, now, version);
 }
 
 /** Soft-delete a note. */
@@ -580,9 +585,12 @@ export async function reorderNote(id: string, afterId: string | null): Promise<v
       const dek = auth.dek!;
       const userId = auth.userId!;
       const { encryptedTitle, encryptedBody } = await encryptNote(n.title, n.body, dek);
+      const existing = await idbGetNoteById(n.id);
+      const serverUpdatedAt = existing?.serverUpdatedAt ?? 0;
+      const version = existing?.version ?? 1;
       await idbSaveNote({ id: n.id, userId, topicId: n.topicId, title: n.title, body: n.body,
-        customOrder: i, clientUpdatedAt: n.updatedAt, serverUpdatedAt: 0, isDeleted: false, version: 1, synced: false });
-      await tryServerUpsertNote(n.id, userId, n.topicId, encryptedTitle, encryptedBody, i, n.updatedAt);
+        customOrder: i, clientUpdatedAt: n.updatedAt, serverUpdatedAt, isDeleted: false, version, synced: false });
+      await tryServerUpsertNote(n.id, userId, n.topicId, encryptedTitle, encryptedBody, i, n.updatedAt, version);
     })
   );
 }
@@ -786,11 +794,12 @@ function localToFolder(f: FolderLocal): Folder {
 async function queueNoteUpsert(
   id: string, userId: string, topicId: string | null,
   encryptedTitle: string, encryptedBody: string,
-  customOrder: number, clientUpdatedAt: number
+  customOrder: number, clientUpdatedAt: number, version: number
 ): Promise<void> {
   const payload = {
     id, topicId, encryptedTitle, encryptedBody, customOrder,
     clientUpdatedAt: new Date(clientUpdatedAt).toISOString(),
+    version,
   };
   await enqueueSyncItem({ id, type: 'note', action: 'upsert', payload, createdAt: Date.now(), retries: 0 });
 }
@@ -798,21 +807,28 @@ async function queueNoteUpsert(
 async function tryServerUpsertNote(
   id: string, userId: string, topicId: string | null,
   encryptedTitle: string, encryptedBody: string,
-  customOrder: number, clientUpdatedAt: number
+  customOrder: number, clientUpdatedAt: number, version: number
 ): Promise<void> {
   try {
     const payload = {
       id, topicId, encryptedTitle, encryptedBody, customOrder,
       clientUpdatedAt: new Date(clientUpdatedAt).toISOString(),
+      version,
     };
     const res = await apiFetch(`/api/notes/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
     if (res.ok) {
       await dequeueSyncItem(id);
       const n = notesMap.get(id);
       if (n) {
+        // Use server's response for version and server_updated_at
+        const serverNote = await res.clone().json().catch(() => null) as { note?: { version?: number; server_updated_at?: string } } | null;
+        const serverVersion = serverNote?.note?.version ?? version;
+        const serverUpdatedAt = serverNote?.note?.server_updated_at
+          ? new Date(serverNote.note.server_updated_at).getTime()
+          : Date.now();
         await idbSaveNote({
           id, userId, topicId, title: n.title, body: n.body, customOrder,
-          clientUpdatedAt, serverUpdatedAt: Date.now(), isDeleted: false, version: 1, synced: true,
+          clientUpdatedAt, serverUpdatedAt, isDeleted: false, version: serverVersion, synced: true,
         });
       }
     }

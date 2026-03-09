@@ -27,15 +27,23 @@
 		}
 	});
 
+	// Detect if running inside a split-view iframe. Iframes share the same
+	// origin so the refresh cookie works, but the DEK can't be unlocked without
+	// a password — we don't redirect iframes to /login to avoid an auth loop.
+	let isInIframe = $state(false);
+
 	// ── Auth guard + WebSocket ─────────────────────────────────────
 	// On mount, try to restore session from httpOnly refresh cookie.
 	// If that fails (or DEK is missing), redirect to /login.
 	// On success, open the WebSocket connection for real-time sync.
 	onMount(async () => {
+		isInIframe = window.self !== window.top;
 		if (isAuthRoute) return;
 		await restoreSession();
 		if (!auth.isLoggedIn) {
-			goto('/login');
+			// Don't redirect iframes to /login — they share the parent's vault
+			// state and will work once the parent window unlocks the DEK.
+			if (!isInIframe) goto('/login');
 		} else {
 			wsConnect();
 		}
@@ -544,7 +552,13 @@
 
 	.split-close-btn {
 		color: var(--text-faint);
-		padding: 4px;
+		padding: 8px;
+		min-width: 32px;
+		min-height: 32px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
 	}
 
 	.split-close-btn:hover { color: var(--danger); }

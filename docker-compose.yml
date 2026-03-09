@@ -8,6 +8,7 @@
 #   server     — Fastify backend (Node.js 22)
 #   bedroc     — SvelteKit frontend (nginx static)
 #   nginx      — Reverse proxy (TLS termination, WireGuard-only binding)
+#   adminer    — Database management GUI (WireGuard-only, port 8080)
 #
 # Usage:
 #   cp .env.example .env
@@ -182,6 +183,36 @@ services:
       interval: 20s
       timeout: 5s
       retries: 3
+
+  # ── Adminer (database management GUI) ───────────────────────────────────────
+  #
+  # Access: https://10.66.66.1:8080 (WireGuard only — NOT exposed to internet)
+  #
+  # Log in with:
+  #   System:   PostgreSQL
+  #   Server:   postgres
+  #   Username: postgres
+  #   Password: (your POSTGRES_PASSWORD from .env)
+  #   Database: bedroc
+  #
+  # To disable Adminer for extra security, comment out this entire service.
+  adminer:
+    image: adminer:latest
+    restart: unless-stopped
+
+    environment:
+      # Pre-fill the login form with the postgres server name
+      ADMINER_DEFAULT_SERVER: postgres
+
+    ports:
+      # CRITICAL: bind ONLY to the WireGuard interface IP — not public internet.
+      - "10.66.66.1:8080:8080"
+
+    networks:
+      - internal
+
+    depends_on:
+      - postgres
 
 # ── Networks ───────────────────────────────────────────────────────────────────
 networks:

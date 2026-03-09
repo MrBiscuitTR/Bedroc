@@ -146,7 +146,87 @@ Open `http://YOUR_VPS_IP:51821` to manage clients. Download the config file for 
 
 Make sure UDP port 51820 is open in your firewall.
 
-### Option B — Manual WireGuard (more control)
+### Option B — Use Tailscale (easiest, no VPS required)
+
+[Tailscale](https://tailscale.com/) is the simplest option if you:
+
+- Want to run the server on a **home computer, NAS, or Raspberry Pi** instead of a VPS
+- Are behind CGNAT (most mobile plans and many ISPs) — you cannot get a public IP, so regular WireGuard won't work
+- Want to be up and running in 5 minutes without any networking knowledge
+
+Tailscale creates a private mesh VPN automatically. Your server gets a stable private IP (like `100.x.x.x`) that only your devices can reach. No public IP, no port forwarding, no certificate management.
+
+#### 1. Install Tailscale on your server machine
+
+**Ubuntu / Debian:**
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+```
+
+Follow the link it prints and log in with your Tailscale account (free for personal use).
+
+**Other Linux / Windows / macOS / Raspberry Pi:** See [tailscale.com/download](https://tailscale.com/download)
+
+#### 2. Get your server's Tailscale IP
+
+```bash
+tailscale ip -4
+```
+
+This will be something like `100.64.x.x` or `100.96.x.x`. Write it down.
+
+#### 3. Install Tailscale on each device that needs access
+
+Download the Tailscale app on your phone, laptop, etc., and log in with the same Tailscale account. Your devices will automatically find each other.
+
+#### 4. Generate an SSL certificate for the Tailscale IP
+
+When using Tailscale with a plain IP (not a Tailscale domain), you'll need a self-signed cert. Run this on the server machine, substituting your actual Tailscale IP:
+
+```bash
+mkdir -p docker/ssl
+openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
+  -keyout docker/ssl/key.pem \
+  -out docker/ssl/cert.pem \
+  -subj "/CN=bedroc" \
+  -addext "subjectAltName=IP:100.64.X.X"
+```
+
+> **Tailscale HTTPS (optional):** If you enable [Tailscale HTTPS](https://tailscale.com/kb/1153/enabling-https/) (`tailscale serve`), you get a real Let's Encrypt certificate for a `*.ts.net` domain. You can then use that domain instead of the raw IP — browsers will trust it without a warning. This is the cleanest option if you want it. See the Tailscale docs for setup.
+
+#### 5. Update docker-compose.yml to bind to the Tailscale IP
+
+Open `docker-compose.yml` and change the `nginx` ports section:
+
+```yaml
+ports:
+  - "100.64.X.X:80:80"     # replace with your actual Tailscale IP
+  - "100.64.X.X:443:443"
+```
+
+If you enabled Tailscale HTTPS and are using `tailscale serve`, you can skip the nginx binding change and use Tailscale as the TLS terminator instead.
+
+#### 6. Start the server
+
+```bash
+docker compose up -d
+```
+
+#### 7. Connect from your devices
+
+Make sure Tailscale is active on the device, then:
+
+- Open `https://100.64.X.X` in a browser (accept the certificate warning)
+- Or, if using Tailscale HTTPS, open `https://your-machine-name.tail-xxxx.ts.net`
+
+On the Bedroc login page, set the Server URL to your Tailscale IP or domain.
+
+> **Important:** Tailscale must be running on both the server machine and your device for them to connect. If you turn off Tailscale on either end, the connection breaks. For 24/7 access, the server machine must be always on (or at least running Tailscale when you need it).
+
+---
+
+### Option C — Manual WireGuard (more control)
 
 #### Install WireGuard on your server (Linux)
 

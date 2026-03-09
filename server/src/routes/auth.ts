@@ -32,6 +32,7 @@ import {
   createUser, getUserByUsername, getUserById,
   createSession, revokeSession, revokeAllSessions,
   getSessionsForUser, revokeSessionById, updateUserCredentials,
+  pruneExpiredSessions,
 } from '../db/queries/users.js';
 import { hashToken, verifyAuth } from '../middleware/auth.js';
 import { getRedis } from '../plugins/redis.js';
@@ -208,7 +209,7 @@ function issueTokens(
   );
   const refreshToken = fastify.jwt.sign(
     { sub: userId, type: 'refresh' },
-    { key: process.env.JWT_REFRESH_SECRET ?? 'changeme-refresh',
+    { key: process.env.JWT_REFRESH_SECRET!,
       expiresIn: refreshTtl }
   );
 
@@ -233,10 +234,10 @@ function issueTokens(
 
 const RegisterSchema = z.object({
   username:     z.string().min(3).max(32).regex(/^[a-zA-Z0-9_-]+$/),
-  srpSalt:      z.string().min(64).max(64),      // 32 bytes hex
-  srpVerifier:  z.string().min(1).max(2048),      // hex bigint
-  encryptedDek: z.string().min(1),               // JSON { iv, ct }
-  dekSalt:      z.string().min(64).max(64),       // 32 bytes hex
+  srpSalt:      z.string().min(1).max(128),       // 32 bytes hex = 64 chars
+  srpVerifier:  z.string().min(1).max(4096),      // 3072-bit hex = 768 chars, padded
+  encryptedDek: z.string().min(1).max(4096),      // JSON { iv: base64, ct: base64 }
+  dekSalt:      z.string().min(1).max(128),        // 32 bytes hex = 64 chars
 });
 
 const LoginInitSchema  = z.object({ username: z.string().min(1) });
@@ -413,7 +414,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     let payload: { sub: string; type?: string };
     try {
       payload = fastify.jwt.verify(refreshToken, {
-        key: process.env.JWT_REFRESH_SECRET ?? 'changeme-refresh',
+        key: process.env.JWT_REFRESH_SECRET!,
       }) as { sub: string; type?: string };
     } catch {
       return reply.code(401).send({ error: 'Invalid refresh token' });
@@ -432,6 +433,10 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
       deviceInfo: null,
       expiresAt:  accessExpiresAt,
     });
+
+    // Prune expired/revoked sessions for this user on each refresh (lazy GC).
+    // Keeps the sessions table from growing unboundedly.
+    await pruneExpiredSessions(user.id);
 
     reply.setCookie('bedroc_refresh', newRefresh, {
       httpOnly: true,

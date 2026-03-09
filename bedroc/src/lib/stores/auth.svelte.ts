@@ -337,9 +337,12 @@ export async function register(username: string, password: string): Promise<void
     });
 
     if (!res.ok) {
-      const body = await res.json().catch(() => ({})) as { error?: string; message?: string };
+      const body = await res.json().catch(() => ({})) as { error?: string; message?: string; details?: Record<string, unknown> };
       if (res.status === 409) throw new Error('Username already taken. Choose a different one.');
-      if (res.status === 400) throw new Error(body.error ?? body.message ?? 'Invalid registration details.');
+      if (res.status === 400) {
+        const detail = body.details ? ` (${JSON.stringify(body.details)})` : '';
+        throw new Error((body.error ?? body.message ?? 'Invalid registration details.') + detail);
+      }
       if (res.status >= 500) throw new Error('Server error. Please try again later.');
       throw new Error(body.error ?? body.message ?? 'Registration failed.');
     }

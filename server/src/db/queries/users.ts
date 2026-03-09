@@ -142,3 +142,10 @@ export async function revokeSessionById(sessionId: string, userId: string): Prom
     [sessionId, userId]
   );
 }
+
+export async function pruneExpiredSessions(userId: string): Promise<void> {
+  await query(
+    'DELETE FROM sessions WHERE user_id = $1 AND (revoked = true OR expires_at < now())',
+    [userId]
+  );
+}

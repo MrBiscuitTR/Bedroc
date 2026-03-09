@@ -173,9 +173,9 @@ function verifySrpProof(params: {
   const S = modpow((A * modpow(v, u, N)) % N, b, N);
   const K = sha256(bigintToBuffer(S, nLen));
 
-  // H(N) xor H(g)
+  // H(N) xor H(g) — both must be padded to nLen bytes to match client
   const HN = sha256(bigintToBuffer(N, nLen));
-  const Hg = sha256(bigintToBuffer(g));
+  const Hg = sha256(bigintToBuffer(g, nLen));
   const HNxorHg = Buffer.alloc(32);
   for (let i = 0; i < 32; i++) HNxorHg[i] = HN[i] ^ Hg[i];
 
@@ -187,8 +187,8 @@ function verifySrpProof(params: {
     return { valid: false, M2: Buffer.alloc(0), sessionKey: Buffer.alloc(0) };
   }
 
-  // M2 = H( PAD(A) | M1 | K )
-  const M2 = sha256(Buffer.concat([APad, clientM1, K]));
+  // M2 = H( A | M1 | K ) — A unpadded to match client srpVerifyServer
+  const M2 = sha256(Buffer.concat([bigintToBuffer(A), clientM1, K]));
   return { valid: true, M2, sessionKey: K };
 }
 

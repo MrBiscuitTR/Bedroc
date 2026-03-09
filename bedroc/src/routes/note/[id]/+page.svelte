@@ -65,11 +65,10 @@
 		const isNewNoteId = noteId !== loadedNoteId;
 
 		if (n) {
-			// Always update title from store
-			title = n.title;
-			// Only overwrite body DOM when switching to a different note,
-			// not on every save/sync update (which would wipe in-progress edits)
+			// Only load content when switching to a different note —
+			// never overwrite user edits triggered by save/sync updates
 			if (bodyEl && isNewNoteId) {
+				title = n.title;
 				bodyEl.innerHTML = n.body;
 				loadedNoteId = noteId;
 				saved = true;

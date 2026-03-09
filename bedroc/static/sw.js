@@ -25,8 +25,8 @@
  *     by the online event in the main thread instead.
  */
 
-const CACHE_NAME = 'bedroc-v3';
-const SHELL_CACHE = 'bedroc-shell-v3';
+const CACHE_NAME = 'bedroc-v4';
+const SHELL_CACHE = 'bedroc-shell-v4';
 
 // Files to pre-cache on install. SvelteKit hashes JS/CSS filenames so we
 // can't hardcode them — instead we cache the shell on first navigation fetch.
@@ -41,9 +41,43 @@ const PRECACHE_URLS = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(SHELL_CACHE).then((cache) =>
-      cache.addAll(PRECACHE_URLS)
-    ).then(() => self.skipWaiting())
+    (async () => {
+      const shellCache = await caches.open(SHELL_CACHE);
+      // Fetch and cache the shell URLs
+      await Promise.all(
+        PRECACHE_URLS.map((url) =>
+          fetch(url).then((r) => {
+            if (r.ok) shellCache.put(url, r.clone());
+            return r;
+          }).catch(() => null)
+        )
+      );
+
+      // Pre-cache the JS/CSS bundles referenced in the shell HTML
+      // so the app works fully offline (not just the navigation shell).
+      try {
+        const shellRes = await shellCache.match('/');
+        if (shellRes) {
+          const html = await shellRes.text();
+          const assetUrls = [];
+          for (const m of html.matchAll(/(?:src|href)="(\/_app\/[^"]+\.(?:js|css))"/g)) {
+            assetUrls.push(m[1]);
+          }
+          if (assetUrls.length > 0) {
+            const assetCache = await caches.open(CACHE_NAME);
+            await Promise.allSettled(
+              assetUrls.map((url) =>
+                fetch(url).then((r) => { if (r.ok) assetCache.put(url, r); }).catch(() => null)
+              )
+            );
+          }
+        }
+      } catch {
+        // Non-fatal — JS/CSS will be cached on first navigation instead
+      }
+
+      await self.skipWaiting();
+    })()
   );
 });
 

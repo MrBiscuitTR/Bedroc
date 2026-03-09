@@ -249,14 +249,17 @@ export async function apiFetch(
   // 'offline' is the sentinel for an offline-unlocked session — no Bearer token yet.
   // Attempt a token refresh first; if that succeeds, use the real token.
   if (_accessToken === 'offline') {
+    console.log('[auth] apiFetch: token is offline sentinel, attempting refresh before', path);
     const refreshed = await tryRefreshToken();
     if (!refreshed) {
+      console.warn('[auth] apiFetch: refresh failed while offline, returning 503 for', path);
       // Still offline — return a synthetic 503 so callers fail gracefully
       return new Response(JSON.stringify({ error: 'Offline' }), {
         status: 503,
         headers: { 'Content-Type': 'application/json' },
       });
     }
+    console.log('[auth] apiFetch: refresh succeeded, proceeding with real token');
   }
 
   if (_accessToken) {
@@ -272,11 +275,14 @@ export async function apiFetch(
 
   // On 401, attempt token refresh once
   if (res.status === 401 && _accessToken) {
+    console.warn('[auth] apiFetch: got 401 for', path, '— attempting token refresh');
     const refreshed = await tryRefreshToken();
     if (refreshed) {
+      console.log('[auth] apiFetch: refresh succeeded, retrying', path);
       headers.set('Authorization', `Bearer ${_accessToken}`);
       return fetch(url, { ...init, headers, credentials: 'include' });
     }
+    console.error('[auth] apiFetch: refresh failed after 401 for', path, '— logging out');
     // Refresh failed — force logout
     await logout();
     goto('/login');
@@ -291,15 +297,23 @@ export async function apiFetch(
 
 async function tryRefreshToken(): Promise<boolean> {
   try {
+    console.log('[auth] tryRefreshToken: calling', `${_serverUrl}/api/auth/refresh`);
     const res = await fetch(`${_serverUrl}/api/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
     });
-    if (!res.ok) return false;
+    console.log('[auth] tryRefreshToken: response', res.status, res.ok);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.warn('[auth] tryRefreshToken failed:', res.status, body);
+      return false;
+    }
     const data = await res.json() as { accessToken: string };
     _accessToken = data.accessToken;
+    console.log('[auth] tryRefreshToken: success, new token issued');
     return true;
-  } catch {
+  } catch (err) {
+    console.error('[auth] tryRefreshToken: exception', err);
     return false;
   }
 }

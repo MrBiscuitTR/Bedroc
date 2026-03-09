@@ -108,6 +108,39 @@ export async function createSession(params: {
 }
 
 /**
+ * Upsert a session by device label: if an active session already exists for
+ * this user+device_info, replace its tokens in-place. Otherwise insert fresh.
+ * Also deletes expired/revoked sessions for the user as part of the same op.
+ * This ensures one active session per device label.
+ */
+export async function upsertSessionForDevice(params: {
+  userId: string;
+  tokenHash: string;
+  refreshTokenHash: string;
+  deviceInfo: string | null;
+  expiresAt: Date;
+}): Promise<SessionRow> {
+  // First, prune expired/revoked sessions for this user
+  await pruneExpiredSessions(params.userId);
+
+  // If we have a device label, replace any existing session for that device
+  if (params.deviceInfo) {
+    const { rowCount, rows } = await query<SessionRow>(
+      `UPDATE sessions
+       SET token_hash = $3, refresh_token_hash = $4, expires_at = $5,
+           revoked = false, created_at = now()
+       WHERE user_id = $1 AND device_info = $2 AND revoked = false
+       RETURNING *`,
+      [params.userId, params.deviceInfo, params.tokenHash, params.refreshTokenHash, params.expiresAt]
+    );
+    if ((rowCount ?? 0) > 0) return rows[0];
+  }
+
+  // No existing session for this device — create a new one
+  return createSession(params);
+}
+
+/**
  * Update an existing session's access token hash when the token is refreshed.
  * Returns false if no active session was found for the given refresh token hash.
  */
@@ -152,6 +185,8 @@ export async function getSessionsForUser(userId: string): Promise<SessionRow[]> 
     `SELECT id, user_id, device_info, created_at, expires_at, revoked
      FROM sessions
      WHERE user_id = $1
+       AND revoked = false
+       AND expires_at > now()
      ORDER BY created_at DESC
      LIMIT 20`,
     [userId]
@@ -160,8 +195,10 @@ export async function getSessionsForUser(userId: string): Promise<SessionRow[]> 
 }
 
 export async function revokeSessionById(sessionId: string, userId: string): Promise<void> {
+  // Delete immediately rather than mark revoked — the UI filters by active sessions
+  // and we don't need to keep the row for any other purpose.
   await query(
-    'UPDATE sessions SET revoked = true WHERE id = $1 AND user_id = $2',
+    'DELETE FROM sessions WHERE id = $1 AND user_id = $2',
     [sessionId, userId]
   );
 }

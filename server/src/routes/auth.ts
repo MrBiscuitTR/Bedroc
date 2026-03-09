@@ -30,7 +30,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import {
   createUser, getUserByUsername, getUserById,
-  createSession, refreshSession, revokeSession, revokeAllSessions,
+  upsertSessionForDevice, refreshSession, revokeSession, revokeAllSessions,
   getSessionsForUser, revokeSessionById, updateUserCredentials,
   pruneExpiredSessions,
 } from '../db/queries/users.js';
@@ -315,8 +315,8 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     const { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt } = issueTokens(fastify, user.id);
     const deviceInfo = parseDeviceInfo((req.headers['user-agent'] as string) ?? '');
     // Session expires with the refresh token (7d), not the access token (15m).
-    // The access token hash is updated in-place on each refresh via refreshSession().
-    await createSession({
+    // upsertSessionForDevice ensures one active session per device label.
+    await upsertSessionForDevice({
       userId:           user.id,
       tokenHash:        hashToken(accessToken),
       refreshTokenHash: hashToken(refreshToken),
@@ -423,7 +423,8 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
 
     // Store hashed access + refresh tokens for revocation checks.
     // Session expires with the refresh token (7d), not the access token (15m).
-    await createSession({
+    // upsertSessionForDevice ensures one active session per device label.
+    await upsertSessionForDevice({
       userId,
       tokenHash:        hashToken(accessToken),
       refreshTokenHash: hashToken(refreshToken),
@@ -485,17 +486,20 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     // If no session was found (legacy row without refresh_token_hash, or revoked),
     // fall back to creating a fresh session row.
     if (!updated) {
-      await createSession({
+      const deviceInfo = parseDeviceInfo((req.headers['user-agent'] as string) ?? '');
+      await upsertSessionForDevice({
         userId:           user.id,
         tokenHash:        hashToken(accessToken),
         refreshTokenHash: hashToken(newRefresh),
-        deviceInfo:       null,
+        deviceInfo:       deviceInfo || null,
         expiresAt:        refreshExpiresAt,
       });
+    } else {
+      // Prune expired/revoked sessions for this user on each refresh (lazy GC).
+      // upsertSessionForDevice already calls pruneExpiredSessions, so only
+      // call it here when we took the update path.
+      await pruneExpiredSessions(user.id);
     }
-
-    // Prune expired/revoked sessions for this user on each refresh (lazy GC).
-    await pruneExpiredSessions(user.id);
 
     reply.setCookie('bedroc_refresh', newRefresh, {
       httpOnly: true,

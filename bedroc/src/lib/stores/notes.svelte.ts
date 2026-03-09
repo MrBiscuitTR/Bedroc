@@ -260,13 +260,21 @@ export async function syncFromServer(): Promise<void> {
   _syncing = true;
   try {
     const since = getLastSync();
+    console.log('[sync] Starting syncFromServer', { userId, since, serverUrl: auth.serverUrl, hasAccessToken: !!auth.accessToken, tokenIsOffline: auth.accessToken === 'offline' });
     const res = await apiFetch(`/api/notes/sync?since=${encodeURIComponent(since)}`);
-    if (!res.ok) return;
+    console.log('[sync] /api/notes/sync response', res.status, res.ok);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.warn('[sync] /api/notes/sync failed', res.status, body);
+      return;
+    }
 
     const data = await res.json() as {
       notes: ServerNote[];
       serverTime: string;
     };
+
+    console.log('[sync] Received', data.notes.length, 'notes from server, serverTime:', data.serverTime);
 
     for (const sn of data.notes) {
       const serverUpdatedAt = new Date(sn.server_updated_at).getTime();
@@ -347,13 +355,17 @@ export async function syncFromServer(): Promise<void> {
     }
 
     setLastSync(data.serverTime);
+    console.log('[sync] Notes sync complete. Syncing topics and folders...');
 
     // Also sync topics and folders
     await syncTopicsFromServer();
     await syncFoldersFromServer();
 
+    console.log('[sync] Topics:', topicsMap.size, 'Folders:', foldersMap.size, 'Notes:', notesMap.size);
+
     // Flush any pending writes queued while offline
     await flushSyncQueue();
+    console.log('[sync] syncFromServer complete');
   } finally {
     _syncing = false;
   }
@@ -421,11 +433,20 @@ export async function resolveConflict(
 
 async function syncTopicsFromServer(): Promise<void> {
   const res = await apiFetch('/api/topics');
-  if (!res.ok) return;
+  console.log('[sync] /api/topics response', res.status, res.ok);
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.warn('[sync] /api/topics failed', res.status, body);
+    return;
+  }
   const data = await res.json() as { topics?: ServerTopic[] };
   const topics = data.topics;
+  console.log('[sync] /api/topics returned', Array.isArray(topics) ? topics.length : 'invalid shape', 'topics, raw data keys:', Object.keys(data));
   // Guard: only replace local state if we got a valid array back
-  if (!Array.isArray(topics)) return;
+  if (!Array.isArray(topics)) {
+    console.warn('[sync] topics is not an array, skipping clear. data:', data);
+    return;
+  }
   const userId = auth.userId!;
 
   // Build new entries first, then atomically replace the map
@@ -451,11 +472,20 @@ async function syncTopicsFromServer(): Promise<void> {
 
 async function syncFoldersFromServer(): Promise<void> {
   const res = await apiFetch('/api/folders');
-  if (!res.ok) return;
+  console.log('[sync] /api/folders response', res.status, res.ok);
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.warn('[sync] /api/folders failed', res.status, body);
+    return;
+  }
   const data = await res.json() as { folders?: ServerFolder[] };
   const folders = data.folders;
+  console.log('[sync] /api/folders returned', Array.isArray(folders) ? folders.length : 'invalid shape', 'folders');
   // Guard: only replace local state if we got a valid array back
-  if (!Array.isArray(folders)) return;
+  if (!Array.isArray(folders)) {
+    console.warn('[sync] folders is not an array, skipping clear. data:', data);
+    return;
+  }
   const userId = auth.userId!;
 
   // Build new entries first, then atomically replace the map
@@ -866,7 +896,13 @@ async function tryServerUpsertNote(
       clientUpdatedAt: new Date(clientUpdatedAt).toISOString(),
       version,
     };
+    console.log('[sync] PUT /api/notes/', id, 'topicId:', topicId, 'version:', version);
     const res = await apiFetch(`/api/notes/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+    console.log('[sync] PUT /api/notes/ response', res.status, res.ok);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.warn('[sync] PUT /api/notes/ failed', res.status, body);
+    }
     if (res.ok) {
       await dequeueSyncItem(id);
       const n = notesMap.get(id);

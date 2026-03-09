@@ -68,12 +68,19 @@
 	// Fires every syncIntervalStore.interval ms (default 5s, min 1s).
 	// The WebSocket handles push-triggered syncs; this catches anything missed.
 	$effect(() => {
-		if (!auth.isLoggedIn || !auth.dek || isAuthRoute) return;
+		const isLoggedIn = auth.isLoggedIn;
+		const hasDek = !!auth.dek;
+		console.log('[layout] sync effect re-evaluated', { isLoggedIn, hasDek, isAuthRoute });
+		if (!isLoggedIn || !hasDek || isAuthRoute) return;
 		const ms = syncIntervalStore.interval;
+		console.log('[layout] starting periodic sync every', ms, 'ms');
 		const id = setInterval(() => {
-			syncFromServer().catch(() => {});
+			syncFromServer().catch((err) => { console.error('[layout] periodic sync error', err); });
 		}, ms);
-		return () => clearInterval(id);
+		return () => {
+			console.log('[layout] clearing periodic sync interval');
+			clearInterval(id);
+		};
 	});
 
 	const navItems = [

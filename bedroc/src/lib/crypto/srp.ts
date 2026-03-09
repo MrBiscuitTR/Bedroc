@@ -206,7 +206,7 @@ export async function srpClientProof(params: {
   const kgx = (k * modpow(g, x, N)) % N;
   // Ensure positive: add N if negative
   const base = ((B - kgx) % N + N) % N;
-  const exp = (a + u * x) % (N - 1n); // a + u*x mod (N-1) per SRP-6a
+  const exp = a + u * x;
   const S = modpow(base, exp, N);
 
   // Session key K = H(S)

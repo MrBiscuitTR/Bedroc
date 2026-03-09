@@ -57,9 +57,9 @@
 		drawerOpen = false;
 	}
 
-	function handleNewNote() {
+	async function handleNewNote() {
 		const topicId = activeTopicId === 'all' ? null : activeTopicId as string | null;
-		const id = createNote(topicId);
+		const id = await createNote(topicId);
 		goto(`/note/${id}`);
 	}
 

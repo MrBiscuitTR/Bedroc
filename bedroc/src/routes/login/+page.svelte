@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import {
-		auth, login, setServerUrl, removeSavedServer,
+		auth, login, logout, unlockWithPassword, setServerUrl, removeSavedServer,
 		normaliseServerUrl, checkServerHealth, serverStatus, isSelfSignedCandidate,
 	} from '$lib/stores/auth.svelte.js';
 	import { loadFromDb, syncFromServer } from '$lib/stores/notes.svelte.js';
@@ -12,6 +12,9 @@
 	let password = $state('');
 	let newServerInput = $state(auth.serverUrl);
 
+	// Unlock mode: session was restored (access token valid) but DEK is null
+	let isUnlockMode = $derived(auth.accessToken !== null && auth.dek === null);
+
 	// Local client-side validation errors; combined with store errors
 	let localError = $state<string | null>(null);
 	let displayError = $derived(localError ?? auth.error);
@@ -19,6 +22,20 @@
 	async function handleSubmit(e: Event) {
 		e.preventDefault();
 		localError = null;
+
+		if (isUnlockMode) {
+			if (!password) { localError = 'Please enter your password.'; return; }
+			try {
+				await unlockWithPassword(password);
+				await loadFromDb();
+				syncFromServer();
+				goto('/');
+			} catch {
+				localError = 'Incorrect password.';
+			}
+			return;
+		}
+
 		if (!username.trim()) { localError = 'Please enter your username.'; return; }
 		if (!password) { localError = 'Please enter your password.'; return; }
 		try {
@@ -66,7 +83,7 @@
 	<div class="brand">
 		<img src="/icons/appicon-96.png" alt="Bedroc" class="brand-mark" width="44" height="44" />
 		<h1 class="brand-name">Bedroc</h1>
-		<p class="brand-tagline">Private synchronous notes, your way</p>
+		<p class="brand-tagline">{isUnlockMode ? `Locked — enter your password to continue as ${auth.username}` : 'Private synchronous notes, your way'}</p>
 	</div>
 
 	<form class="form" onsubmit={handleSubmit}>
@@ -74,6 +91,7 @@
 			<div class="error-banner" role="alert">{displayError}</div>
 		{/if}
 
+		{#if !isUnlockMode}
 		<div class="field">
 			<label for="username" class="field-label">Username</label>
 			<input
@@ -89,6 +107,7 @@
 				required
 			/>
 		</div>
+		{/if}
 
 		<div class="field">
 			<label for="password" class="field-label">Password</label>
@@ -122,7 +141,8 @@
 			</div>
 		</div>
 
-		<!-- Server URL — subtle, expandable -->
+		<!-- Server URL — subtle, expandable — hidden in unlock mode -->
+		{#if !isUnlockMode}
 		<div class="server-row">
 			<button type="button" class="server-toggle" onclick={() => (serverExpanded = !serverExpanded)}>
 				<span class="server-label">Server</span>
@@ -201,15 +221,22 @@
 				</p>
 			{/if}
 		</div>
+		{/if}
 
 		<button type="submit" class="btn-primary" disabled={auth.loading}>
-			{auth.loading ? 'Logging in…' : 'Log in'}
+			{auth.loading ? (isUnlockMode ? 'Unlocking…' : 'Logging in…') : (isUnlockMode ? 'Unlock' : 'Log in')}
 		</button>
 	</form>
 
-	<p class="auth-switch">
-		No account? <a href="/register">Register</a>
-	</p>
+	{#if isUnlockMode}
+		<p class="auth-switch">
+			Not {auth.username}? <button type="button" class="link-btn" onclick={async () => { await logout(); }}>Switch account</button>
+		</p>
+	{:else}
+		<p class="auth-switch">
+			No account? <a href="/register">Register</a>
+		</p>
+	{/if}
 </div>
 
 <style>
@@ -445,6 +472,17 @@
 	.status-text { color: var(--text-muted); }
 	.status-text.status-offline { color: var(--danger); }
 	.status-help { color: var(--text-faint); font-size: 11px; }
+
+	.link-btn {
+		background: none;
+		border: none;
+		padding: 0;
+		cursor: pointer;
+		color: var(--accent);
+		font-size: inherit;
+		font-family: inherit;
+		text-decoration: underline;
+	}
 
 	/* Bottom link */
 	.auth-switch {

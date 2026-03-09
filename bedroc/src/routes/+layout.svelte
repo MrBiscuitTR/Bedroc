@@ -528,7 +528,7 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 6px 10px;
+		padding: max(env(safe-area-inset-top, 0px), 6px) 10px 6px;
 		background: var(--bg-elevated);
 		border-bottom: 1px solid var(--border);
 		flex-shrink: 0;

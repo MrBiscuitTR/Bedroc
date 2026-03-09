@@ -54,20 +54,34 @@
 	// Notes are stored decrypted in IndexedDB; encryption happens at sync time.
 	let title = $state('');
 	let saved = $state(true);
-	let bodyEl: HTMLDivElement;
+	let bodyEl = $state<HTMLDivElement | undefined>(undefined);
+
+	// Track the last noteId we loaded content for — prevents overwriting user edits
+	// after saveNote triggers a notesMap update while the user is still on the same note.
+	let loadedNoteId: string | null = null;
 
 	$effect(() => {
 		const n = isNew ? null : notesMap.get(noteId!);
+		const isNewNoteId = noteId !== loadedNoteId;
+
 		if (n) {
+			// Always update title from store
 			title = n.title;
-			if (bodyEl && bodyEl.innerHTML !== n.body) {
+			// Only overwrite body DOM when switching to a different note,
+			// not on every save/sync update (which would wipe in-progress edits)
+			if (bodyEl && isNewNoteId) {
 				bodyEl.innerHTML = n.body;
+				loadedNoteId = noteId;
+				saved = true;
 			}
-		} else if (isNew) {
+		} else if (isNew && isNewNoteId) {
 			title = '';
-			if (bodyEl) bodyEl.innerHTML = '';
+			if (bodyEl) {
+				bodyEl.innerHTML = '';
+				loadedNoteId = 'new';
+				saved = true;
+			}
 		}
-		saved = true;
 	});
 
 	// ── Autosave ──────────────────────────────────────────────────

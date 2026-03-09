@@ -56,7 +56,8 @@ export function connect(): void {
 
   const token = auth.accessToken;
   const serverUrl = auth.serverUrl;
-  if (!token || !serverUrl) return;
+  // 'offline' is the sentinel for a locked/offline session — no real token yet
+  if (!token || token === 'offline' || !serverUrl) return;
 
   // Build the WebSocket URL: replace http(s) with ws(s)
   const wsBase = serverUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');

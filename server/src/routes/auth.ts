@@ -312,14 +312,16 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     });
 
     // Auto-login: issue tokens so the client is immediately authenticated
-    const { accessToken, refreshToken, accessExpiresAt } = issueTokens(fastify, user.id);
+    const { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt } = issueTokens(fastify, user.id);
     const deviceInfo = parseDeviceInfo((req.headers['user-agent'] as string) ?? '');
+    // Session expires with the refresh token (7d), not the access token (15m).
+    // The access token hash is updated in-place on each refresh via refreshSession().
     await createSession({
       userId:           user.id,
       tokenHash:        hashToken(accessToken),
       refreshTokenHash: hashToken(refreshToken),
       deviceInfo:       deviceInfo || null,
-      expiresAt:        accessExpiresAt,
+      expiresAt:        refreshExpiresAt,
     });
 
     reply.setCookie('bedroc_refresh', refreshToken, {
@@ -419,13 +421,14 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     const { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt } = issueTokens(fastify, userId);
     const deviceInfo = parseDeviceInfo((req.headers['user-agent'] as string) ?? '');
 
-    // Store hashed access + refresh tokens for revocation checks
+    // Store hashed access + refresh tokens for revocation checks.
+    // Session expires with the refresh token (7d), not the access token (15m).
     await createSession({
       userId,
       tokenHash:        hashToken(accessToken),
       refreshTokenHash: hashToken(refreshToken),
       deviceInfo:       deviceInfo || null,
-      expiresAt:        accessExpiresAt,
+      expiresAt:        refreshExpiresAt,
     });
 
     // Refresh token stored in httpOnly cookie (never accessible to JS)
@@ -468,27 +471,26 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     const user = await getUserById(payload.sub);
     if (!user) return reply.code(401).send({ error: 'User not found' });
 
-    const { accessToken, refreshToken: newRefresh, accessExpiresAt } = issueTokens(fastify, user.id);
+    const { accessToken, refreshToken: newRefresh, accessExpiresAt, refreshExpiresAt } = issueTokens(fastify, user.id);
 
-    // Update the existing session row: swap in the new access token hash and
-    // the new refresh token hash. This keeps one row per login, preventing
-    // session table bloat and "Unknown device" duplicates in the sessions list.
+    // Update the existing session row: swap in the new token hashes and extend
+    // the session lifetime to the new refresh token expiry (7d rolling window).
     const updated = await refreshSession({
       refreshTokenHash:    hashToken(refreshToken),
       newTokenHash:        hashToken(accessToken),
       newRefreshTokenHash: hashToken(newRefresh),
-      newExpiresAt:        accessExpiresAt,
+      newExpiresAt:        refreshExpiresAt,
     });
 
-    // If no session was found (e.g. old session without refresh_token_hash,
-    // or manually revoked), fall back to creating a fresh session row.
+    // If no session was found (legacy row without refresh_token_hash, or revoked),
+    // fall back to creating a fresh session row.
     if (!updated) {
       await createSession({
         userId:           user.id,
         tokenHash:        hashToken(accessToken),
         refreshTokenHash: hashToken(newRefresh),
         deviceInfo:       null,
-        expiresAt:        accessExpiresAt,
+        expiresAt:        refreshExpiresAt,
       });
     }
 

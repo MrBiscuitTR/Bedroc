@@ -144,6 +144,28 @@ class AutosaveStore {
 export const autosave = new AutosaveStore();
 
 // ---------------------------------------------------------------------------
+// Periodic sync interval (localStorage — user pref)
+// ---------------------------------------------------------------------------
+
+function readSyncInterval(): number {
+  if (typeof localStorage === 'undefined') return 5000;
+  const raw = localStorage.getItem('bedroc_sync_ms');
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  // minimum 1s, default 5s
+  return Number.isFinite(parsed) && parsed >= 1000 ? parsed : 5000;
+}
+
+class SyncIntervalStore {
+  interval = $state(readSyncInterval());
+  set(ms: number) {
+    const clamped = Math.max(1000, ms);
+    this.interval = clamped;
+    if (typeof localStorage !== 'undefined') localStorage.setItem('bedroc_sync_ms', String(clamped));
+  }
+}
+export const syncIntervalStore = new SyncIntervalStore();
+
+// ---------------------------------------------------------------------------
 // Load from IndexedDB on login
 // ---------------------------------------------------------------------------
 
@@ -400,12 +422,16 @@ export async function resolveConflict(
 async function syncTopicsFromServer(): Promise<void> {
   const res = await apiFetch('/api/topics');
   if (!res.ok) return;
-  const topics = await res.json() as ServerTopic[];
+  const data = await res.json() as { topics?: ServerTopic[] };
+  const topics = data.topics;
+  // Guard: only replace local state if we got a valid array back
+  if (!Array.isArray(topics)) return;
   const userId = auth.userId!;
 
-  topicsMap.clear();
+  // Build new entries first, then atomically replace the map
+  const incoming = new Map<string, TopicLocal>();
   for (const st of topics) {
-    const local: TopicLocal = {
+    incoming.set(st.id, {
       id: st.id,
       userId,
       name: st.name,
@@ -413,21 +439,29 @@ async function syncTopicsFromServer(): Promise<void> {
       folderId: st.folder_id,
       sortOrder: st.sort_order,
       synced: true,
-    };
+    });
+  }
+
+  topicsMap.clear();
+  for (const [id, local] of incoming) {
     await idbSaveTopic(local);
-    topicsMap.set(st.id, localToTopic(local));
+    topicsMap.set(id, localToTopic(local));
   }
 }
 
 async function syncFoldersFromServer(): Promise<void> {
   const res = await apiFetch('/api/folders');
   if (!res.ok) return;
-  const folders = await res.json() as ServerFolder[];
+  const data = await res.json() as { folders?: ServerFolder[] };
+  const folders = data.folders;
+  // Guard: only replace local state if we got a valid array back
+  if (!Array.isArray(folders)) return;
   const userId = auth.userId!;
 
-  foldersMap.clear();
+  // Build new entries first, then atomically replace the map
+  const incoming = new Map<string, FolderLocal>();
   for (const sf of folders) {
-    const local: FolderLocal = {
+    incoming.set(sf.id, {
       id: sf.id,
       userId,
       name: sf.name,
@@ -435,9 +469,13 @@ async function syncFoldersFromServer(): Promise<void> {
       sortOrder: sf.sort_order,
       collapsed: sf.collapsed,
       synced: true,
-    };
+    });
+  }
+
+  foldersMap.clear();
+  for (const [id, local] of incoming) {
     await idbSaveFolder(local);
-    foldersMap.set(sf.id, localToFolder(local));
+    foldersMap.set(id, localToFolder(local));
   }
 }
 

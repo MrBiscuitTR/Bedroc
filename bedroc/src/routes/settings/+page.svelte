@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { autosave, notesMap, topicsMap } from '$lib/stores/notes.svelte';
+	import { autosave, syncIntervalStore, notesMap, topicsMap } from '$lib/stores/notes.svelte';
 	import { auth, logout, apiFetch, changePassword } from '$lib/stores/auth.svelte.js';
 	import { clearStore } from '$lib/stores/notes.svelte.js';
 
@@ -65,6 +65,14 @@
 	function handleAutosaveSecondsChange() {
 		autosaveSeconds = Math.max(0.5, autosaveSeconds);
 		if (autosaveEnabled) autosave.set(Math.round(autosaveSeconds * 1000));
+	}
+
+	// ── Sync interval ─────────────────────────────────────────────
+	let syncSeconds = $state(syncIntervalStore.interval / 1000);
+
+	function handleSyncSecondsChange() {
+		syncSeconds = Math.max(1, syncSeconds);
+		syncIntervalStore.set(Math.round(syncSeconds * 1000));
 	}
 
 	// ── Change password ────────────────────────────────────────────
@@ -218,6 +226,26 @@
 					</div>
 				</div>
 			{/if}
+			<div class="divider-inner"></div>
+			<div class="row">
+				<div class="row-info">
+					<span class="row-label">Sync interval</span>
+					<span class="row-sub">How often to pull changes from the server (min 1s)</span>
+				</div>
+				<div class="interval-wrap">
+					<input
+						type="number"
+						class="interval-input"
+						bind:value={syncSeconds}
+						onchange={handleSyncSecondsChange}
+						min="1"
+						max="300"
+						step="1"
+						aria-label="Sync interval in seconds"
+					/>
+					<span class="interval-unit">s</span>
+				</div>
+			</div>
 		</div>
 	</section>
 

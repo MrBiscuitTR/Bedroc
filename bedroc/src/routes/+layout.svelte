@@ -5,6 +5,7 @@
 	import { onMount } from 'svelte';
 	import { auth, restoreSession } from '$lib/stores/auth.svelte.js';
 	import { connect as wsConnect, disconnect as wsDisconnect } from '$lib/sync/websocket.js';
+	import { syncFromServer, syncIntervalStore } from '$lib/stores/notes.svelte.js';
 
 	let { children } = $props();
 
@@ -61,6 +62,18 @@
 		} else {
 			wsDisconnect();
 		}
+	});
+
+	// Periodic background sync — only runs when logged in with DEK available.
+	// Fires every syncIntervalStore.interval ms (default 5s, min 1s).
+	// The WebSocket handles push-triggered syncs; this catches anything missed.
+	$effect(() => {
+		if (!auth.isLoggedIn || !auth.dek || isAuthRoute) return;
+		const ms = syncIntervalStore.interval;
+		const id = setInterval(() => {
+			syncFromServer().catch(() => {});
+		}, ms);
+		return () => clearInterval(id);
 	});
 
 	const navItems = [

@@ -25,8 +25,8 @@
  *     by the online event in the main thread instead.
  */
 
-const CACHE_NAME = 'bedroc-v2';
-const SHELL_CACHE = 'bedroc-shell-v2';
+const CACHE_NAME = 'bedroc-v3';
+const SHELL_CACHE = 'bedroc-shell-v3';
 
 // Files to pre-cache on install. SvelteKit hashes JS/CSS filenames so we
 // can't hardcode them — instead we cache the shell on first navigation fetch.
@@ -86,10 +86,17 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Static assets (JS, CSS, images, fonts) — cache-first
-  if (
-    url.pathname.match(/\.(js|css|png|jpg|jpeg|svg|ico|woff2?|ttf|webmanifest)$/)
-  ) {
+  // JS and CSS — network-first so new deploys are always picked up.
+  // SvelteKit hashes filenames so stale cache entries are harmless,
+  // but a new deploy introduces new hashes — cache-first would serve
+  // the old bundle until the SW update cycle completes.
+  if (url.pathname.match(/\.(js|css)$/)) {
+    event.respondWith(networkWithCacheFallback(request));
+    return;
+  }
+
+  // Static assets that don't change (images, fonts, icons) — cache-first
+  if (url.pathname.match(/\.(png|jpg|jpeg|svg|ico|woff2?|ttf|webmanifest)$/)) {
     event.respondWith(cacheFirst(request));
     return;
   }

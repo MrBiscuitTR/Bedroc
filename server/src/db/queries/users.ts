@@ -25,6 +25,7 @@ export interface SessionRow {
   id: string;
   user_id: string;
   token_hash: string;
+  refresh_token_hash: string | null;
   device_info: string | null;
   created_at: Date;
   expires_at: Date;
@@ -93,16 +94,38 @@ export async function updateUserCredentials(params: {
 export async function createSession(params: {
   userId: string;
   tokenHash: string;
+  refreshTokenHash: string;
   deviceInfo: string | null;
   expiresAt: Date;
 }): Promise<SessionRow> {
   const { rows } = await query<SessionRow>(
-    `INSERT INTO sessions (user_id, token_hash, device_info, expires_at)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO sessions (user_id, token_hash, refresh_token_hash, device_info, expires_at)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING *`,
-    [params.userId, params.tokenHash, params.deviceInfo, params.expiresAt]
+    [params.userId, params.tokenHash, params.refreshTokenHash, params.deviceInfo, params.expiresAt]
   );
   return rows[0];
+}
+
+/**
+ * Update an existing session's access token hash when the token is refreshed.
+ * Returns false if no active session was found for the given refresh token hash.
+ */
+export async function refreshSession(params: {
+  refreshTokenHash: string;
+  newTokenHash: string;
+  newRefreshTokenHash: string;
+  newExpiresAt: Date;
+}): Promise<boolean> {
+  const { rowCount } = await query(
+    `UPDATE sessions
+     SET token_hash = $2, refresh_token_hash = $3, expires_at = $4
+     WHERE refresh_token_hash = $1
+       AND revoked = false
+       AND expires_at > now()`,
+    [params.refreshTokenHash, params.newTokenHash, params.newRefreshTokenHash, params.newExpiresAt]
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 export async function getSessionByHash(tokenHash: string): Promise<SessionRow | null> {

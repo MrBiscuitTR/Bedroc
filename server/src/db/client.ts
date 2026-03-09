@@ -56,16 +56,22 @@ export async function runMigrations(): Promise<void> {
   const migrationClient = new pg.Client({ connectionString: migrationUrl });
   await migrationClient.connect();
 
-  const sqlPath = join(__dir, 'migrations', '001_init.sql');
-  const sql = readFileSync(sqlPath, 'utf8');
+  const migrations = ['001_init.sql', '002_session_refresh_hash.sql'];
   try {
-    await migrationClient.query('BEGIN');
-    await migrationClient.query(sql);
-    await migrationClient.query('COMMIT');
-    console.log('[db] Migrations applied.');
-  } catch (err) {
-    await migrationClient.query('ROLLBACK');
-    throw err;
+    for (const file of migrations) {
+      const sqlPath = join(__dir, 'migrations', file);
+      const sql = readFileSync(sqlPath, 'utf8');
+      await migrationClient.query('BEGIN');
+      try {
+        await migrationClient.query(sql);
+        await migrationClient.query('COMMIT');
+        console.log(`[db] Applied migration: ${file}`);
+      } catch (err) {
+        await migrationClient.query('ROLLBACK');
+        throw err;
+      }
+    }
+    console.log('[db] All migrations applied.');
   } finally {
     await migrationClient.end();
   }

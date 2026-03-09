@@ -190,16 +190,29 @@ export function clearStore(): void {
 // Delta sync from server
 // ---------------------------------------------------------------------------
 
-/** Key in localStorage tracking last successful sync timestamp. */
-const LAST_SYNC_KEY = 'bedroc_last_sync';
+/** Key in localStorage tracking last successful sync timestamp — scoped per user. */
+function lastSyncKey(): string {
+  // auth.userId may be null on first call before login; fall back to shared key
+  const uid = auth.userId;
+  return uid ? `bedroc_last_sync_${uid}` : 'bedroc_last_sync';
+}
 
 function getLastSync(): string {
   if (typeof localStorage === 'undefined') return new Date(0).toISOString();
-  return localStorage.getItem(LAST_SYNC_KEY) ?? new Date(0).toISOString();
+  return localStorage.getItem(lastSyncKey()) ?? new Date(0).toISOString();
 }
 
 function setLastSync(iso: string): void {
-  if (typeof localStorage !== 'undefined') localStorage.setItem(LAST_SYNC_KEY, iso);
+  if (typeof localStorage !== 'undefined') localStorage.setItem(lastSyncKey(), iso);
+}
+
+/** Clear the sync timestamp for the current user (call on logout so next login does a full sync). */
+export function clearLastSync(): void {
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem(lastSyncKey());
+    // Also clear the legacy shared key
+    localStorage.removeItem('bedroc_last_sync');
+  }
 }
 
 /**

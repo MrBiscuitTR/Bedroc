@@ -30,7 +30,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import {
   createUser, getUserByUsername, getUserById,
-  createSession, revokeSession, revokeAllSessions,
+  createSession, refreshSession, revokeSession, revokeAllSessions,
   getSessionsForUser, revokeSessionById, updateUserCredentials,
   pruneExpiredSessions,
 } from '../db/queries/users.js';
@@ -193,6 +193,41 @@ function verifySrpProof(params: {
 }
 
 // ---------------------------------------------------------------------------
+// Device info parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive a short human-readable device label from a User-Agent string.
+ * Returns something like "Chrome on Windows", "Safari on iPhone", "Firefox on Mac".
+ * Avoids storing the full raw UA string in the sessions list.
+ */
+function parseDeviceInfo(ua: string): string {
+  if (!ua) return 'Unknown device';
+
+  // OS / platform detection
+  let os = 'Unknown OS';
+  if (/iPhone/.test(ua))                    os = 'iPhone';
+  else if (/iPad/.test(ua))                 os = 'iPad';
+  else if (/Android/.test(ua))              os = 'Android';
+  else if (/Windows NT/.test(ua))           os = 'Windows';
+  else if (/Macintosh|Mac OS X/.test(ua))   os = 'Mac';
+  else if (/Linux/.test(ua))                os = 'Linux';
+  else if (/CrOS/.test(ua))                 os = 'ChromeOS';
+
+  // Browser detection (order matters — check specific ones before generic)
+  let browser = 'Unknown browser';
+  if (/Edg\//.test(ua))                     browser = 'Edge';
+  else if (/OPR\/|Opera/.test(ua))          browser = 'Opera';
+  else if (/SamsungBrowser/.test(ua))       browser = 'Samsung Browser';
+  else if (/Chrome\//.test(ua))             browser = 'Chrome';
+  else if (/Firefox\//.test(ua))            browser = 'Firefox';
+  else if (/Safari\//.test(ua) && /Version\//.test(ua)) browser = 'Safari';
+  else if (/Safari\//.test(ua))             browser = 'Safari';
+
+  return `${browser} on ${os}`;
+}
+
+// ---------------------------------------------------------------------------
 // JWT helpers
 // ---------------------------------------------------------------------------
 
@@ -278,12 +313,13 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
 
     // Auto-login: issue tokens so the client is immediately authenticated
     const { accessToken, refreshToken, accessExpiresAt } = issueTokens(fastify, user.id);
-    const deviceInfo = ((req.headers['user-agent'] as string) ?? '').slice(0, 200);
+    const deviceInfo = parseDeviceInfo((req.headers['user-agent'] as string) ?? '');
     await createSession({
-      userId:     user.id,
-      tokenHash:  hashToken(accessToken),
-      deviceInfo: deviceInfo || null,
-      expiresAt:  accessExpiresAt,
+      userId:           user.id,
+      tokenHash:        hashToken(accessToken),
+      refreshTokenHash: hashToken(refreshToken),
+      deviceInfo:       deviceInfo || null,
+      expiresAt:        accessExpiresAt,
     });
 
     reply.setCookie('bedroc_refresh', refreshToken, {
@@ -381,14 +417,15 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
 
     // Issue JWTs
     const { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt } = issueTokens(fastify, userId);
-    const deviceInfo = ((req.headers['user-agent'] as string) ?? '').slice(0, 200);
+    const deviceInfo = parseDeviceInfo((req.headers['user-agent'] as string) ?? '');
 
-    // Store hashed access token for revocation checks
+    // Store hashed access + refresh tokens for revocation checks
     await createSession({
       userId,
-      tokenHash:  hashToken(accessToken),
-      deviceInfo: deviceInfo || null,
-      expiresAt:  accessExpiresAt,
+      tokenHash:        hashToken(accessToken),
+      refreshTokenHash: hashToken(refreshToken),
+      deviceInfo:       deviceInfo || null,
+      expiresAt:        accessExpiresAt,
     });
 
     // Refresh token stored in httpOnly cookie (never accessible to JS)
@@ -433,15 +470,29 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
 
     const { accessToken, refreshToken: newRefresh, accessExpiresAt } = issueTokens(fastify, user.id);
 
-    await createSession({
-      userId:    user.id,
-      tokenHash: hashToken(accessToken),
-      deviceInfo: null,
-      expiresAt:  accessExpiresAt,
+    // Update the existing session row: swap in the new access token hash and
+    // the new refresh token hash. This keeps one row per login, preventing
+    // session table bloat and "Unknown device" duplicates in the sessions list.
+    const updated = await refreshSession({
+      refreshTokenHash:    hashToken(refreshToken),
+      newTokenHash:        hashToken(accessToken),
+      newRefreshTokenHash: hashToken(newRefresh),
+      newExpiresAt:        accessExpiresAt,
     });
 
+    // If no session was found (e.g. old session without refresh_token_hash,
+    // or manually revoked), fall back to creating a fresh session row.
+    if (!updated) {
+      await createSession({
+        userId:           user.id,
+        tokenHash:        hashToken(accessToken),
+        refreshTokenHash: hashToken(newRefresh),
+        deviceInfo:       null,
+        expiresAt:        accessExpiresAt,
+      });
+    }
+
     // Prune expired/revoked sessions for this user on each refresh (lazy GC).
-    // Keeps the sessions table from growing unboundedly.
     await pruneExpiredSessions(user.id);
 
     reply.setCookie('bedroc_refresh', newRefresh, {

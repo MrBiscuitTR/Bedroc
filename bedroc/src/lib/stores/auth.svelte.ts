@@ -517,6 +517,12 @@ export async function logout(): Promise<void> {
   _userId = null;
   _username = null;
 
+  // Clear per-user sync timestamp so next login does a full sync from epoch
+  if (typeof localStorage !== 'undefined') {
+    if (userId) localStorage.removeItem(`bedroc_last_sync_${userId}`);
+    localStorage.removeItem('bedroc_last_sync'); // legacy shared key
+  }
+
   // Revoke server session (best-effort; don't block on failure)
   try {
     await fetch(`${_serverUrl}/api/auth/logout`, {

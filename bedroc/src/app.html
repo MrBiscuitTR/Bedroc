@@ -28,8 +28,13 @@
 		<!-- PWA manifest -->
 		<link rel="manifest" href="/manifest.webmanifest" />
 
-		<!-- Apple touch icons (added in static/icons/) -->
+		<!-- Apple touch icons
+		     iOS Safari uses the last matching <link> tag (or /apple-touch-icon.png at root).
+		     Provide multiple sizes and a plain tag (no sizes attr) as the final fallback.
+		     The root /apple-touch-icon.png is also present for devices that probe it directly. -->
+		<link rel="apple-touch-icon" sizes="192x192" href="/icons/appicon-192.png" />
 		<link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 
 		<!-- Favicons and other icons -->
 		<link rel="icon" href="/icons/favicon.ico" sizes="any" />

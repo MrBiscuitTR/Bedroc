@@ -146,3 +146,11 @@ bedroc/.npmrc
 .local.env
 .prompt-notes.md
 .PUBLIC-MANAGEMENT.md
+
+# Electron desktop build output — large binaries, not for GitHub
+desktop/dist/
+desktop/out/
+desktop/node_modules/
+# electron-builder cache
+desktop/.cache/
+/bedroc/build

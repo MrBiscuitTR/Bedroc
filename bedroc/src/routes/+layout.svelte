@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { auth, restoreSession } from '$lib/stores/auth.svelte.js';
+	import { auth, restoreSession, checkServerHealth } from '$lib/stores/auth.svelte.js';
 	import { connect as wsConnect, disconnect as wsDisconnect } from '$lib/sync/websocket.js';
 	import { syncFromServer, syncIntervalStore } from '$lib/stores/notes.svelte.js';
 
@@ -40,13 +40,19 @@
 	onMount(async () => {
 		isInIframe = window.self !== window.top;
 		if (isAuthRoute) return;
-		await restoreSession();
+		// Skip restoreSession if already logged in (e.g. just came from login page).
+		// restoreSession calls tryRefreshToken which can clobber an in-memory token
+		// if the refresh network request fails or races with an existing valid token.
+		if (!auth.isLoggedIn) {
+			await restoreSession();
+		}
 		if (!auth.isLoggedIn) {
 			// Don't redirect iframes to /login — they share the parent's vault
 			// state and will work once the parent window unlocks the DEK.
 			if (!isInIframe) goto('/login');
 		} else {
 			wsConnect();
+			checkServerHealth();
 		}
 
 		// Disconnect WebSocket on page unload (tab close, navigate away)

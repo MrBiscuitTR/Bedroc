@@ -29,7 +29,11 @@
 		sessionsLoading = false;
 	}
 
-	$effect(() => { loadSessions(); });
+	// Re-run whenever auth becomes ready (handles Electron where restoreSession
+	// completes after the settings page has already mounted and run its first effect).
+	$effect(() => {
+		if (auth.isLoggedIn) loadSessions();
+	});
 
 	async function revokeSession(id: string) {
 		try {

@@ -241,29 +241,47 @@ function buildMenu() {
 
 app.whenReady().then(async () => {
   // Allow self-signed TLS certificates for private/local IP addresses.
-  // This is needed so the health check and all API requests to WireGuard IPs
-  // (10.x, 192.168.x, 172.x, 100.x Tailscale) work without certificate errors.
-  // We only bypass cert checks for RFC-1918 / Tailscale / loopback addresses —
-  // NOT for the public internet, so external HTTPS remains fully verified.
-  app.on('certificate-error', (event, webContents, url, error, certificate, callback) => {
+  // Covers ALL network requests (fetch, WebSocket, navigation) for WireGuard IPs,
+  // RFC-1918, Tailscale, and loopback. Public internet addresses remain fully verified.
+  //
+  // setCertificateVerifyProc covers renderer fetch() / XHR / WebSocket.
+  // certificate-error covers navigation-level cert errors.
+  // Both are needed — they handle different Chromium code paths.
+  function isPrivateHost(hostname) {
+    return (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      /^10\./.test(hostname) ||
+      /^192\.168\./.test(hostname) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
+      /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(hostname) || // Tailscale CGNAT
+      /^169\.254\./.test(hostname)
+    );
+  }
+
+  // Covers fetch(), XHR, WebSocket — the primary path for API calls
+  const { session } = require('electron');
+  session.defaultSession.setCertificateVerifyProc((request, callback) => {
     try {
-      const { hostname } = new URL(url);
-      // Allow self-signed certs on: loopback, RFC-1918, Tailscale (100.64-127.x), link-local
-      if (
-        hostname === 'localhost' ||
-        hostname === '127.0.0.1' ||
-        /^10\./.test(hostname) ||
-        /^192\.168\./.test(hostname) ||
-        /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
-        /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(hostname) || // Tailscale CGNAT range
-        /^169\.254\./.test(hostname)
-      ) {
-        event.preventDefault();
-        callback(true); // allow
+      if (isPrivateHost(request.hostname)) {
+        callback(0); // 0 = OK, bypass verification
         return;
       }
     } catch {}
-    callback(false); // reject for public internet
+    callback(-3); // -3 = use default Chromium verification
+  });
+
+  // Covers page navigation cert errors (secondary, belt-and-suspenders)
+  app.on('certificate-error', (event, webContents, url, error, certificate, callback) => {
+    try {
+      const { hostname } = new URL(url);
+      if (isPrivateHost(hostname)) {
+        event.preventDefault();
+        callback(true);
+        return;
+      }
+    } catch {}
+    callback(false);
   });
 
   // Verify the frontend build exists

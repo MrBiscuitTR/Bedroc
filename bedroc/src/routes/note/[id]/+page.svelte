@@ -2,14 +2,14 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import {
-		notesMap, topicsMap, foldersMap, conflictsMap,
+		notesMap, topicsMap, foldersMap, conflictsMap, externalUpdates,
 		getNotes, getTopics, getFolders,
 		createNote, createTopic, saveTopic, deleteTopic,
 		createFolder, saveFolder, toggleFolderCollapsed, deleteFolder,
 		moveTopic,
 		saveNote, resolveConflict,
 		relativeTime,
-		type Topic, type Folder, type ConflictRecord
+		type Topic, type Folder, type ConflictRecord, type ExternalUpdate
 	} from '$lib/stores/notes.svelte';
 
 	// ── Note identity ─────────────────────────────────────────────
@@ -48,6 +48,40 @@
 		} finally {
 			conflictResolving = false;
 		}
+	}
+
+	// ── Real-time incoming updates ────────────────────────────────
+	// When another device saves this note, externalUpdates receives the new content.
+	// If editor is clean → apply silently. If dirty → show a non-blocking banner.
+	let incomingUpdate = $state<ExternalUpdate | null>(null);
+
+	$effect(() => {
+		if (isNew || !noteId) return;
+		const update = externalUpdates.get(noteId);
+		if (!update) return;
+		externalUpdates.delete(noteId); // consume immediately
+
+		if (saved) {
+			// Clean editor — apply silently
+			title = update.title;
+			if (bodyEl) bodyEl.innerHTML = update.body;
+		} else {
+			// Dirty editor — show banner; user chooses
+			incomingUpdate = update;
+		}
+	});
+
+	function acceptIncoming() {
+		if (!incomingUpdate) return;
+		title = incomingUpdate.title;
+		if (bodyEl) bodyEl.innerHTML = incomingUpdate.body;
+		saved = true;
+		incomingUpdate = null;
+	}
+
+	function dismissIncoming() {
+		// Keep local edits; discard incoming. Next save will overwrite server.
+		incomingUpdate = null;
 	}
 
 	// ── Load note ─────────────────────────────────────────────────
@@ -376,6 +410,26 @@
 		spellcheck="true"
 		autocapitalize="sentences"
 	/>
+
+	<!-- ── Real-time incoming update banner ─────────────────────── -->
+	{#if incomingUpdate}
+		<div class="incoming-banner" role="alert">
+			<div class="incoming-banner-icon" aria-hidden="true">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+					<circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.3"/>
+					<path d="M7 4v3.5l2 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</div>
+			<div class="incoming-banner-text">
+				<span class="incoming-banner-title">Updated on another device</span>
+				<span class="incoming-banner-desc">Your unsaved changes conflict with a newer version.</span>
+			</div>
+			<div class="incoming-banner-actions">
+				<button class="incoming-btn-accept" onclick={acceptIncoming}>Use theirs</button>
+				<button class="incoming-btn-dismiss" onclick={dismissIncoming} title="Keep your edits and overwrite on next save">Keep mine</button>
+			</div>
+		</div>
+	{/if}
 
 	<!-- ── Conflict notice ──────────────────────────────────────── -->
 	{#if showConflict && conflict}
@@ -913,6 +967,79 @@
 	.title-input::placeholder { color: var(--text-faint); font-weight: 400; }
 
 	/* ── Conflict banner ──────────────────────────────────────── */
+	/* ── Real-time incoming update banner ── */
+	.incoming-banner {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		margin: 0 20px 12px;
+		padding: 10px 14px;
+		background: color-mix(in srgb, var(--accent) 10%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+		border-radius: var(--radius-sm);
+		font-size: 13px;
+	}
+
+	.incoming-banner-icon {
+		color: var(--accent);
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+
+	.incoming-banner-text {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.incoming-banner-title {
+		font-weight: 600;
+		color: var(--accent);
+		font-size: 12.5px;
+	}
+
+	.incoming-banner-desc {
+		color: var(--text-muted);
+		font-size: 12px;
+		line-height: 1.4;
+	}
+
+	.incoming-banner-actions {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		flex-shrink: 0;
+	}
+
+	.incoming-btn-accept {
+		padding: 4px 10px;
+		font-size: 12px;
+		font-weight: 600;
+		background: var(--accent);
+		color: #fff;
+		border: none;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.incoming-btn-accept:hover { background: var(--accent-dim); }
+
+	.incoming-btn-dismiss {
+		padding: 4px 10px;
+		font-size: 12px;
+		font-weight: 500;
+		background: transparent;
+		color: var(--text-muted);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.incoming-btn-dismiss:hover { color: var(--text); border-color: var(--text-muted); }
+
 	.conflict-banner {
 		display: flex;
 		align-items: flex-start;

@@ -104,6 +104,29 @@ export const conflictsMap = new SvelteMap<string, ConflictRecord>();
 export { type ConflictRecord };
 
 // ---------------------------------------------------------------------------
+// Real-time incoming update signals
+// ---------------------------------------------------------------------------
+
+/** Payload signalling that a note was updated on another device. */
+export interface ExternalUpdate {
+  title: string;
+  body: string;
+  updatedAt: number;
+}
+
+/**
+ * Map of noteId → ExternalUpdate, populated when syncFromServer fast-forwards
+ * a note that was already known locally (i.e. might be open in the editor).
+ *
+ * The editor watches this map for its current noteId:
+ *   - If the editor has no unsaved changes → apply silently and clear the entry.
+ *   - If the editor has unsaved changes → show a non-blocking banner.
+ *
+ * The editor is responsible for clearing the entry after handling it.
+ */
+export const externalUpdates = new SvelteMap<string, ExternalUpdate>();
+
+// ---------------------------------------------------------------------------
 // Sort mode (localStorage — user pref, not encrypted)
 // ---------------------------------------------------------------------------
 
@@ -311,8 +334,12 @@ export async function syncFromServer(): Promise<void> {
         !existing.synced &&
         existing.clientUpdatedAt > (existing.serverUpdatedAt || 0);
 
+      // Server is "newer" when it has committed a version the local copy hasn't seen.
+      // Version comparison is the primary signal (reliable across devices); timestamp
+      // is a fallback for cases where version isn't incremented (e.g. legacy records).
       const serverIsNewer =
         !existing ||
+        sn.version > (existing.version || 0) ||
         serverUpdatedAt > (existing.serverUpdatedAt || 0);
 
       if (hasLocalUnsyncedEdits && serverIsNewer) {
@@ -358,6 +385,10 @@ export async function syncFromServer(): Promise<void> {
       };
 
       await idbSaveNote(local);
+      // Signal external update if this note was already loaded (editor may be open)
+      if (notesMap.has(sn.id)) {
+        externalUpdates.set(sn.id, { title, body, updatedAt: serverUpdatedAt });
+      }
       notesToSet.push([sn.id, localToNote(local)]);
 
       // Clear any stale conflict for this note

@@ -259,6 +259,11 @@ export async function syncFromServer(): Promise<void> {
 
   _syncing = true;
   try {
+    // Flush pending writes FIRST so the server has the latest local state
+    // before we pull down. This prevents locally-created notes from being
+    // missed by the subsequent pull (race: note created after last sync timestamp).
+    await flushSyncQueue();
+
     const since = getLastSync();
     console.log('[sync] Starting syncFromServer', { userId, since, serverUrl: auth.serverUrl, hasAccessToken: !!auth.accessToken, tokenIsOffline: auth.accessToken === 'offline' });
     const res = await apiFetch(`/api/notes/sync?since=${encodeURIComponent(since)}`);
@@ -276,15 +281,23 @@ export async function syncFromServer(): Promise<void> {
 
     console.log('[sync] Received', data.notes.length, 'notes from server, serverTime:', data.serverTime);
 
+    // Process all notes (IDB writes + conflict detection) first, collecting
+    // reactive map changes. Apply them all at the end in one synchronous pass
+    // so Svelte batches into a single re-render instead of one per note.
+    const notesToSet: [string, Note][] = [];
+    const notesToDelete: string[] = [];
+    const conflictsToSet: [string, ConflictRecord][] = [];
+    const conflictsToDelete: string[] = [];
+
     for (const sn of data.notes) {
       const serverUpdatedAt = new Date(sn.server_updated_at).getTime();
 
       // Handle server-side deletes — always accept
       if (sn.is_deleted) {
         await idbMarkDeleted(sn.id);
-        notesMap.delete(sn.id);
+        notesToDelete.push(sn.id);
         if (conflictsMap.has(sn.id)) {
-          conflictsMap.delete(sn.id);
+          conflictsToDelete.push(sn.id);
           await deleteConflict(sn.id);
         }
         continue;
@@ -322,7 +335,7 @@ export async function syncFromServer(): Promise<void> {
         };
 
         await saveConflict(conflict);
-        conflictsMap.set(sn.id, conflict);
+        conflictsToSet.push([sn.id, conflict]);
         // Do NOT overwrite the local note — user must resolve the conflict
         continue;
       }
@@ -345,14 +358,20 @@ export async function syncFromServer(): Promise<void> {
       };
 
       await idbSaveNote(local);
-      notesMap.set(sn.id, localToNote(local));
+      notesToSet.push([sn.id, localToNote(local)]);
 
       // Clear any stale conflict for this note
       if (conflictsMap.has(sn.id)) {
-        conflictsMap.delete(sn.id);
+        conflictsToDelete.push(sn.id);
         await deleteConflict(sn.id);
       }
     }
+
+    // Apply all reactive map changes synchronously — one Svelte render pass
+    for (const id of notesToDelete) notesMap.delete(id);
+    for (const [id, note] of notesToSet) notesMap.set(id, note);
+    for (const id of conflictsToDelete) conflictsMap.delete(id);
+    for (const [id, conflict] of conflictsToSet) conflictsMap.set(id, conflict);
 
     setLastSync(data.serverTime);
     console.log('[sync] Notes sync complete. Syncing topics and folders...');
@@ -362,9 +381,6 @@ export async function syncFromServer(): Promise<void> {
     await syncFoldersFromServer();
 
     console.log('[sync] Topics:', topicsMap.size, 'Folders:', foldersMap.size, 'Notes:', notesMap.size);
-
-    // Flush any pending writes queued while offline
-    await flushSyncQueue();
     console.log('[sync] syncFromServer complete');
   } finally {
     _syncing = false;
@@ -463,9 +479,11 @@ async function syncTopicsFromServer(): Promise<void> {
     });
   }
 
+  // Save to IDB first (async), then replace the reactive map in one synchronous
+  // pass so Svelte batches all the .set() calls into a single re-render.
+  await Promise.all([...incoming.values()].map(idbSaveTopic));
   topicsMap.clear();
   for (const [id, local] of incoming) {
-    await idbSaveTopic(local);
     topicsMap.set(id, localToTopic(local));
   }
 }
@@ -502,9 +520,10 @@ async function syncFoldersFromServer(): Promise<void> {
     });
   }
 
+  // Same batching pattern: IDB writes first, then atomic map replacement.
+  await Promise.all([...incoming.values()].map(idbSaveFolder));
   foldersMap.clear();
   for (const [id, local] of incoming) {
-    await idbSaveFolder(local);
     foldersMap.set(id, localToFolder(local));
   }
 }

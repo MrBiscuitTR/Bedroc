@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { auth, restoreSession } from '$lib/stores/auth.svelte.js';
+	import { auth, restoreSession, serverStatus } from '$lib/stores/auth.svelte.js';
 	import { connect as wsConnect, disconnect as wsDisconnect } from '$lib/sync/websocket.js';
 	import { syncFromServer, syncIntervalStore } from '$lib/stores/notes.svelte.js';
 
@@ -197,9 +197,12 @@
 
 			<div class="sidebar-footer">
 				<button class="btn-ghost sidebar-user" onclick={() => {}}>
-					<span class="user-avatar" aria-hidden="true">U</span>
+					<span class="user-avatar" aria-hidden="true">{(auth.username ?? 'A')[0].toUpperCase()}</span>
 					<span class="user-name">{auth.username ?? 'Account'}</span>
 				</button>
+				{#if serverStatus.value !== 'unknown'}
+					<span class="sidebar-srv-dot sidebar-srv-dot-{serverStatus.value}" title={serverStatus.value === 'online' ? 'Server online' : serverStatus.value === 'offline' ? 'Server unreachable' : 'Checking…'}></span>
+				{/if}
 			</div>
 		</aside>
 
@@ -427,6 +430,26 @@
 	.sidebar-footer {
 		padding: 12px 10px;
 		border-top: 1px solid var(--border);
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	/* Status dot — sidebar footer (desktop only) */
+	.sidebar-srv-dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		flex-shrink: 0;
+		margin-left: auto;
+	}
+	.sidebar-srv-dot-checking { background: var(--text-faint); animation: sidebar-srv-pulse 1s infinite; }
+	.sidebar-srv-dot-online   { background: var(--success); }
+	.sidebar-srv-dot-offline  { background: var(--danger); }
+
+	@keyframes sidebar-srv-pulse {
+		0%, 100% { opacity: 1; }
+		50%       { opacity: 0.3; }
 	}
 
 	.sidebar-user {
@@ -518,6 +541,9 @@
 		overscroll-behavior: contain;
 		min-width: 0;
 		transition: width 0.05s ease;
+		/* CSS container so children can query available width (split-pane responsive) */
+		container-type: inline-size;
+		container-name: main-pane;
 	}
 
 	/* In split mode, primary pane has explicit width set inline */
@@ -604,6 +630,7 @@
 
 	.bottom-nav {
 		display: flex;
+		position: relative;
 		background: var(--bg-elevated);
 		border-top: 1px solid var(--border);
 		/* Safe area for home indicator — zero on non-notch devices */

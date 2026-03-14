@@ -11,7 +11,7 @@
 		type Topic, type Folder, type Note, type SortMode
 	} from '$lib/stores/notes.svelte';
 	import { goto } from '$app/navigation';
-	import { serverStatus } from '$lib/stores/auth.svelte.js';
+	import { auth, serverStatus } from '$lib/stores/auth.svelte.js';
 
 	// ── Filter / navigation state ──────────────────────────────────
 	let search        = $state('');
@@ -599,6 +599,18 @@
 				{@render topicRow(topic, 0)}
 			{/each}
 		</nav>
+
+		<!-- Panel footer: user info + server status dot — shown in drawer (mobile only).
+		     Desktop shows this in the layout sidebar footer instead. -->
+		<div class="panel-footer">
+			<button class="btn-ghost panel-user" onclick={() => {}}>
+				<span class="panel-user-avatar" aria-hidden="true">{(auth.username ?? 'A')[0].toUpperCase()}</span>
+				<span class="panel-user-name">{auth.username ?? 'Account'}</span>
+			</button>
+			{#if serverStatus.value !== 'unknown'}
+				<span class="panel-srv-dot panel-srv-dot-{serverStatus.value}" title={serverStatus.value === 'online' ? 'Server online' : serverStatus.value === 'offline' ? 'Server unreachable' : 'Checking…'}></span>
+			{/if}
+		</div>
 	</aside>
 
 	<!-- ── Right panel: note list ──────────────────────────────── -->
@@ -676,15 +688,6 @@
                             </svg>
                         </button>
                     </div>
-                    <!-- Server status dot -->
-                    {#if serverStatus.value !== 'unknown'}
-                        <span
-                            class="srv-dot srv-dot-{serverStatus.value}"
-                            title={serverStatus.value === 'online' ? 'Server online' : serverStatus.value === 'checking' ? 'Checking server…' : 'Server unreachable'}
-                            aria-label={serverStatus.value === 'online' ? 'Server online' : 'Server unreachable'}
-                        ></span>
-                    {/if}
-
                     <button class="new-btn" onclick={handleNewNote} aria-label="New note">
                         <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
                             <path d="M6.5 1v11M1 6.5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
@@ -1039,6 +1042,101 @@
 		.topics-panel.drawer-open { transform: translateX(0); }
 	}
 
+	/* ── Split-pane container queries ──────────────────────────────
+	   When the primary pane is narrower than 700px (i.e. split mode is
+	   active), collapse the static topics panel to a drawer just like
+	   on mobile, and show the drawer toggle button.                    */
+	@container main-pane (max-width: 699px) {
+		.topics-panel {
+			display: flex;
+			position: fixed;
+			top: 0;
+			left: 0;
+			bottom: 0;
+			width: 240px;
+			max-width: 80vw;
+			z-index: 20;
+			background: var(--bg-elevated);
+			border-right: 1px solid var(--border);
+			transform: translateX(-100%);
+			transition: transform 0.22s ease;
+			padding-top: max(20px, env(safe-area-inset-top, 14px));
+		}
+		.topics-panel.drawer-open { transform: translateX(0); }
+		.drawer-toggle { display: flex; }
+		.drawer-close-btn { display: flex; }
+		/* Show panel footer in the drawer when in narrow split mode */
+		.panel-footer { display: flex; }
+	}
+
+	/* Panel footer: user + status dot — at bottom of drawer (mobile) and desktop topics panel */
+	.panel-footer {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 8px 10px 10px;
+		margin-top: auto;
+		border-top: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+
+	/* Hide on desktop when full-width — the layout sidebar footer handles it there.
+	   The container query above re-shows it when in narrow split mode. */
+	@media (min-width: 900px) {
+		.panel-footer { display: none; }
+	}
+	@container main-pane (min-width: 700px) {
+		.panel-footer { display: none; }
+	}
+
+	.panel-user {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex: 1;
+		min-width: 0;
+		padding: 6px 8px;
+		border-radius: var(--radius-sm);
+		text-align: left;
+	}
+
+	.panel-user-avatar {
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		background: var(--accent-dim);
+		color: var(--accent);
+		font-size: 11px;
+		font-weight: 600;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+	}
+
+	.panel-user-name {
+		font-size: 13px;
+		color: var(--text-muted);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.panel-srv-dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		flex-shrink: 0;
+		margin-left: auto;
+	}
+	.panel-srv-dot-checking { background: var(--text-faint); animation: panel-srv-pulse 1s infinite; }
+	.panel-srv-dot-online   { background: var(--success); }
+	.panel-srv-dot-offline  { background: var(--danger); }
+	@keyframes panel-srv-pulse {
+		0%, 100% { opacity: 1; }
+		50%       { opacity: 0.3; }
+	}
+
 	.topics-header {
 		display: flex;
 		align-items: center;
@@ -1255,11 +1353,20 @@
 	@media (max-width: 899px) {
 		.notes-header {
 			padding-top: 14px;
-			/* padding-left: 186px; */
 		}
         .notes-header-right {
             margin-left: 118px;
         }
+	}
+
+	/* Same narrow treatment for split-pane primary pane */
+	@container main-pane (max-width: 699px) {
+		.notes-header {
+			padding-top: 14px;
+		}
+		.notes-header-right {
+			margin-left: 118px;
+		}
 	}
 
     .notes-header-right {
@@ -1272,23 +1379,6 @@
     }
 
 	.notes-title { font-size: 16px; font-weight: 600; }
-
-	/* Server status dot in notes header */
-	.srv-dot {
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-		flex-shrink: 0;
-		display: inline-block;
-	}
-	.srv-dot-checking { background: var(--accent); animation: srv-pulse 1s ease-in-out infinite; }
-	.srv-dot-online   { background: var(--success); }
-	.srv-dot-offline  { background: var(--danger); }
-
-	@keyframes srv-pulse {
-		0%, 100% { opacity: 1; }
-		50%       { opacity: 0.3; }
-	}
 
 	.notes-header-actions {
 		display: flex;

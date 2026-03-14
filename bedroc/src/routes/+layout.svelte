@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { auth, restoreSession, checkServerHealth } from '$lib/stores/auth.svelte.js';
+	import { auth, restoreSession } from '$lib/stores/auth.svelte.js';
 	import { connect as wsConnect, disconnect as wsDisconnect } from '$lib/sync/websocket.js';
 	import { syncFromServer, syncIntervalStore } from '$lib/stores/notes.svelte.js';
 
@@ -50,9 +50,10 @@
 			// Don't redirect iframes to /login — they share the parent's vault
 			// state and will work once the parent window unlocks the DEK.
 			if (!isInIframe) goto('/login');
-		} else {
-			wsConnect();
-			checkServerHealth();
+		} else if (auth.dek) {
+			// Logged in with DEK available — do one immediate sync so UI is
+			// up-to-date without waiting for the first periodic interval tick.
+			syncFromServer().catch(() => {});
 		}
 
 		// Disconnect WebSocket on page unload (tab close, navigate away)
@@ -61,30 +62,31 @@
 		};
 	});
 
-	// Reconnect when auth state changes (e.g. token refreshed, login from another tab)
+	// Manage WebSocket connection based on login state.
+	// Does NOT call syncFromServer — that would create a reactive loop because
+	// syncFromServer updates notes/topics state, causing this effect to re-run.
 	$effect(() => {
-		if (auth.isLoggedIn && !isAuthRoute) {
+		const isLoggedIn = auth.isLoggedIn;
+		const hasDek = !!auth.dek;
+		if (isLoggedIn && hasDek && !isAuthRoute) {
 			wsConnect();
-		} else {
+		} else if (!isLoggedIn) {
 			wsDisconnect();
 		}
 	});
 
-	// Periodic background sync — only runs when logged in with DEK available.
+	// Periodic background sync + health check.
 	// Fires every syncIntervalStore.interval ms (default 5s, min 1s).
 	// The WebSocket handles push-triggered syncs; this catches anything missed.
 	$effect(() => {
 		const isLoggedIn = auth.isLoggedIn;
 		const hasDek = !!auth.dek;
-		console.log('[layout] sync effect re-evaluated', { isLoggedIn, hasDek, isAuthRoute });
 		if (!isLoggedIn || !hasDek || isAuthRoute) return;
 		const ms = syncIntervalStore.interval;
-		console.log('[layout] starting periodic sync every', ms, 'ms');
 		const id = setInterval(() => {
 			syncFromServer().catch((err) => { console.error('[layout] periodic sync error', err); });
 		}, ms);
 		return () => {
-			console.log('[layout] clearing periodic sync interval');
 			clearInterval(id);
 		};
 	});
@@ -196,7 +198,7 @@
 			<div class="sidebar-footer">
 				<button class="btn-ghost sidebar-user" onclick={() => {}}>
 					<span class="user-avatar" aria-hidden="true">U</span>
-					<span class="user-name">username</span>
+					<span class="user-name">{auth.username ?? 'Account'}</span>
 				</button>
 			</div>
 		</aside>

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { autosave, syncIntervalStore, notesMap, topicsMap } from '$lib/stores/notes.svelte';
+	import { autosave, syncIntervalStore, liveSyncStore, notesMap, topicsMap } from '$lib/stores/notes.svelte';
 	import { auth, logout, apiFetch, changePassword } from '$lib/stores/auth.svelte.js';
 	import { clearStore } from '$lib/stores/notes.svelte.js';
 
@@ -230,6 +230,23 @@
 					</div>
 				</div>
 			{/if}
+			<div class="divider-inner"></div>
+			<div class="row">
+				<div class="row-info">
+					<span class="row-label">Live editor sync</span>
+					<span class="row-sub">Update open notes in real time when another device saves them</span>
+				</div>
+				<button
+					class="toggle"
+					class:on={liveSyncStore.enabled}
+					onclick={() => liveSyncStore.set(!liveSyncStore.enabled)}
+					role="switch"
+					aria-checked={liveSyncStore.enabled}
+					aria-label="Live editor sync"
+				>
+					<span class="toggle-thumb"></span>
+				</button>
+			</div>
 			<div class="divider-inner"></div>
 			<div class="row">
 				<div class="row-info">

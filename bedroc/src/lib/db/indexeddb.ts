@@ -406,3 +406,23 @@ export async function wipeLocalData(userId: string): Promise<void> {
 
   closeDb();
 }
+
+/**
+ * Wipe everything EXCEPT notes (and conflicts, which reference notes).
+ * Clears: topics, folders, syncQueue, keyMaterial.
+ * Use this to force a fresh re-sync of metadata without losing local note content.
+ * After calling this, the user will need to log in again to restore keyMaterial.
+ */
+export async function wipeAppDataKeepNotes(): Promise<void> {
+  const d = await openDb();
+  const tx = d.transaction(['topics', 'folders', 'syncQueue', 'keyMaterial'], 'readwrite');
+  tx.objectStore('topics').clear();
+  tx.objectStore('folders').clear();
+  tx.objectStore('syncQueue').clear();
+  tx.objectStore('keyMaterial').clear();
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  closeDb();
+}

@@ -231,12 +231,21 @@ function parseDeviceInfo(ua: string): string {
 // JWT helpers
 // ---------------------------------------------------------------------------
 
+function parseTtlMs(ttl: string): number {
+  if (ttl.endsWith('d')) return parseInt(ttl) * 86_400_000;
+  if (ttl.endsWith('h')) return parseInt(ttl) * 3_600_000;
+  if (ttl.endsWith('m')) return parseInt(ttl) * 60_000;
+  return parseInt(ttl) * 1000;
+}
+
 function issueTokens(
   fastify: FastifyInstance,
   userId: string
-): { accessToken: string; refreshToken: string; accessExpiresAt: Date; refreshExpiresAt: Date } {
-  const accessTtl = process.env.JWT_ACCESS_EXPIRY ?? '15m';
-  const refreshTtl = process.env.JWT_REFRESH_EXPIRY ?? '7d';
+): { accessToken: string; refreshToken: string; accessExpiresAt: Date; refreshExpiresAt: Date; refreshMaxAge: number } {
+  // Access token: short-lived (default 15m), auto-refreshed via cookie
+  // Refresh token: long-lived (default 30d), rotated on each use
+  const accessTtl  = process.env.JWT_ACCESS_EXPIRY  ?? '15m';
+  const refreshTtl = process.env.JWT_REFRESH_EXPIRY ?? '30d';
 
   const accessToken = fastify.jwt.sign(
     { sub: userId },
@@ -244,22 +253,18 @@ function issueTokens(
   );
   const refreshToken = fastify.jwt.sign(
     { sub: userId, type: 'refresh' },
-    { key: process.env.JWT_REFRESH_SECRET!,
-      expiresIn: refreshTtl }
+    { key: process.env.JWT_REFRESH_SECRET!, expiresIn: refreshTtl }
   );
 
-  const accessMs = accessTtl.endsWith('m')
-    ? parseInt(accessTtl) * 60_000
-    : parseInt(accessTtl) * 1000;
-  const refreshMs = refreshTtl.endsWith('d')
-    ? parseInt(refreshTtl) * 86_400_000
-    : 604_800_000;
+  // Cookie maxAge must match refresh token expiry
+  const refreshMs = parseTtlMs(refreshTtl);
 
   return {
     accessToken,
     refreshToken,
-    accessExpiresAt: new Date(Date.now() + accessMs),
+    accessExpiresAt:  new Date(Date.now() + parseTtlMs(accessTtl)),
     refreshExpiresAt: new Date(Date.now() + refreshMs),
+    refreshMaxAge:    Math.floor(refreshMs / 1000), // seconds for cookie maxAge
   };
 }
 
@@ -312,10 +317,8 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     });
 
     // Auto-login: issue tokens so the client is immediately authenticated
-    const { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt } = issueTokens(fastify, user.id);
+    const { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt, refreshMaxAge } = issueTokens(fastify, user.id);
     const deviceInfo = parseDeviceInfo((req.headers['user-agent'] as string) ?? '');
-    // Session expires with the refresh token (7d), not the access token (15m).
-    // upsertSessionForDevice ensures one active session per device label.
     await upsertSessionForDevice({
       userId:           user.id,
       tokenHash:        hashToken(accessToken),
@@ -326,10 +329,10 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
 
     reply.setCookie('bedroc_refresh', refreshToken, {
       httpOnly: true,
-      secure:   process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure:   true,
+      sameSite: 'none',  // cross-site: frontend and backend may be on different origins
       path:     '/api/auth/refresh',
-      maxAge:   7 * 24 * 3600,
+      maxAge:   refreshMaxAge,
     });
 
     return reply.code(201).send({
@@ -418,12 +421,9 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     if (!valid) return reply.code(401).send({ error: 'Authentication failed' });
 
     // Issue JWTs
-    const { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt } = issueTokens(fastify, userId);
+    const { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt, refreshMaxAge } = issueTokens(fastify, userId);
     const deviceInfo = parseDeviceInfo((req.headers['user-agent'] as string) ?? '');
 
-    // Store hashed access + refresh tokens for revocation checks.
-    // Session expires with the refresh token (7d), not the access token (15m).
-    // upsertSessionForDevice ensures one active session per device label.
     await upsertSessionForDevice({
       userId,
       tokenHash:        hashToken(accessToken),
@@ -432,13 +432,15 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
       expiresAt:        refreshExpiresAt,
     });
 
-    // Refresh token stored in httpOnly cookie (never accessible to JS)
+    // Refresh token stored in httpOnly cookie (never accessible to JS).
+    // sameSite: 'none' + secure: true allows the cookie to be sent from any
+    // frontend origin (e.g. bedroc.cagancalidag.com → https://10.66.66.1).
     reply.setCookie('bedroc_refresh', refreshToken, {
       httpOnly: true,
-      secure:   process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure:   true,
+      sameSite: 'none',
       path:     '/api/auth/refresh',
-      maxAge:   7 * 24 * 3600,
+      maxAge:   refreshMaxAge,
     });
 
     return reply.code(200).send({
@@ -472,7 +474,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     const user = await getUserById(payload.sub);
     if (!user) return reply.code(401).send({ error: 'User not found' });
 
-    const { accessToken, refreshToken: newRefresh, accessExpiresAt, refreshExpiresAt } = issueTokens(fastify, user.id);
+    const { accessToken, refreshToken: newRefresh, accessExpiresAt, refreshExpiresAt, refreshMaxAge } = issueTokens(fastify, user.id);
 
     // Update the existing session row: swap in the new token hashes and extend
     // the session lifetime to the new refresh token expiry (7d rolling window).
@@ -503,10 +505,10 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
 
     reply.setCookie('bedroc_refresh', newRefresh, {
       httpOnly: true,
-      secure:   process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure:   true,
+      sameSite: 'none',
       path:     '/api/auth/refresh',
-      maxAge:   7 * 24 * 3600,
+      maxAge:   refreshMaxAge,
     });
 
     return reply.code(200).send({ accessToken, expiresAt: accessExpiresAt.toISOString() });
@@ -520,7 +522,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
     if (token) await revokeSession(hashToken(token));
 
-    reply.clearCookie('bedroc_refresh', { path: '/api/auth/refresh' });
+    reply.clearCookie('bedroc_refresh', { path: '/api/auth/refresh', sameSite: 'none', secure: true });
     return reply.code(200).send({ ok: true });
   });
 
@@ -552,7 +554,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     if (reply.sent) return;
     const userId = (req as FastifyRequest & { userId: string }).userId;
     await revokeAllSessions(userId);
-    reply.clearCookie('bedroc_refresh', { path: '/api/auth/refresh' });
+    reply.clearCookie('bedroc_refresh', { path: '/api/auth/refresh', sameSite: 'none', secure: true });
     return reply.code(200).send({ ok: true });
   });
 
@@ -566,7 +568,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     // Imported lazily to avoid circular dep
     const { deleteUser } = await import('../db/queries/users.js');
     await deleteUser(userId);
-    reply.clearCookie('bedroc_refresh', { path: '/api/auth/refresh' });
+    reply.clearCookie('bedroc_refresh', { path: '/api/auth/refresh', sameSite: 'none', secure: true });
     return reply.code(200).send({ ok: true });
   });
 

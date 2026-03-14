@@ -42,10 +42,13 @@ All Phase 1 placeholders have been replaced. See `lib/crypto/`, `lib/stores/auth
 | --- | --- | --- |
 | `lib/stores/notes.svelte.ts` | ✅ Done | WebSocket integration via `lib/sync/websocket.ts`; connect/disconnect wired in `+layout.svelte` |
 | `lib/sync/websocket.ts` | ✅ Done | WebSocket client with auto-reconnect, exponential backoff, 30s keepalive ping |
-| `routes/+layout.svelte` | ✅ Done | `wsConnect()` called after login; `wsDisconnect()` on logout; `$effect` reconnects on auth state change |
+| `routes/+layout.svelte` | ✅ Done | `wsConnect()` + immediate `syncFromServer()` called when `auth.isLoggedIn && auth.dek` become true |
 | `lib/stores/notes.svelte.ts` | ✅ Done | Conflict detection in `syncFromServer()` — preserves local edits, stores both versions, never silently overwrites |
 | `lib/stores/notes.svelte.ts` | ✅ Done | `resolveConflict()` — user resolves with local/server/custom merge; pushes resolved version to server |
 | `routes/note/[id]/+page.svelte` | ✅ Done | Conflict resolution UI — banner + full diff view showing both versions side-by-side |
+| `lib/stores/notes.svelte.ts` | ✅ Done | `externalUpdates` SvelteMap — signals real-time updates to open editors; `liveSyncStore` toggle |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Real-time editor sync: applies incoming updates cursor-preservingly (character-offset save/restore); shows banner if unsaved changes |
+| `routes/settings/+page.svelte` | ✅ Done | "Live editor sync" toggle (default on) |
 
 ---
 

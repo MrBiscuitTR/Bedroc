@@ -24,7 +24,7 @@
  */
 
 import { SvelteMap } from 'svelte/reactivity';
-import { auth, apiFetch } from './auth.svelte.js';
+import { auth, apiFetch, reportSyncResult } from './auth.svelte.js';
 import { encryptNote, decryptNote } from '$lib/crypto/encrypt.js';
 import {
   saveNote as idbSaveNote,
@@ -102,6 +102,44 @@ export const syncState = { get syncing() { return _syncing; } };
 export const conflictsMap = new SvelteMap<string, ConflictRecord>();
 
 export { type ConflictRecord };
+
+// ---------------------------------------------------------------------------
+// External update signal (real-time editor sync)
+// ---------------------------------------------------------------------------
+
+/**
+ * Posted by syncFromServer() when a note that is already in notesMap
+ * receives a newer version from the server. The note editor watches this map
+ * and applies the update cursor-preservingly when the setting is enabled.
+ *
+ * Consumed (deleted) by the editor after processing — acts as a one-shot signal.
+ */
+export interface ExternalUpdate {
+  title: string;
+  body: string;
+  updatedAt: number;
+}
+
+export const externalUpdates = new SvelteMap<string, ExternalUpdate>();
+
+// ---------------------------------------------------------------------------
+// Live sync setting (localStorage — user pref)
+// ---------------------------------------------------------------------------
+
+function readLiveSync(): boolean {
+  if (typeof localStorage === 'undefined') return true;
+  const raw = localStorage.getItem('bedroc_live_sync');
+  return raw === null ? true : raw === '1';
+}
+
+class LiveSyncStore {
+  enabled = $state(readLiveSync());
+  set(on: boolean) {
+    this.enabled = on;
+    if (typeof localStorage !== 'undefined') localStorage.setItem('bedroc_live_sync', on ? '1' : '0');
+  }
+}
+export const liveSyncStore = new LiveSyncStore();
 
 // ---------------------------------------------------------------------------
 // Sort mode (localStorage — user pref, not encrypted)
@@ -268,6 +306,7 @@ export async function syncFromServer(): Promise<void> {
     console.log('[sync] Starting syncFromServer', { userId, since, serverUrl: auth.serverUrl, hasAccessToken: !!auth.accessToken, tokenIsOffline: auth.accessToken === 'offline' });
     const res = await apiFetch(`/api/notes/sync?since=${encodeURIComponent(since)}`);
     console.log('[sync] /api/notes/sync response', res.status, res.ok);
+    reportSyncResult(res.ok);
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       console.warn('[sync] /api/notes/sync failed', res.status, body);
@@ -360,6 +399,13 @@ export async function syncFromServer(): Promise<void> {
       await idbSaveNote(local);
       notesToSet.push([sn.id, localToNote(local)]);
 
+      // Signal real-time update to any open editor for this note.
+      // Only signal when live sync is enabled and the note was already loaded
+      // (i.e. existed in notesMap before this sync cycle).
+      if (liveSyncStore.enabled && notesMap.has(sn.id)) {
+        externalUpdates.set(sn.id, { title, body, updatedAt: serverUpdatedAt });
+      }
+
       // Clear any stale conflict for this note
       if (conflictsMap.has(sn.id)) {
         conflictsToDelete.push(sn.id);
@@ -382,6 +428,9 @@ export async function syncFromServer(): Promise<void> {
 
     console.log('[sync] Topics:', topicsMap.size, 'Folders:', foldersMap.size, 'Notes:', notesMap.size);
     console.log('[sync] syncFromServer complete');
+  } catch (err) {
+    reportSyncResult(false);
+    throw err;
   } finally {
     _syncing = false;
   }

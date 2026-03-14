@@ -193,6 +193,16 @@
 		e.preventDefault();
 		const t = e.touches[0];
 		const el = document.elementFromPoint(t.clientX, t.clientY) as Element | null;
+
+		// Detect "uncategorize" drop zone (All notes / Uncategorised buttons)
+		const uncategorizeEl = el?.closest('[data-drop-uncategorize]') as Element | null;
+		if (uncategorizeEl && dragKind === 'note') {
+			dropZone = 'uncategorize';
+			dropTarget = '__uncategorize__';
+			dropSide = 'into';
+			return;
+		}
+
 		// detect topic, folder, or note elements
 		const topicEl = elementClosestClass(el, 'topic-item');
 		const folderEl = elementClosestClass(el, 'folder-item');
@@ -252,7 +262,13 @@
 		// commit based on dragKind/dragId/dropZone/dropTarget/dropSide
 		if (!longPressActive) return;
 		if (dragKind && dragId && dropTarget) {
-			if (dropZone === 'topic') {
+			if (dropZone === 'uncategorize') {
+				// Drop on "All notes" or "Uncategorised" → remove topic from note
+				if (dragKind === 'note') {
+					const note = notesMap.get(dragId);
+					if (note) saveNote({ ...note, topicId: null });
+				}
+			} else if (dropZone === 'topic') {
 				if (dragKind === 'note') {
 					const note = notesMap.get(dragId);
 					if (note) saveNote({ ...note, topicId: dropTarget });
@@ -482,7 +498,16 @@
 
 	// ── Helpers ────────────────────────────────────────────────────
 	function stripHtml(html: string): string {
-		return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+		return html
+			.replace(/<[^>]+>/g, ' ')         // strip tags
+			.replace(/&nbsp;/gi, ' ')          // decode non-breaking space
+			.replace(/&amp;/gi, '&')
+			.replace(/&lt;/gi, '<')
+			.replace(/&gt;/gi, '>')
+			.replace(/&quot;/gi, '"')
+			.replace(/&#39;/gi, "'")
+			.replace(/\s+/g, ' ')
+			.trim();
 	}
 
 	function topicsInFolder(folderId: string | null): Topic[] {
@@ -536,8 +561,10 @@
 
 		<nav class="topic-list">
 			<button
-				class="topic-item"
+				class="topic-item topic-item-all"
 				class:active={activeTopicId === 'all'}
+				class:drop-highlight={dropZone === 'uncategorize' && dragKind === 'note'}
+				data-drop-uncategorize="true"
 				onclick={() => selectTopic('all')}
 			>
 				<span class="topic-dot" style="background: var(--text-faint)"></span>
@@ -547,6 +574,8 @@
 
 			<button
 				class="topic-item"
+				class:drop-highlight={dropZone === 'uncategorize' && dragKind === 'note'}
+				data-drop-uncategorize="true"
 				class:active={activeTopicId === null}
 				class:drop-target-topic={dropZone === 'root' && dragKind === 'note'}
 				onclick={() => selectTopic(null)}
@@ -1161,6 +1190,13 @@
 
 	.topic-item.active {
 		background: color-mix(in srgb, var(--accent) 12%, transparent);
+		color: var(--text);
+	}
+
+	/* Highlighted when a note is dragged over the uncategorize zone */
+	.topic-item.drop-highlight {
+		background: color-mix(in srgb, var(--success) 14%, transparent);
+		outline: 1.5px solid color-mix(in srgb, var(--success) 50%, transparent);
 		color: var(--text);
 	}
 

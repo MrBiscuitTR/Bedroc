@@ -166,6 +166,10 @@ export type ServerStatus = 'unknown' | 'checking' | 'online' | 'offline';
 
 let _serverStatus = $state<ServerStatus>('unknown');
 export const serverStatus = { get value() { return _serverStatus; } };
+/** Called by syncFromServer to reflect live connectivity without a separate HTTP request. */
+export function reportSyncResult(ok: boolean): void {
+  _serverStatus = ok ? 'online' : 'offline';
+}
 
 /**
  * Returns true if the current server URL is https:// on a bare IP —
@@ -199,25 +203,22 @@ async function tryHealthFetch(target: string): Promise<boolean> {
   }
 }
 
+/**
+ * Check server health and update _serverStatus.
+ *
+ * When `url` has no scheme, probes both https:// and http:// and commits the
+ * working one. On an HTTPS page, http:// is never auto-committed (mixed-content).
+ * When `url` already has a scheme, only that variant is tried.
+ */
 export async function checkServerHealth(url?: string): Promise<boolean> {
-  const base = url ? normaliseServerUrl(url) : _serverUrl;
+  const raw = (url ?? _serverUrl).trim();
+  const target = normaliseServerUrl(raw); // always has a scheme
   _serverStatus = 'checking';
 
-  // Try the primary URL (always https:// after normalisation)
-  if (await tryHealthFetch(base)) {
-    if (base !== _serverUrl) setServerUrl(base);
+  if (await tryHealthFetch(target)) {
+    if (target !== _serverUrl) setServerUrl(target);
     _serverStatus = 'online';
     return true;
-  }
-
-  // If https:// failed, try http:// as fallback (useful on LAN / WireGuard)
-  if (base.startsWith('https://')) {
-    const httpFallback = base.replace(/^https:\/\//, 'http://');
-    if (await tryHealthFetch(httpFallback)) {
-      setServerUrl(httpFallback); // commit the working URL
-      _serverStatus = 'online';
-      return true;
-    }
   }
 
   _serverStatus = 'offline';
@@ -249,17 +250,14 @@ export async function apiFetch(
   // 'offline' is the sentinel for an offline-unlocked session — no Bearer token yet.
   // Attempt a token refresh first; if that succeeds, use the real token.
   if (_accessToken === 'offline') {
-    console.log('[auth] apiFetch: token is offline sentinel, attempting refresh before', path);
-    const refreshed = await tryRefreshToken();
-    if (!refreshed) {
-      console.warn('[auth] apiFetch: refresh failed while offline, returning 503 for', path);
-      // Still offline — return a synthetic 503 so callers fail gracefully
+    const result = await tryRefreshToken();
+    if (result !== 'ok') {
+      // Still offline or expired — return a synthetic 503 so callers fail gracefully
       return new Response(JSON.stringify({ error: 'Offline' }), {
         status: 503,
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    console.log('[auth] apiFetch: refresh succeeded, proceeding with real token');
   }
 
   if (_accessToken) {
@@ -275,15 +273,12 @@ export async function apiFetch(
 
   // On 401, attempt token refresh once
   if (res.status === 401 && _accessToken) {
-    console.warn('[auth] apiFetch: got 401 for', path, '— attempting token refresh');
-    const refreshed = await tryRefreshToken();
-    if (refreshed) {
-      console.log('[auth] apiFetch: refresh succeeded, retrying', path);
+    const refreshResult = await tryRefreshToken();
+    if (refreshResult === 'ok') {
       headers.set('Authorization', `Bearer ${_accessToken}`);
       return fetch(url, { ...init, headers, credentials: 'include' });
     }
-    console.error('[auth] apiFetch: refresh failed after 401 for', path, '— logging out');
-    // Refresh failed — force logout
+    // Refresh failed (expired or offline) — force logout
     await logout();
     goto('/login');
   }
@@ -295,26 +290,29 @@ export async function apiFetch(
 // Token refresh
 // ---------------------------------------------------------------------------
 
-async function tryRefreshToken(): Promise<boolean> {
+/**
+ * Attempt to get a new access token via the httpOnly refresh cookie.
+ * Returns:
+ *   'ok'      — new access token issued
+ *   'expired' — server responded (401/403) — cookie missing or token revoked
+ *   'offline' — network error / server unreachable
+ */
+async function tryRefreshToken(): Promise<'ok' | 'expired' | 'offline'> {
   try {
-    console.log('[auth] tryRefreshToken: calling', `${_serverUrl}/api/auth/refresh`);
     const res = await fetch(`${_serverUrl}/api/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
     });
-    console.log('[auth] tryRefreshToken: response', res.status, res.ok);
     if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      console.warn('[auth] tryRefreshToken failed:', res.status, body);
-      return false;
+      console.warn('[auth] tryRefreshToken failed:', res.status);
+      return 'expired';
     }
     const data = await res.json() as { accessToken: string };
     _accessToken = data.accessToken;
-    console.log('[auth] tryRefreshToken: success, new token issued');
-    return true;
-  } catch (err) {
-    console.error('[auth] tryRefreshToken: exception', err);
-    return false;
+    return 'ok';
+  } catch {
+    // Network error — server unreachable or offline
+    return 'offline';
   }
 }
 
@@ -582,10 +580,10 @@ export async function logout(): Promise<void> {
  *   refresh via tryRefreshToken().
  */
 export async function restoreSession(): Promise<void> {
-  const refreshed = await tryRefreshToken();
+  const result = await tryRefreshToken();
 
-  if (refreshed) {
-    // Online: load saved identity from IndexedDB
+  if (result === 'ok') {
+    // Online and token refreshed — load saved identity from IndexedDB
     const km = await loadKeyMaterial();
     if (km) {
       _username = km.username;
@@ -593,30 +591,28 @@ export async function restoreSession(): Promise<void> {
       // _dek remains null — user must unlock with password
     }
 
-    // Get userId from the access token (decode without verify — browser already verified via HTTPS)
-    if (_accessToken) {
+    // Decode userId from the access token (no verify needed — already verified by server)
+    if (_accessToken && _accessToken !== 'offline') {
       try {
         const payload = JSON.parse(atob(_accessToken.split('.')[1])) as { sub: string };
         _userId = payload.sub;
       } catch {
-        // Malformed token — treat as logged out
         _accessToken = null;
       }
     }
-  } else {
-    // Offline or server unreachable — check for locally stored key material
+  } else if (result === 'offline') {
+    // Network error — server unreachable. Show offline unlock if user was logged in before.
     const km = await loadKeyMaterial();
     if (km && km.userId) {
-      // User was previously logged in; let them unlock with password locally
       _username = km.username;
       _userId = km.userId;
       _serverUrl = km.serverUrl;
-      // Sentinel value: signals "offline locked" to the login page unlock flow
+      // Sentinel: signals "offline locked" — login page shows unlock prompt
       _accessToken = 'offline';
-      // _dek remains null — user must unlock with password
     }
-    // If no key material, user has never logged in on this device — show login form
+    // No key material → fresh device, show normal login form
   }
+  // result === 'expired': cookie absent or revoked → show normal login form (no sentinel)
 }
 
 /**

@@ -369,9 +369,16 @@ When making changes:
 
 ---
 
+## Auth / session notes
+
+- **Refresh token cookie** uses `sameSite: 'none'; Secure: true` so it is sent cross-origin from any frontend (e.g. `bedroc.cagancalidag.com` → `https://10.66.66.1`). This is required for the public-frontend / self-hosted-backend model.
+- **Session lifetime** defaults to 30 days (`JWT_REFRESH_EXPIRY=30d`). Configure via env var. The access token refreshes silently every 15 minutes (`JWT_ACCESS_EXPIRY=15m`).
+- **Offline unlock**: when the server is unreachable (network error, not 401), the app shows an unlock prompt so users can access local IndexedDB notes without connectivity.
+
 ## Known limitations (current state)
 
 - **Change password** re-derives master key and re-wraps the DEK, but does not revoke existing sessions. Users who want to invalidate all sessions after a password change should also use "Revoke all sessions" in Settings.
 - **Rate limiting** on auth routes uses Redis — if Redis is unavailable, the rate limiter falls back to in-memory (single-instance only).
 - **iOS push notifications**: the PWA service worker does not support push notifications on iOS (Apple limitation). Real-time sync uses the WebSocket connection instead — it works while the app is open.
 - **Editor**: text formatting uses `document.execCommand` (deprecated). Phase 6 will migrate to ProseMirror.
+- **Self-signed cert (browser)**: browsers block fetch() to HTTPS backends with self-signed certs. Use a domain with a real certificate (Caddy, Let's Encrypt) for the best experience. The Electron desktop app bypasses this restriction for private IPs.

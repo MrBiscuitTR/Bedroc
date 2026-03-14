@@ -9,7 +9,8 @@
 		moveTopic,
 		saveNote, resolveConflict,
 		relativeTime,
-		type Topic, type Folder, type ConflictRecord
+		externalUpdates, liveSyncStore,
+		type Topic, type Folder, type ConflictRecord, type ExternalUpdate
 	} from '$lib/stores/notes.svelte';
 
 	// ── Note identity ─────────────────────────────────────────────
@@ -132,6 +133,105 @@
 		if (!notes.length) return null;
 		notes.sort((a,b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 		return notes[0];
+	}
+
+	// ── Real-time external update (from another device/tab) ───────
+	// Uses character-offset cursor saving so the cursor stays in place after innerHTML update.
+
+	/** Walk all text nodes under `root` in document order, counting chars. */
+	function getCharOffset(root: HTMLElement): number {
+		const sel = window.getSelection();
+		if (!sel || sel.rangeCount === 0) return -1;
+		const range = sel.getRangeAt(0);
+		// Count chars from root to range.startContainer:startOffset
+		const iter = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+		let offset = 0;
+		let node: Node | null;
+		while ((node = iter.nextNode())) {
+			if (node === range.startContainer) {
+				offset += range.startOffset;
+				return offset;
+			}
+			offset += (node as Text).length;
+		}
+		return -1; // cursor not inside root
+	}
+
+	/** Restore cursor to character offset `targetOffset` inside `root`. */
+	function setCharOffset(root: HTMLElement, targetOffset: number): void {
+		if (targetOffset < 0) return;
+		const sel = window.getSelection();
+		if (!sel) return;
+		const iter = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+		let offset = 0;
+		let node: Node | null;
+		while ((node = iter.nextNode())) {
+			const len = (node as Text).length;
+			if (offset + len >= targetOffset) {
+				const range = document.createRange();
+				range.setStart(node, Math.min(targetOffset - offset, len));
+				range.collapse(true);
+				sel.removeAllRanges();
+				sel.addRange(range);
+				return;
+			}
+			offset += len;
+		}
+		// targetOffset past end of content — put cursor at end
+		const range = document.createRange();
+		range.selectNodeContents(root);
+		range.collapse(false);
+		sel.removeAllRanges();
+		sel.addRange(range);
+	}
+
+	/** Apply an external update to the editor, preserving cursor position. */
+	function applyExternalUpdate(update: ExternalUpdate): void {
+		if (!bodyEl) return;
+		// Check if cursor is inside the editor
+		const sel = window.getSelection();
+		const editorFocused = sel && sel.rangeCount > 0 && bodyEl.contains(sel.getRangeAt(0).startContainer);
+
+		const charOffset = editorFocused ? getCharOffset(bodyEl) : -1;
+		const prevLen = bodyEl.innerText.length;
+
+		title = update.title;
+		bodyEl.innerHTML = update.body;
+
+		if (editorFocused && charOffset >= 0) {
+			const newLen = bodyEl.innerText.length;
+			// If content shrank and cursor was beyond new end, clamp to new end
+			const restoredOffset = newLen < prevLen && charOffset > newLen ? newLen : charOffset;
+			setCharOffset(bodyEl, restoredOffset);
+		}
+	}
+
+	let incomingUpdate = $state<ExternalUpdate | null>(null);
+
+	$effect(() => {
+		if (isNew || !noteId) return;
+		const update = externalUpdates.get(noteId);
+		if (!update) return;
+		externalUpdates.delete(noteId); // consume
+
+		if (saved) {
+			// Editor is clean — apply silently without disturbing the user
+			applyExternalUpdate(update);
+		} else {
+			// User has unsaved changes — show banner, let them decide
+			incomingUpdate = update;
+		}
+	});
+
+	function acceptIncoming() {
+		if (!incomingUpdate) return;
+		applyExternalUpdate(incomingUpdate);
+		saved = true;
+		incomingUpdate = null;
+	}
+
+	function dismissIncoming() {
+		incomingUpdate = null;
 	}
 
 	function handleTitleInput() { saved = false; scheduleAutosave(); }
@@ -376,6 +476,26 @@
 		spellcheck="true"
 		autocapitalize="sentences"
 	/>
+
+	<!-- ── Incoming update banner (real-time, unsaved conflict) ─── -->
+	{#if incomingUpdate}
+		<div class="incoming-banner" role="alert">
+			<div class="incoming-banner-icon" aria-hidden="true">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+					<circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.3"/>
+					<path d="M7 4v3.5l2 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</div>
+			<div class="incoming-banner-text">
+				<span class="incoming-banner-title">Updated on another device</span>
+				<span class="incoming-banner-desc">Your unsaved changes conflict with a newer version.</span>
+			</div>
+			<div class="incoming-banner-actions">
+				<button class="incoming-btn-accept" onclick={acceptIncoming}>Use theirs</button>
+				<button class="incoming-btn-dismiss" onclick={dismissIncoming}>Keep mine</button>
+			</div>
+		</div>
+	{/if}
 
 	<!-- ── Conflict notice ──────────────────────────────────────── -->
 	{#if showConflict && conflict}
@@ -987,6 +1107,37 @@
 		color: var(--text);
 		border-color: var(--text-muted);
 	}
+
+	/* ── Incoming real-time update banner ────────────────────── */
+	.incoming-banner {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		margin: 0 20px 12px;
+		padding: 10px 14px;
+		background: color-mix(in srgb, var(--accent) 10%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+		border-radius: var(--radius-md);
+		font-size: 13px;
+	}
+	.incoming-banner-icon { color: var(--accent); flex-shrink: 0; margin-top: 2px; }
+	.incoming-banner-text { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+	.incoming-banner-title { font-weight: 600; color: var(--accent); font-size: 12.5px; }
+	.incoming-banner-desc { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
+	.incoming-banner-actions { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+	.incoming-btn-accept {
+		padding: 4px 10px; font-size: 12px; font-weight: 600;
+		background: var(--accent); color: #0f1117; border: none;
+		border-radius: var(--radius-sm); cursor: pointer; transition: opacity 0.12s;
+	}
+	.incoming-btn-accept:hover { opacity: 0.85; }
+	.incoming-btn-dismiss {
+		padding: 4px 10px; font-size: 12px; font-weight: 500;
+		background: transparent; color: var(--text-muted);
+		border: 1px solid var(--border); border-radius: var(--radius-sm);
+		cursor: pointer; transition: color 0.12s, border-color 0.12s;
+	}
+	.incoming-btn-dismiss:hover { color: var(--text); border-color: var(--text-muted); }
 
 	/* ── Conflict diff view ───────────────────────────────────── */
 	.conflict-diff {

@@ -1,13 +1,25 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 	import {
 		auth, login, logout, unlockWithPassword, setServerUrl, removeSavedServer,
 		normaliseServerUrl, checkServerHealth, serverStatus, isSelfSignedCandidate,
 	} from '$lib/stores/auth.svelte.js';
 	import { loadFromDb, syncFromServer } from '$lib/stores/notes.svelte.js';
+	import { wipeAppDataKeepNotes } from '$lib/db/indexeddb.js';
 
 	let serverExpanded = $state(false);
 	let showPassword = $state(false);
+	let menuOpen = $state(false);
+	let menuClearConfirm = $state(false);
+
+	async function clearAppDataKeepNotes() {
+		await wipeAppDataKeepNotes();
+		menuOpen = false;
+		menuClearConfirm = false;
+		// Reload so the app starts fresh (keyMaterial gone → login form shown)
+		window.location.reload();
+	}
 	let username = $state('');
 	let password = $state('');
 	let newServerInput = $state(auth.serverUrl);
@@ -50,10 +62,10 @@
 
 	async function saveServer() {
 		const url = normaliseServerUrl(newServerInput.trim());
-		newServerInput = url; // show normalised form
 		setServerUrl(url);
+		newServerInput = url;
 		serverExpanded = false;
-		await checkServerHealth(url);
+		checkServerHealth(url);
 	}
 
 	function selectServer(url: string) {
@@ -63,8 +75,26 @@
 		checkServerHealth(url);
 	}
 
-	// Run health check whenever server panel opens
-	$effect(() => { if (serverExpanded) checkServerHealth(); });
+	// Debounced live health check while typing (2s delay, only when panel open)
+	let _healthDebounce: ReturnType<typeof setTimeout> | null = null;
+	function onServerInputChange() {
+		if (_healthDebounce) clearTimeout(_healthDebounce);
+		_healthDebounce = setTimeout(() => {
+			const v = newServerInput.trim();
+			if (v) checkServerHealth(normaliseServerUrl(v));
+		}, 2000);
+	}
+
+	// Initial health check on page load so the dot is visible immediately
+	onMount(() => { checkServerHealth(); });
+
+	// Check health once when the server panel is first opened (not on every render)
+	let _prevExpanded = false;
+	$effect(() => {
+		const open = serverExpanded;
+		if (open && !_prevExpanded) checkServerHealth(normaliseServerUrl(newServerInput.trim()) || undefined);
+		_prevExpanded = open;
+	});
 
 	const statusDot: Record<string, string> = {
 		unknown: 'dot-unknown', checking: 'dot-checking',
@@ -78,6 +108,40 @@
 <svelte:head>
 	<title>Log in — Bedroc</title>
 </svelte:head>
+
+<!-- 3-dot corner menu — always visible on login screen -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="corner-menu-wrap">
+	<button
+		class="corner-menu-btn"
+		onclick={() => { menuOpen = !menuOpen; menuClearConfirm = false; }}
+		aria-label="Options"
+		aria-expanded={menuOpen}
+	>
+		⋮
+	</button>
+
+	{#if menuOpen}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="corner-menu-backdrop" onclick={() => { menuOpen = false; menuClearConfirm = false; }}></div>
+		<div class="corner-menu" role="menu">
+			{#if !menuClearConfirm}
+				<button class="corner-menu-item" role="menuitem" onclick={() => (menuClearConfirm = true)}>
+					<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+						<polyline points="3,6 13,6 12,14 4,14"/><path d="M1 6h14M6 6V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2"/>
+					</svg>
+					Clear app data (keep notes)
+				</button>
+			{:else}
+				<p class="corner-menu-confirm-text">Your notes stay. Settings, topics, and cached session will be cleared. Continue?</p>
+				<div class="corner-menu-confirm-btns">
+					<button class="corner-menu-item corner-menu-danger" onclick={clearAppDataKeepNotes}>Yes, clear</button>
+					<button class="corner-menu-item" onclick={() => (menuClearConfirm = false)}>Cancel</button>
+				</div>
+			{/if}
+		</div>
+	{/if}
+</div>
 
 <div class="auth-card">
 	<div class="brand">
@@ -146,6 +210,9 @@
 		<div class="server-row">
 			<button type="button" class="server-toggle" onclick={() => (serverExpanded = !serverExpanded)}>
 				<span class="server-label">Server</span>
+				{#if serverStatus.value !== 'unknown'}
+					<span class="status-dot {statusDot[serverStatus.value]} inline-dot"></span>
+				{/if}
 				<span class="server-url">{auth.serverUrl}</span>
 				<svg
 					width="12"
@@ -165,11 +232,12 @@
 					<input
 						type="text"
 						class="server-input"
-						placeholder="https://api.bedroc.app or 10.66.66.1"
+						placeholder="10.66.66.1, 192.168.1.5:3000, notes.example.com"
 						bind:value={newServerInput}
 						spellcheck="false"
 						autocorrect="off"
 						autocapitalize="off"
+						oninput={onServerInputChange}
 					/>
 					<button type="button" class="btn-ghost server-save" onclick={saveServer}>
 						Save
@@ -218,7 +286,7 @@
 				{/if}
 
 				<p class="server-hint">
-					Enter any format: <code>10.66.66.1</code>, <code>192.168.1.5:3000</code>, or <code>https://notes.example.com</code>. Bare IPs and domain names default to https://.
+					Enter any format: <code>10.66.66.1</code>, <code>192.168.1.5:3000</code>, or <code>notes.example.com</code>. Scheme is detected automatically. Health check runs as you type.
 				</p>
 			{/if}
 		</div>
@@ -408,7 +476,7 @@
 		text-align: left;
 		background: none;
 		border: none;
-		padding: 8px 10px;
+		padding: 2px 10px;
 		font-size: 12px;
 		color: var(--text-muted);
 		cursor: pointer;
@@ -465,6 +533,9 @@
 	.dot-online   { background: var(--success); }
 	.dot-offline  { background: var(--danger); }
 
+	/* Dot shown inline inside the collapsed server-toggle button */
+	.inline-dot { display: inline-block; }
+
 	@keyframes pulse {
 		0%, 100% { opacity: 1; }
 		50%       { opacity: 0.3; }
@@ -490,5 +561,84 @@
 		text-align: center;
 		font-size: 13px;
 		color: var(--text-muted);
+	}
+
+	/* ── Corner 3-dot menu ──────────────────────────────── */
+	/* The .auth-shell (in layout) uses position:relative so we can fix
+	   the button to the corner of the auth area on all screen sizes. */
+	.corner-menu-wrap {
+		position: fixed;
+		top: 12px;
+		right: 12px;
+		z-index: 100;
+	}
+
+	.corner-menu-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 32px;
+		height: 32px;
+		border-radius: 50%;
+		border: 1px solid var(--border);
+		background: var(--bg-elevated);
+		color: var(--text-muted);
+		font-size: 18px;
+		line-height: 1;
+		cursor: pointer;
+		transition: background 0.12s, color 0.12s;
+	}
+	.corner-menu-btn:hover {
+		background: var(--bg-hover);
+		color: var(--text);
+	}
+
+	.corner-menu-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 99;
+	}
+
+	.corner-menu {
+		position: absolute;
+		top: 38px;
+		right: 0;
+		min-width: 220px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-md);
+		box-shadow: 0 4px 20px rgba(0,0,0,0.35);
+		padding: 4px;
+		z-index: 101;
+	}
+
+	.corner-menu-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+		padding: 8px 10px;
+		font-size: 13px;
+		color: var(--text-muted);
+		background: none;
+		border: none;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		text-align: left;
+	}
+	.corner-menu-item:hover { background: var(--bg-hover); color: var(--text); }
+	.corner-menu-danger { color: var(--danger) !important; }
+	.corner-menu-danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+
+	.corner-menu-confirm-text {
+		font-size: 12px;
+		color: var(--text-muted);
+		padding: 8px 10px 4px;
+		line-height: 1.5;
+	}
+	.corner-menu-confirm-btns {
+		display: flex;
+		gap: 4px;
+		padding: 4px;
 	}
 </style>

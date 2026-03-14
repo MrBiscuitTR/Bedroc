@@ -32,7 +32,7 @@ import {
   createUser, getUserByUsername, getUserById,
   upsertSessionForDevice, refreshSession, revokeSession, revokeAllSessions,
   getSessionsForUser, revokeSessionById, updateUserCredentials,
-  pruneExpiredSessions,
+  pruneExpiredSessions, getSessionByHash,
 } from '../db/queries/users.js';
 import { hashToken, verifyAuth } from '../middleware/auth.js';
 import { getRedis } from '../plugins/redis.js';
@@ -197,6 +197,20 @@ function verifySrpProof(params: {
 // ---------------------------------------------------------------------------
 
 /**
+ * Extract the best-effort client IP from the request.
+ * nginx sets X-Forwarded-For when proxying; use the first entry (original client).
+ * Falls back to req.ip (direct connection).
+ */
+function getClientIp(req: FastifyRequest): string | null {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) {
+    const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded).split(',')[0].trim();
+    return first || null;
+  }
+  return req.ip || null;
+}
+
+/**
  * Derive a short human-readable device label from a User-Agent string.
  * Returns something like "Chrome on Windows", "Safari on iPhone", "Firefox on Mac".
  * Avoids storing the full raw UA string in the sessions list.
@@ -204,24 +218,30 @@ function verifySrpProof(params: {
 function parseDeviceInfo(ua: string): string {
   if (!ua) return 'Unknown device';
 
-  // OS / platform detection
+  // OS detection — order matters: check mobile/specific before generic desktop
   let os = 'Unknown OS';
   if (/iPhone/.test(ua))                    os = 'iPhone';
   else if (/iPad/.test(ua))                 os = 'iPad';
   else if (/Android/.test(ua))              os = 'Android';
   else if (/Windows NT/.test(ua))           os = 'Windows';
+  else if (/CrOS/.test(ua))                 os = 'ChromeOS';
   else if (/Macintosh|Mac OS X/.test(ua))   os = 'Mac';
   else if (/Linux/.test(ua))                os = 'Linux';
-  else if (/CrOS/.test(ua))                 os = 'ChromeOS';
 
-  // Browser detection (order matters — check specific ones before generic)
+  // Browser detection — order matters: check specific products first
+  // Edg/  = Edge on desktop (Windows/Mac)
+  // EdgA/ = Edge on Android/iOS (mobile)
   let browser = 'Unknown browser';
-  if (/Edg\//.test(ua))                     browser = 'Edge';
-  else if (/OPR\/|Opera/.test(ua))          browser = 'Opera';
+  if (/Electron\//.test(ua))                browser = 'Electron app';
+  else if (/EdgA\//.test(ua))               browser = 'Edge';
+  else if (/Edg\//.test(ua))                browser = 'Edge';
+  else if (/OPR\/|OPiOS\/|Opera/.test(ua))  browser = 'Opera';
   else if (/SamsungBrowser/.test(ua))       browser = 'Samsung Browser';
+  else if (/CriOS\//.test(ua))              browser = 'Chrome';   // Chrome on iOS
+  else if (/FxiOS\//.test(ua))              browser = 'Firefox';  // Firefox on iOS
   else if (/Chrome\//.test(ua))             browser = 'Chrome';
   else if (/Firefox\//.test(ua))            browser = 'Firefox';
-  else if (/Safari\//.test(ua) && /Version\//.test(ua)) browser = 'Safari';
+  else if (/Version\//.test(ua) && /Safari\//.test(ua)) browser = 'Safari';
   else if (/Safari\//.test(ua))             browser = 'Safari';
 
   return `${browser} on ${os}`;
@@ -270,6 +290,12 @@ function issueTokens(
     refreshExpiresAt: new Date(Date.now() + refreshMs),
     refreshMaxAge:    Math.floor(refreshMs / 1000), // seconds for cookie maxAge
   };
+}
+
+/** Return the session ID for the given raw access token, or null if not found. */
+async function getCurrentSessionId(accessToken: string): Promise<string | null> {
+  const session = await getSessionByHash(hashToken(accessToken));
+  return session?.id ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +354,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
       tokenHash:        hashToken(accessToken),
       refreshTokenHash: hashToken(refreshToken),
       deviceInfo:       deviceInfo || null,
+      loginIp:          getClientIp(req),
       expiresAt:        refreshExpiresAt,
     });
 
@@ -433,6 +460,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
       tokenHash:        hashToken(accessToken),
       refreshTokenHash: hashToken(refreshToken),
       deviceInfo:       deviceInfo || null,
+      loginIp:          getClientIp(req),
       expiresAt:        refreshExpiresAt,
     });
 
@@ -498,6 +526,7 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
         tokenHash:        hashToken(accessToken),
         refreshTokenHash: hashToken(newRefresh),
         deviceInfo:       deviceInfo || null,
+        loginIp:          getClientIp(req),
         expiresAt:        refreshExpiresAt,
       });
     } else {
@@ -537,7 +566,13 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     if (reply.sent) return;
     const userId = (req as FastifyRequest & { userId: string }).userId;
     const sessions = await getSessionsForUser(userId);
-    return reply.code(200).send({ sessions });
+
+    // Identify the current session by matching the access token hash
+    const authHeader = req.headers.authorization ?? '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const currentSessionId = token ? await getCurrentSessionId(token) : null;
+
+    return reply.code(200).send({ sessions, currentSessionId });
   });
 
   // ── Revoke a specific session (protected) ───────────────────────────────

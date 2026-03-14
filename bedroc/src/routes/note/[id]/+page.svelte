@@ -96,35 +96,47 @@
 		autosaveTimer = setTimeout(doSave, autosave.interval);
 	}
 
+	// Prevents concurrent saves from racing each other.
+	let _saving = false;
+
 	async function doSave() {
 		if (saved) return;
+		if (_saving) return; // already in flight — the next autosave will catch unsaved changes
+		_saving = true;
+
+		// Snapshot body + cursor BEFORE any await — nothing can change the DOM
+		// between these two lines and the async work below.
 		const body = bodyEl?.innerHTML ?? '';
+		const savedPosition = bodyEl ? saveCursorPosition(bodyEl) : null;
 
-		// Capture cursor position before save — notesMap.set() inside saveNote
-		// can trigger Svelte effect scheduling which may lose the selection.
-		const savedCharOffset = bodyEl ? getCharOffset(bodyEl) : -1;
+		try {
+			if (isNew) {
+				const id = await createNote(null);
+				const created = notesMap.get(id)!;
+				await saveNote({ ...created, title: dedupTitle(title.trim() || 'Untitled', null, id), body });
+				saved = true;
+				goto(`/note/${id}`, { replaceState: true });
+			} else {
+				const existing = notesMap.get(noteId!);
+				if (!existing) return;
+				await saveNote({ ...existing, title: dedupTitle(title.trim() || 'Untitled', existing.topicId, existing.id), body });
+				saved = true;
+				_lastSaveAt = Date.now();
+			}
 
-		if (isNew) {
-			const id = await createNote(null);
-			const created = notesMap.get(id)!;
-			await saveNote({ ...created, title: dedupTitle(title.trim() || 'Untitled', null, id), body });
-			saved = true;
-			goto(`/note/${id}`, { replaceState: true });
-		} else {
-			const existing = notesMap.get(noteId!);
-			if (!existing) return;
-			await saveNote({ ...existing, title: dedupTitle(title.trim() || 'Untitled', existing.topicId, existing.id), body });
-			saved = true;
-		}
-
-		// Restore cursor if the editor still has focus and position is known.
-		// Use requestAnimationFrame so any pending Svelte DOM updates flush first.
-		if (bodyEl && savedCharOffset >= 0 && document.activeElement === bodyEl) {
-			requestAnimationFrame(() => {
-				if (bodyEl && document.activeElement === bodyEl) {
-					setCharOffset(bodyEl, savedCharOffset);
-				}
-			});
+			// Restore cursor after save.  The save touches IDB + reactivity but
+			// should NOT touch bodyEl.innerHTML (the $effect guard prevents that),
+			// so we only need to restore if the browser moved the caret (it can
+			// after certain layout-triggering async operations).
+			if (savedPosition && bodyEl && document.activeElement === bodyEl) {
+				requestAnimationFrame(() => {
+					if (savedPosition && bodyEl && document.activeElement === bodyEl) {
+						restoreCursorPosition(bodyEl, savedPosition);
+					}
+				});
+			}
+		} finally {
+			_saving = false;
 		}
 	}
 
@@ -154,49 +166,76 @@
 	// ── Real-time external update (from another device/tab) ───────
 	// Uses character-offset cursor saving so the cursor stays in place after innerHTML update.
 
-	/** Walk all text nodes under `root` in document order, counting chars. */
-	function getCharOffset(root: HTMLElement): number {
-		const sel = window.getSelection();
-		if (!sel || sel.rangeCount === 0) return -1;
-		const range = sel.getRangeAt(0);
-		// Count chars from root to range.startContainer:startOffset
-		const iter = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-		let offset = 0;
-		let node: Node | null;
-		while ((node = iter.nextNode())) {
-			if (node === range.startContainer) {
-				offset += range.startOffset;
-				return offset;
-			}
-			offset += (node as Text).length;
-		}
-		return -1; // cursor not inside root
+	// ── Cursor preservation ───────────────────────────────────────
+	// We use a path-based approach rather than char-offset.  A path is an array
+	// of child indices from root to the caret node.  This handles:
+	//   - Cursor inside empty elements (empty <li>, after <br>)
+	//   - Cursor in text nodes
+	//   - Mixed content (text + inline elements)
+	// After an innerHTML replacement, the structure should be identical (same
+	// HTML string), so the path restores correctly.
+
+	interface CursorPos {
+		path: number[];        // child indices from root to the container node
+		offset: number;        // offset inside that container (char offset for text, child index for element)
+		isCollapsed: boolean;
 	}
 
-	/** Restore cursor to character offset `targetOffset` inside `root`. */
-	function setCharOffset(root: HTMLElement, targetOffset: number): void {
-		if (targetOffset < 0) return;
+	function getNodePath(root: Node, node: Node): number[] | null {
+		const path: number[] = [];
+		let cur: Node = node;
+		while (cur !== root) {
+			const parent = cur.parentNode;
+			if (!parent) return null;
+			const idx = Array.from(parent.childNodes).indexOf(cur as ChildNode);
+			if (idx === -1) return null;
+			path.unshift(idx);
+			cur = parent;
+		}
+		return path;
+	}
+
+	function resolveNodePath(root: Node, path: number[]): Node | null {
+		let cur: Node = root;
+		for (const idx of path) {
+			const child = cur.childNodes[idx];
+			if (!child) return null;
+			cur = child;
+		}
+		return cur;
+	}
+
+	function saveCursorPosition(root: HTMLElement): CursorPos | null {
+		const sel = window.getSelection();
+		if (!sel || sel.rangeCount === 0) return null;
+		const range = sel.getRangeAt(0);
+		if (!root.contains(range.startContainer)) return null;
+
+		const path = getNodePath(root, range.startContainer);
+		if (!path) return null;
+		return { path, offset: range.startOffset, isCollapsed: range.collapsed };
+	}
+
+	function restoreCursorPosition(root: HTMLElement, pos: CursorPos): void {
 		const sel = window.getSelection();
 		if (!sel) return;
-		const iter = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-		let offset = 0;
-		let node: Node | null;
-		while ((node = iter.nextNode())) {
-			const len = (node as Text).length;
-			if (offset + len >= targetOffset) {
-				const range = document.createRange();
-				range.setStart(node, Math.min(targetOffset - offset, len));
-				range.collapse(true);
-				sel.removeAllRanges();
-				sel.addRange(range);
-				return;
-			}
-			offset += len;
+		const node = resolveNodePath(root, pos.path);
+		if (!node) {
+			// Path no longer valid (content changed) — put cursor at end
+			const range = document.createRange();
+			range.selectNodeContents(root);
+			range.collapse(false);
+			sel.removeAllRanges();
+			sel.addRange(range);
+			return;
 		}
-		// targetOffset past end of content — put cursor at end
+		const maxOffset = node.nodeType === Node.TEXT_NODE
+			? (node as Text).length
+			: node.childNodes.length;
+		const clampedOffset = Math.min(pos.offset, maxOffset);
 		const range = document.createRange();
-		range.selectNodeContents(root);
-		range.collapse(false);
+		range.setStart(node, clampedOffset);
+		range.collapse(true);
 		sel.removeAllRanges();
 		sel.addRange(range);
 	}
@@ -204,25 +243,22 @@
 	/** Apply an external update to the editor, preserving cursor position. */
 	function applyExternalUpdate(update: ExternalUpdate): void {
 		if (!bodyEl) return;
-		// Check if cursor is inside the editor
 		const sel = window.getSelection();
 		const editorFocused = sel && sel.rangeCount > 0 && bodyEl.contains(sel.getRangeAt(0).startContainer);
-
-		const charOffset = editorFocused ? getCharOffset(bodyEl) : -1;
-		const prevLen = bodyEl.innerText.length;
+		const cursorPos = editorFocused ? saveCursorPosition(bodyEl) : null;
 
 		title = update.title;
 		bodyEl.innerHTML = update.body;
 
-		if (editorFocused && charOffset >= 0) {
-			const newLen = bodyEl.innerText.length;
-			// If content shrank and cursor was beyond new end, clamp to new end
-			const restoredOffset = newLen < prevLen && charOffset > newLen ? newLen : charOffset;
-			setCharOffset(bodyEl, restoredOffset);
+		if (cursorPos) {
+			restoreCursorPosition(bodyEl, cursorPos);
 		}
 	}
 
 	let incomingUpdate = $state<ExternalUpdate | null>(null);
+	// Timestamp of the last time we saved — suppress external updates that arrive
+	// within a short window after our own save to avoid false conflict banners.
+	let _lastSaveAt = 0;
 
 	$effect(() => {
 		if (isNew || !noteId) return;
@@ -230,11 +266,13 @@
 		if (!update) return;
 		externalUpdates.delete(noteId); // consume
 
+		// Suppress updates that arrive <3 s after we saved the same note ourselves.
+		// These are echoes of our own write propagated back via the sync channel.
+		if (Date.now() - _lastSaveAt < 3000) return;
+
 		if (saved) {
-			// Editor is clean — apply silently without disturbing the user
 			applyExternalUpdate(update);
 		} else {
-			// User has unsaved changes — show banner, let them decide
 			incomingUpdate = update;
 		}
 	});
@@ -273,17 +311,25 @@
 	// ── Rich text commands ────────────────────────────────────────
 	// PLACEHOLDER: uses document.execCommand (deprecated). Phase 6: ProseMirror.
 
-	// Saved selection range from the last editor focus — restored before execCommand
-	// so toolbar button clicks don't lose the cursor position.
+	// ── Toolbar selection preservation ───────────────────────────
+	// When a toolbar button is clicked, the editor loses focus (blur) before the
+	// click handler runs.  We save the Range on blur and restore it inside exec()
+	// BEFORE focus() is called — this prevents the browser from resetting the
+	// selection to the start of the editable div.
+	//
+	// IMPORTANT: Do NOT clear _savedRange on focus.  The sequence for a toolbar
+	// click is: editor blur → save range → button mousedown → button click fires
+	// exec() → exec calls focus() → editor focus → exec calls restoreSavedRange()
+	// If we cleared on focus, the range would be gone before restoreSavedRange().
+
 	let _savedRange: Range | null = null;
 
 	function onEditorFocus() {
-		// Clear stale saved range when editor gains focus so we always track current
-		_savedRange = null;
+		// Do NOT clear _savedRange here — see comment above.
+		// The range is cleared in restoreSavedRange() after it is used.
 	}
 
 	function onEditorBlur() {
-		// Save the selection range when editor loses focus (e.g. toolbar button click)
 		const sel = window.getSelection();
 		if (sel && sel.rangeCount > 0 && bodyEl?.contains(sel.getRangeAt(0).commonAncestorContainer)) {
 			_savedRange = sel.getRangeAt(0).cloneRange();
@@ -292,40 +338,38 @@
 
 	function restoreSavedRange() {
 		if (!_savedRange) return;
+		const range = _savedRange;
+		_savedRange = null; // consume — clear after use, not on focus
 		const sel = window.getSelection();
 		if (sel) {
 			sel.removeAllRanges();
-			sel.addRange(_savedRange);
+			sel.addRange(range);
 		}
 	}
 
 	function exec(cmd: string, value?: string) {
+		// Restore saved range BEFORE focus so the browser sees the right selection
+		// when focus() triggers internal selection restoration.
+		if (_savedRange) restoreSavedRange();
 		bodyEl?.focus();
-		restoreSavedRange(); // restore cursor after focus (toolbar click blurs editor)
 		document.execCommand(cmd, false, value);
-		// Update state immediately after command (not waiting for keyup/mouseup)
 		updateFormatState();
 		saved = false;
 		scheduleAutosave();
 	}
 
-	// Font size: map label → px value stored in a data attribute on the select.
-	// We toggle individual size spans around the selection rather than using the
-	// unreliable execCommand fontSize workaround.
 	function execFontSize(px: string) {
+		if (_savedRange) restoreSavedRange();
 		bodyEl?.focus();
-		restoreSavedRange();
-		// Step 1: remove any existing font-size span inside the selection
-		// Step 2: wrap selection in <span style="font-size:Xpx">
+		// Use the font-size=7 marker trick to find the selected range, then
+		// replace with a proper <span style="font-size:Xpx">.
 		document.execCommand('fontSize', false, '7');
-		const markers = bodyEl.querySelectorAll('font[size="7"]');
-		markers.forEach((el) => {
+		bodyEl?.querySelectorAll('font[size="7"]').forEach((el) => {
 			const span = document.createElement('span');
 			span.style.fontSize = px;
 			span.innerHTML = (el as HTMLElement).innerHTML;
 			el.replaceWith(span);
 		});
-		bodyEl.focus();
 		updateFormatState();
 		saved = false;
 		scheduleAutosave();
@@ -338,8 +382,9 @@
 	let isStrike    = $state(false);
 	let isUL        = $state(false);
 	let isOL        = $state(false);
-	// Current font size label detected from selection (empty string = mixed/unknown)
+	// Current font size in px detected from selection ('15' = 15px default)
 	let currentFontSize = $state('');
+	let showFontSizePicker = $state(false);
 
 	function updateFormatState() {
 		if (typeof document === 'undefined') return;
@@ -349,34 +394,27 @@
 		isStrike    = document.queryCommandState('strikeThrough');
 		isUL        = document.queryCommandState('insertUnorderedList');
 		isOL        = document.queryCommandState('insertOrderedList');
-		// Detect font size from the focused node's computed style
-		currentFontSize = detectFontSize();
+		currentFontSize = detectFontSizePx();
 	}
 
-	function detectFontSize(): string {
+	// Walk up from the selection to find the nearest explicit font-size style.
+	// Returns the numeric px value as a string (e.g. '12'), or '' if none found.
+	function detectFontSizePx(): string {
 		const sel = window.getSelection();
 		if (!sel || sel.rangeCount === 0) return '';
-		let node: Node | null = sel.getRangeAt(0).commonAncestorContainer;
-		// Walk up to find a span with an explicit font-size style
+		let node: Node | null = sel.getRangeAt(0).startContainer;
+		if (node?.nodeType === Node.TEXT_NODE) node = node.parentNode;
 		while (node && node !== bodyEl) {
 			if (node.nodeType === Node.ELEMENT_NODE) {
 				const fs = (node as HTMLElement).style.fontSize;
-				if (fs) {
-					const match = fontSizes.find(s => s.value === fs);
-					return match ? match.value : '';
-				}
+				if (fs && fs.endsWith('px')) return fs.slice(0, -2);
 			}
-			node = node.parentNode;
+			node = (node as Element).parentElement;
 		}
 		return '';
 	}
 
-	const fontSizes = [
-		{ label: 'Small',   value: '12px' },
-		{ label: 'Normal',  value: '15px' },
-		{ label: 'Large',   value: '20px' },
-		{ label: 'Heading', value: '26px' },
-	];
+	const fontSizeOptions = [8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72];
 
 	// Color swatches
 	const textColors = [
@@ -392,10 +430,65 @@
 
 	let showColorPicker = $state(false);
 	let customColor = $state('#e2e4ed');
+	let colorBtnEl = $state<HTMLButtonElement | undefined>(undefined);
+	let colorPanelEl = $state<HTMLDivElement | undefined>(undefined);
+	let fontsizeBtnEl = $state<HTMLButtonElement | undefined>(undefined);
+	let fontsizePanelEl = $state<HTMLDivElement | undefined>(undefined);
+
+	// Position a floating panel below its trigger button.
+	function positionPanel(btn: HTMLElement | undefined, panel: HTMLElement | undefined) {
+		if (!btn || !panel) return;
+		const rect = btn.getBoundingClientRect();
+		panel.style.top  = (rect.bottom + 6) + 'px';
+		panel.style.left = rect.left + 'px';
+		// Clamp so it doesn't go off-screen to the right
+		requestAnimationFrame(() => {
+			const pr = panel.getBoundingClientRect();
+			if (pr.right > window.innerWidth - 8) {
+				panel.style.left = Math.max(8, window.innerWidth - pr.width - 8) + 'px';
+			}
+		});
+	}
+
+	$effect(() => {
+		if (showColorPicker) positionPanel(colorBtnEl, colorPanelEl);
+	});
+	$effect(() => {
+		if (showFontSizePicker) positionPanel(fontsizeBtnEl, fontsizePanelEl);
+	});
 
 	function applyColor(color: string) {
+		customColor = color;
 		exec('foreColor', color);
 		showColorPicker = false;
+	}
+
+	// ── Clear formatting ─────────────────────────────────────────
+	function clearFormatting() {
+		exec('removeFormat');
+		// removeFormat doesn't remove lists — toggle them off if active
+		if (document.queryCommandState('insertUnorderedList')) exec('insertUnorderedList');
+		if (document.queryCommandState('insertOrderedList')) exec('insertOrderedList');
+	}
+
+	// ── Paste without formatting (Ctrl+Shift+V) ──────────────────
+	function handlePaste(e: ClipboardEvent) {
+		// Ctrl+Shift+V → paste as plain text in the current cursor style
+		const isPlainPaste = e.shiftKey && (e.ctrlKey || e.metaKey);
+		// Also strip formatting from any paste that contains styled HTML (standard Ctrl+V)
+		// so pasted content doesn't override the user's formatting for subsequent typing.
+		const html = e.clipboardData?.getData('text/html') ?? '';
+		const text = e.clipboardData?.getData('text/plain') ?? '';
+
+		if (isPlainPaste || html) {
+			e.preventDefault();
+			// Insert plain text at cursor — preserves current typing style
+			const plain = text || (e.clipboardData?.getData('text/plain') ?? '');
+			document.execCommand('insertText', false, plain);
+			saved = false;
+			scheduleAutosave();
+		}
+		// Else: let the browser handle it (e.g. images)
 	}
 
 	// ── Delete confirm ────────────────────────────────────────────
@@ -544,7 +637,7 @@
 				<rect x="3" y="6" width="8" height="7" rx="1.2" stroke="currentColor" stroke-width="1.3"/>
 				<path d="M5 6V4.5a2 2 0 114 0V6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
 			</svg>
-			<span>Vault locked — edits saved locally but not synced to server until you unlock.</span>
+			<span>Vault locked — viewing only. Unlock in the main window to edit and sync.</span>
 		</div>
 	{/if}
 
@@ -758,22 +851,46 @@
 
 		<div class="fmt-divider"></div>
 
-		<!-- Font size — value reflects current selection; selecting applies it -->
-		<select
-			class="fmt-select"
-			title="Font size"
-			aria-label="Font size"
-			value={currentFontSize}
-			onchange={(e) => {
-				const v = (e.target as HTMLSelectElement).value;
-				if (v) execFontSize(v);
-			}}
-		>
-			<option value="" disabled>Size</option>
-			{#each fontSizes as fs}
-				<option value={fs.value}>{fs.label}</option>
-			{/each}
-		</select>
+		<!-- Font size — custom pixel picker -->
+		<div class="fontsize-wrap">
+			<button
+				class="fmt-btn fontsize-btn"
+				bind:this={fontsizeBtnEl}
+				onmousedown={(e) => {
+					e.preventDefault(); // keep editor focus
+					showFontSizePicker = !showFontSizePicker;
+					showColorPicker = false;
+				}}
+				title="Font size"
+				aria-label="Font size"
+				aria-expanded={showFontSizePicker}
+			>
+				<span class="fontsize-label">{currentFontSize ? currentFontSize + 'px' : 'Size'}</span>
+				<svg width="8" height="5" viewBox="0 0 8 5" fill="none" aria-hidden="true">
+					<path d="M1 1l3 3 3-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</button>
+
+			{#if showFontSizePicker}
+				<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+				<div class="fontsize-backdrop" onclick={() => (showFontSizePicker = false)}></div>
+				<div class="fontsize-panel" bind:this={fontsizePanelEl} role="listbox" aria-label="Font size options">
+					{#each fontSizeOptions as sz}
+						<button
+							class="fontsize-option"
+							class:active={currentFontSize === String(sz)}
+							role="option"
+							aria-selected={currentFontSize === String(sz)}
+							onmousedown={(e) => {
+								e.preventDefault();
+								execFontSize(sz + 'px');
+								showFontSizePicker = false;
+							}}
+						>{sz}</button>
+					{/each}
+				</div>
+			{/if}
+		</div>
 
 		<div class="fmt-divider"></div>
 
@@ -781,7 +898,12 @@
 		<div class="color-wrap">
 			<button
 				class="fmt-btn color-btn"
-				onclick={() => (showColorPicker = !showColorPicker)}
+				bind:this={colorBtnEl}
+				onmousedown={(e) => {
+					e.preventDefault();
+					showColorPicker = !showColorPicker;
+					showFontSizePicker = false;
+				}}
 				title="Text color"
 				aria-label="Text color"
 				aria-expanded={showColorPicker}
@@ -796,25 +918,35 @@
 			{#if showColorPicker}
 				<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 				<div class="color-backdrop" onclick={() => (showColorPicker = false)}></div>
-				<div class="color-panel" role="dialog" aria-label="Text color picker">
+				<div class="color-panel" bind:this={colorPanelEl} role="dialog" aria-label="Text color picker">
 					<div class="color-swatches">
 						{#each textColors as c}
 							<button
 								class="color-swatch"
 								style="background: {c}"
-								onclick={() => { customColor = c; applyColor(c); }}
+								onmousedown={(e) => { e.preventDefault(); applyColor(c); }}
 								aria-label="Color {c}"
 							></button>
 						{/each}
 					</div>
 					<div class="color-custom-row">
 						<input type="color" class="color-input-native" bind:value={customColor}
-							oninput={() => applyColor(customColor)} title="Custom color" />
+							onchange={() => applyColor(customColor)} title="Custom color" />
 						<span class="color-custom-label">Custom</span>
 					</div>
 				</div>
 			{/if}
 		</div>
+
+		<div class="fmt-divider"></div>
+
+		<!-- Clear formatting -->
+		<button class="fmt-btn" onmousedown={(e) => { e.preventDefault(); clearFormatting(); }} title="Clear formatting" aria-label="Clear formatting">
+			<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+				<path d="M2 3h10M4.5 3l1 8M9.5 3l-1 8M6 7h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+				<path d="M10 11l3 3M13 11l-3 3" stroke="var(--danger)" stroke-width="1.3" stroke-linecap="round"/>
+			</svg>
+		</button>
 	</div>
 
 	<!-- ── Editable body ────────────────────────────────────────── -->
@@ -829,6 +961,7 @@
 		onselectionchange={updateFormatState}
 		onfocus={onEditorFocus}
 		onblur={onEditorBlur}
+		onpaste={handlePaste}
 		data-placeholder="Start writing…"
 		spellcheck="true"
 		role="textbox"
@@ -1518,33 +1651,63 @@
 		flex-shrink: 0;
 	}
 
-	/* Font size select — shows current selection label; placeholder "Size" when mixed */
-	.fmt-select {
-		font-size: 11px;
-		padding: 5px 6px;
-		width: auto;
-		min-width: 62px;
-		background: var(--bg-hover);
+	/* Font size custom picker */
+	.fontsize-wrap { position: relative; flex-shrink: 0; }
+
+	.fontsize-btn {
+		gap: 4px;
+		min-width: 52px;
+		justify-content: space-between;
+		padding: 5px 8px;
 		border: 1px solid var(--border);
+		background: var(--bg-hover);
 		border-radius: var(--radius-sm);
 		color: var(--text-muted);
+	}
+
+	.fontsize-label {
+		font-size: 12px;
+		font-weight: 500;
+		line-height: 1;
+		white-space: nowrap;
+	}
+
+	.fontsize-backdrop { position: fixed; inset: 0; z-index: 200; }
+
+	.fontsize-panel {
+		position: fixed;
+		z-index: 201;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-md);
+		padding: 4px 0;
+		display: flex;
+		flex-direction: column;
+		box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+		max-height: 260px;
+		overflow-y: auto;
+		min-width: 70px;
+	}
+
+	.fontsize-option {
+		padding: 6px 14px;
+		text-align: left;
+		font-size: 13px;
+		color: var(--text-muted);
+		background: none;
+		border: none;
 		cursor: pointer;
-		flex-shrink: 0;
-		/* Prevent iOS auto-zoom on the select element */
-		font-size: 16px;
+		transition: background 0.1s, color 0.1s;
+		white-space: nowrap;
 	}
 
-	/* Scale down visually while keeping font-size ≥ 16px for iOS */
-	.fmt-select {
-		transform-origin: left center;
-		font-size: 16px;
+	.fontsize-option:hover,
+	.fontsize-option.active {
+		background: var(--bg-hover);
+		color: var(--text);
 	}
 
-	@media (min-width: 768px) {
-		.fmt-select { font-size: 12px; }
-	}
-
-	.fmt-select:focus { box-shadow: none; border-color: var(--accent); }
+	.fontsize-option.active { color: var(--accent); }
 
 	/* Color picker */
 	.color-wrap { position: relative; flex-shrink: 0; }
@@ -1558,13 +1721,11 @@
 		display: inline-block;
 	}
 
-	.color-backdrop { position: fixed; inset: 0; z-index: 50; }
+	.color-backdrop { position: fixed; inset: 0; z-index: 200; }
 
 	.color-panel {
-		position: absolute;
-		top: calc(100% + 6px);
-		left: 0;
-		z-index: 51;
+		position: fixed;
+		z-index: 201;
 		background: var(--bg-elevated);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);

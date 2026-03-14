@@ -535,6 +535,50 @@ Add this line to back up every day at 3am:
 0 3 * * * cd /path/to/Bedroc && docker compose exec -T postgres pg_dump -U postgres bedroc | gzip > /backups/bedroc-$(date +\%Y\%m\%d).sql.gz
 ```
 
+### Adjusting rate limits
+
+Rate limits protect the server from abuse and brute-force attacks. The defaults are generous for normal use. If you are hitting limits (e.g. getting 429 errors), you can increase them.
+
+**Global fallback** — covers all authenticated routes not listed below. Edit `server/src/index.ts`:
+
+```ts
+await app.register(fastifyRateLimit, {
+  max: 500,          // ← change this number
+  timeWindow: '1 minute',
+```
+
+**Per-route limits** — defined on individual route handlers in `server/src/routes/notes.ts` and `server/src/routes/auth.ts`. Look for `config: { rateLimit: { max: N } }` on the route you want to change:
+
+```ts
+// Example: increase note sync limit
+{
+  method: 'GET',
+  url: '/api/notes/sync',
+  config: { rateLimit: { max: 200, timeWindow: '1 minute' } },  // ← change max here
+  ...
+}
+```
+
+Current defaults:
+
+| Route | Default limit |
+| --- | --- |
+| Global fallback (all auth routes) | 500 req/min |
+| `GET /api/notes/sync` | 200 req/min |
+| `PUT /api/notes/:id` | 200 req/min |
+| `GET /api/notes` | 120 req/min |
+| `PUT /api/topics/:id`, `PUT /api/folders/:id` | 120 req/min |
+| `GET /api/topics`, `GET /api/folders` | 120 req/min |
+| `DELETE /api/notes/:id` | 60 req/min |
+| `POST /api/auth/register` | 5 req/min |
+| `POST /api/auth/login/init` and `/verify` | 10 req/min |
+
+After changing limits, rebuild the server container:
+
+```bash
+docker compose up -d --build server
+```
+
 ---
 
 ## Troubleshooting

@@ -11,19 +11,23 @@
 	interface Session {
 		id: string;
 		device_info: string | null;
+		login_ip: string | null;
+		last_used_at: string | null;
 		created_at: string;
 		expires_at: string;
 	}
 
 	let sessions = $state<Session[]>([]);
+	let currentSessionId = $state<string | null>(null);
 	let sessionsLoading = $state(true);
 
 	async function loadSessions() {
 		try {
 			const res = await apiFetch('/api/auth/sessions');
 			if (res.ok) {
-				const data = await res.json() as { sessions: Session[] };
+				const data = await res.json() as { sessions: Session[]; currentSessionId: string | null };
 				sessions = data.sessions ?? [];
+				currentSessionId = data.currentSessionId ?? null;
 			}
 		} catch { /* offline */ }
 		sessionsLoading = false;
@@ -388,18 +392,33 @@
 			{:else}
 				{#each sessions as session, i (session.id)}
 					{#if i > 0}<div class="divider-inner"></div>{/if}
-					<div class="row">
+					<div class="row session-row">
 						<div class="row-info">
-							<span class="row-label">
+							<span class="row-label session-label">
 								{session.device_info ?? 'Unknown device'}
+								{#if session.id === currentSessionId}
+									<span class="session-current-badge">This device</span>
+								{/if}
 							</span>
 							<span class="row-sub">
-								Active until {new Date(session.expires_at).toLocaleDateString()}
+								Logged in {session.last_used_at
+									? new Date(session.last_used_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+									: new Date(session.created_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+								{#if session.login_ip}
+									· {session.login_ip}
+								{/if}
+							</span>
+							<span class="row-sub session-expiry">
+								Expires {new Date(session.expires_at).toLocaleDateString()}
 							</span>
 						</div>
-						<button class="btn-ghost revoke-btn" onclick={() => revokeSession(session.id)}>
-							Revoke
-						</button>
+						{#if session.id !== currentSessionId}
+							<button class="btn-ghost revoke-btn" onclick={() => revokeSession(session.id)}>
+								Revoke
+							</button>
+						{:else}
+							<span class="session-current-label">Current</span>
+						{/if}
 					</div>
 				{/each}
 			{/if}
@@ -588,6 +607,38 @@
 		color: var(--accent);
 		padding: 2px 6px;
 		border-radius: 999px;
+	}
+
+	/* Session row */
+	.session-label {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex-wrap: wrap;
+	}
+
+	.session-current-badge {
+		font-size: 10px;
+		font-weight: 600;
+		color: var(--accent);
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+		border-radius: 999px;
+		padding: 1px 7px;
+		letter-spacing: 0.02em;
+		flex-shrink: 0;
+	}
+
+	.session-expiry {
+		color: var(--text-faint);
+		font-size: 11px;
+	}
+
+	.session-current-label {
+		font-size: 12px;
+		color: var(--text-faint);
+		flex-shrink: 0;
+		padding: 5px 10px;
 	}
 
 	/* Revoke / danger buttons */

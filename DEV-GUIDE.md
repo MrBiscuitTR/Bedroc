@@ -201,14 +201,16 @@ Migrations run automatically on every server startup (`runMigrations()` in `serv
 Migration files live at `server/src/db/migrations/` and are numbered sequentially:
 
 ```text
-001_init.sql   — users, sessions, notes, topics, folders tables
-002_*.sql      — (future migrations)
+001_init.sql              — users, sessions, notes, topics, folders tables
+002_session_refresh_hash  — adds refresh_token_hash to sessions (token rotation)
+003_session_metadata      — adds login_ip and last_used_at to sessions
 ```
 
 To add a migration:
 
-1. Create `server/src/db/migrations/002_description.sql`
-2. The migration runner automatically picks up new files on next restart
+1. Create `server/src/db/migrations/004_description.sql`
+2. Add the filename to the `migrations` array in `server/src/db/client.ts`
+3. The migration runs automatically on next server start
 
 To run migrations manually (e.g. for inspection):
 
@@ -374,11 +376,32 @@ When making changes:
 - **Refresh token cookie** uses `sameSite: 'none'; Secure: true` so it is sent cross-origin from any frontend (e.g. `bedroc.cagancalidag.com` → `https://10.66.66.1`). This is required for the public-frontend / self-hosted-backend model.
 - **Session lifetime** defaults to 30 days (`JWT_REFRESH_EXPIRY=30d`). Configure via env var. The access token refreshes silently every 15 minutes (`JWT_ACCESS_EXPIRY=15m`).
 - **Offline unlock**: when the server is unreachable (network error, not 401), the app shows an unlock prompt so users can access local IndexedDB notes without connectivity.
+- **Session metadata**: each session records `login_ip` (from `X-Forwarded-For` or direct IP) and `last_used_at` (updated on every token refresh). The Settings page shows "This device" next to the current session, login timestamp, IP, and expiry. Older sessions without these fields show gracefully without errors.
+- **Device detection**: `parseDeviceInfo()` in `server/src/routes/auth.ts` parses the User-Agent string into a human-readable label. Handles: Edge (desktop `Edg/`, mobile `EdgA/`), Chrome/CrOS, Firefox, Safari, Opera, Samsung Browser, Electron. CrOS is detected before Mac/Linux to avoid false-positive "Linux" labels.
+
+## Rate limits
+
+Rate limits are configured per-route in `server/src/routes/` and globally in `server/src/index.ts`.
+
+| Route | Limit | Reason |
+| --- | --- | --- |
+| Global fallback | 500 req/min | All other authenticated routes |
+| `GET /api/notes/sync` | 200 req/min | 0.5 s minimum sync interval = 120 req/min |
+| `PUT /api/notes/:id` | 200 req/min | Rapid typing + short autosave intervals |
+| `GET /api/notes`, `GET /api/notes/:id` | 120 req/min | General note reads |
+| `PUT /api/topics/:id`, `PUT /api/folders/:id` | 120 req/min | Rapid drag-to-reorder |
+| `GET /api/topics`, `GET /api/folders` | 120 req/min | Sync reads |
+| `DELETE /api/notes/:id` | 60 req/min | Delete operations |
+| `POST /api/auth/register` | 5 req/min | Anti-spam |
+| `POST /api/auth/login/init` | 10 req/min | Brute-force protection |
+| `POST /api/auth/login/verify` | 10 req/min | Brute-force protection |
+
+To change a per-route limit, update `config: { rateLimit: { max: N, timeWindow: '1 minute' } }` on that route handler. To change the global fallback, update `max` in the `fastifyRateLimit` registration in `server/src/index.ts`.
 
 ## Known limitations (current state)
 
 - **Change password** re-derives master key and re-wraps the DEK, but does not revoke existing sessions. Users who want to invalidate all sessions after a password change should also use "Revoke all sessions" in Settings.
 - **Rate limiting** on auth routes uses Redis — if Redis is unavailable, the rate limiter falls back to in-memory (single-instance only).
 - **iOS push notifications**: the PWA service worker does not support push notifications on iOS (Apple limitation). Real-time sync uses the WebSocket connection instead — it works while the app is open.
-- **Editor**: text formatting uses `document.execCommand` (deprecated). Phase 6 will migrate to ProseMirror.
+- **Editor**: text formatting uses `document.execCommand` (deprecated). Phase 6 will migrate to ProseMirror. Current editor supports bold/italic/underline/strikethrough/lists/font-size/color/clear-formatting/paste-without-formatting.
 - **Self-signed cert (browser)**: browsers block fetch() to HTTPS backends with self-signed certs. Use a domain with a real certificate (Caddy, Let's Encrypt) for the best experience. The Electron desktop app bypasses this restriction for private IPs.

@@ -54,6 +54,10 @@
 				// Iframe: userId is set from the refresh token even without a DEK.
 				// Load notes from the shared IndexedDB so the pane shows content.
 				if (auth.userId) loadFromDb().catch(() => {});
+				// Show the server status dot by running a health check.
+				import('$lib/stores/auth.svelte.js').then(({ checkServerHealth }) => {
+					checkServerHealth().catch(() => {});
+				});
 			}
 		} else if (auth.dek) {
 			// Logged in with DEK available — do one immediate sync so UI is
@@ -388,7 +392,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		padding: 24px 16px;
+		/* Top safe area ensures the login form isn't under the status bar on iOS PWA */
+		padding: max(env(safe-area-inset-top, 0px), 24px) 16px max(env(safe-area-inset-bottom, 0px), 24px);
 		background: var(--bg);
 	}
 

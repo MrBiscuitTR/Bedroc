@@ -27,6 +27,8 @@ export interface SessionRow {
   token_hash: string;
   refresh_token_hash: string | null;
   device_info: string | null;
+  login_ip: string | null;
+  last_used_at: Date | null;
   created_at: Date;
   expires_at: Date;
   revoked: boolean;
@@ -96,13 +98,14 @@ export async function createSession(params: {
   tokenHash: string;
   refreshTokenHash: string;
   deviceInfo: string | null;
+  loginIp: string | null;
   expiresAt: Date;
 }): Promise<SessionRow> {
   const { rows } = await query<SessionRow>(
-    `INSERT INTO sessions (user_id, token_hash, refresh_token_hash, device_info, expires_at)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO sessions (user_id, token_hash, refresh_token_hash, device_info, login_ip, last_used_at, expires_at)
+     VALUES ($1, $2, $3, $4, $5, now(), $6)
      RETURNING *`,
-    [params.userId, params.tokenHash, params.refreshTokenHash, params.deviceInfo, params.expiresAt]
+    [params.userId, params.tokenHash, params.refreshTokenHash, params.deviceInfo, params.loginIp, params.expiresAt]
   );
   return rows[0];
 }
@@ -118,6 +121,7 @@ export async function upsertSessionForDevice(params: {
   tokenHash: string;
   refreshTokenHash: string;
   deviceInfo: string | null;
+  loginIp: string | null;
   expiresAt: Date;
 }): Promise<SessionRow> {
   // First, prune expired/revoked sessions for this user
@@ -128,10 +132,10 @@ export async function upsertSessionForDevice(params: {
     const { rowCount, rows } = await query<SessionRow>(
       `UPDATE sessions
        SET token_hash = $3, refresh_token_hash = $4, expires_at = $5,
-           revoked = false, created_at = now()
+           revoked = false, created_at = now(), last_used_at = now(), login_ip = $6
        WHERE user_id = $1 AND device_info = $2 AND revoked = false
        RETURNING *`,
-      [params.userId, params.deviceInfo, params.tokenHash, params.refreshTokenHash, params.expiresAt]
+      [params.userId, params.deviceInfo, params.tokenHash, params.refreshTokenHash, params.expiresAt, params.loginIp]
     );
     if ((rowCount ?? 0) > 0) return rows[0];
   }
@@ -152,7 +156,7 @@ export async function refreshSession(params: {
 }): Promise<boolean> {
   const { rowCount } = await query(
     `UPDATE sessions
-     SET token_hash = $2, refresh_token_hash = $3, expires_at = $4
+     SET token_hash = $2, refresh_token_hash = $3, expires_at = $4, last_used_at = now()
      WHERE refresh_token_hash = $1
        AND revoked = false
        AND expires_at > now()`,
@@ -182,12 +186,12 @@ export async function revokeAllSessions(userId: string): Promise<void> {
 
 export async function getSessionsForUser(userId: string): Promise<SessionRow[]> {
   const { rows } = await query<SessionRow>(
-    `SELECT id, user_id, device_info, created_at, expires_at, revoked
+    `SELECT id, user_id, device_info, login_ip, last_used_at, created_at, expires_at, revoked
      FROM sessions
      WHERE user_id = $1
        AND revoked = false
        AND expires_at > now()
-     ORDER BY created_at DESC
+     ORDER BY last_used_at DESC NULLS LAST, created_at DESC
      LIMIT 20`,
     [userId]
   );

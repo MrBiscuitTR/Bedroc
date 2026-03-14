@@ -56,7 +56,7 @@ export async function runMigrations(): Promise<void> {
   const migrationClient = new pg.Client({ connectionString: migrationUrl });
   await migrationClient.connect();
 
-  const migrations = ['001_init.sql', '002_session_refresh_hash.sql'];
+  const migrations = ['001_init.sql', '002_session_refresh_hash.sql', '003_session_metadata.sql'];
   try {
     for (const file of migrations) {
       const sqlPath = join(__dir, 'migrations', file);

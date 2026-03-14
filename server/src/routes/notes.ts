@@ -64,7 +64,9 @@ function uid(req: FastifyRequest): string {
 export default async function notesRoutes(fastify: FastifyInstance): Promise<void> {
 
   // ── GET /api/notes — list all notes for the authenticated user ───────────
-  fastify.get('/api/notes', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.get('/api/notes', {
+    config: { rateLimit: { max: 120, timeWindow: '1 minute' } },
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     await verifyAuth(req, reply);
     if (reply.sent) return;
     const notes = await getNotesByUser(uid(req));
@@ -72,7 +74,10 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   // ── GET /api/notes/sync?since=ISO — delta sync ───────────────────────────
-  fastify.get('/api/notes/sync', async (req: FastifyRequest, reply: FastifyReply) => {
+  // High limit: 0.5 s minimum sync interval = up to 120 req/min just from sync.
+  fastify.get('/api/notes/sync', {
+    config: { rateLimit: { max: 200, timeWindow: '1 minute' } },
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     await verifyAuth(req, reply);
     if (reply.sent) return;
     const { since } = req.query as { since?: string };
@@ -83,7 +88,9 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   // ── GET /api/notes/:id — fetch a single note ─────────────────────────────
-  fastify.get('/api/notes/:id', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.get('/api/notes/:id', {
+    config: { rateLimit: { max: 120, timeWindow: '1 minute' } },
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     await verifyAuth(req, reply);
     if (reply.sent) return;
     const { id } = req.params as { id: string };
@@ -93,7 +100,10 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   // ── PUT /api/notes/:id — upsert (create or update) ───────────────────────
-  fastify.put('/api/notes/:id', async (req: FastifyRequest, reply: FastifyReply) => {
+  // High limit: rapid typing with short autosave + instant sync intervals.
+  fastify.put('/api/notes/:id', {
+    config: { rateLimit: { max: 200, timeWindow: '1 minute' } },
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     await verifyAuth(req, reply);
     if (reply.sent) return;
     const { id } = req.params as { id: string };
@@ -117,7 +127,9 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   // ── DELETE /api/notes/:id — soft delete ──────────────────────────────────
-  fastify.delete('/api/notes/:id', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.delete('/api/notes/:id', {
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     await verifyAuth(req, reply);
     if (reply.sent) return;
     const { id } = req.params as { id: string };
@@ -127,7 +139,9 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   // ── GET /api/topics ───────────────────────────────────────────────────────
-  fastify.get('/api/topics', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.get('/api/topics', {
+    config: { rateLimit: { max: 120, timeWindow: '1 minute' } },
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     await verifyAuth(req, reply);
     if (reply.sent) return;
     const topics = await getTopicsByUser(uid(req));
@@ -135,7 +149,10 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   // ── PUT /api/topics/:id ───────────────────────────────────────────────────
-  fastify.put('/api/topics/:id', async (req: FastifyRequest, reply: FastifyReply) => {
+  // Higher limit for rapid reordering: dragging multiple topics fires many PUT calls.
+  fastify.put('/api/topics/:id', {
+    config: { rateLimit: { max: 120, timeWindow: '1 minute' } },
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     await verifyAuth(req, reply);
     if (reply.sent) return;
     const { id } = req.params as { id: string };
@@ -163,7 +180,9 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   // ── PUT /api/folders/:id ──────────────────────────────────────────────────
-  fastify.put('/api/folders/:id', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.put('/api/folders/:id', {
+    config: { rateLimit: { max: 120, timeWindow: '1 minute' } },
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     await verifyAuth(req, reply);
     if (reply.sent) return;
     const { id } = req.params as { id: string };

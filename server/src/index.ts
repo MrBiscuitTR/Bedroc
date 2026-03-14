@@ -133,10 +133,15 @@ await app.register(fastifyCors, {
 // ---------------------------------------------------------------------------
 // Rate limiting
 // ---------------------------------------------------------------------------
-// Global 200 req/min limit; auth routes apply stricter limits themselves.
+// Global 500 req/min per-IP fallback. Individual route overrides below.
+// With 0.5 s minimum sync interval, sync alone can reach 120 req/min.
+// Notes/topics/folders CRUD during rapid reordering adds another ~100/min.
+// Auth routes keep their own much stricter per-route limits (see auth.ts).
+// To change per-route limits, set config.rateLimit on the route handler.
+// To change the global fallback, update the max value below.
 await app.register(fastifyRateLimit, {
   global: true,
-  max: 250,
+  max: 500,
   timeWindow: '1 minute',
   // Use real IP from X-Forwarded-For (nginx sets this)
   keyGenerator: (req) => req.ip,

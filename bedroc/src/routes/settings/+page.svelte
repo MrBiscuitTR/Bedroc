@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { autosave, syncIntervalStore, liveSyncStore, notesMap, topicsMap } from '$lib/stores/notes.svelte';
+	import { autosave, syncIntervalStore, liveSyncStore, notesMap, topicsMap, inactivityLockStore } from '$lib/stores/notes.svelte';
 	import { auth, logout, apiFetch, changePassword } from '$lib/stores/auth.svelte.js';
 	import { clearStore } from '$lib/stores/notes.svelte.js';
 
@@ -77,6 +77,19 @@
 	function handleSyncSecondsChange() {
 		syncSeconds = Math.max(1, syncSeconds);
 		syncIntervalStore.set(Math.round(syncSeconds * 1000));
+	}
+
+	// ── Inactivity lock ───────────────────────────────────────────
+	let inactivityMinutes = $state(inactivityLockStore.minutes);
+
+	function handleInactivityChange() {
+		const min = Math.round(inactivityMinutes);
+		if (min === 0) {
+			inactivityLockStore.set(0);
+		} else {
+			inactivityLockStore.setMinutes(Math.max(1, min));
+			inactivityMinutes = inactivityLockStore.minutes;
+		}
 	}
 
 	// ── Change password ────────────────────────────────────────────
@@ -274,6 +287,30 @@
 	<section class="section">
 		<h3 class="section-title">Security</h3>
 		<div class="card">
+			<div class="row">
+				<div class="row-info">
+					<span class="row-label">Inactivity lock</span>
+					<span class="row-sub">
+						{inactivityMinutes === 0
+							? 'Disabled — vault stays unlocked until you log out'
+							: `Lock vault after ${inactivityMinutes} minute${inactivityMinutes === 1 ? '' : 's'} of inactivity`}
+					</span>
+				</div>
+				<div class="interval-wrap">
+					<input
+						type="number"
+						class="interval-input"
+						bind:value={inactivityMinutes}
+						onchange={handleInactivityChange}
+						min="0"
+						max="480"
+						step="1"
+						aria-label="Inactivity lock timeout in minutes (0 to disable)"
+					/>
+					<span class="interval-unit">min</span>
+				</div>
+			</div>
+			<div class="divider-inner"></div>
 			<button class="row row-btn" onclick={() => { showChangePw = !showChangePw; cpError = null; cpSuccess = false; }}>
 				<div class="row-info">
 					<span class="row-label">Change password</span>

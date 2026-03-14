@@ -247,13 +247,17 @@ function issueTokens(
   const accessTtl  = process.env.JWT_ACCESS_EXPIRY  ?? '15m';
   const refreshTtl = process.env.JWT_REFRESH_EXPIRY ?? '30d';
 
-  const accessToken = fastify.jwt.sign(
-    { sub: userId },
-    { expiresIn: accessTtl }
-  );
+  // Embed exp directly in the payload. jsonwebtoken ignores `expiresIn` when
+  // exp is already in the payload — this guarantees the correct lifetime
+  // regardless of any @fastify/jwt global sign defaults.
+  const nowSec        = Math.floor(Date.now() / 1000);
+  const accessExpSec  = nowSec + Math.floor(parseTtlMs(accessTtl)  / 1000);
+  const refreshExpSec = nowSec + Math.floor(parseTtlMs(refreshTtl) / 1000);
+
+  const accessToken = fastify.jwt.sign({ sub: userId, exp: accessExpSec });
   const refreshToken = fastify.jwt.sign(
-    { sub: userId, type: 'refresh' },
-    { key: process.env.JWT_REFRESH_SECRET!, expiresIn: refreshTtl }
+    { sub: userId, type: 'refresh', exp: refreshExpSec },
+    { key: process.env.JWT_REFRESH_SECRET! }
   );
 
   // Cookie maxAge must match refresh token expiry

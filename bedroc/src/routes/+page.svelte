@@ -11,11 +11,13 @@
 		type Topic, type Folder, type Note, type SortMode
 	} from '$lib/stores/notes.svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { auth, serverStatus } from '$lib/stores/auth.svelte.js';
 
 	// ── Filter / navigation state ──────────────────────────────────
 	let search        = $state('');
-	let activeTopicId = $state<string | null | 'all'>('all');
+	// Honour ?topic=<id> query param set by the note editor drawer
+	let activeTopicId = $state<string | null | 'all'>(page.url.searchParams.get('topic') ?? 'all');
 	let lastVisitedId = $state<string | null | 'all'>('all');
 
 	// Mobile side nav drawer
@@ -965,12 +967,9 @@
 	/* ── Mobile drawer toggle button ────────────────────────────── */
 	.drawer-toggle {
 		display: none;
-		position: absolute;
-		top: 14px;
-		/* left: 14px; */
-		z-index: 10;
 		align-items: center;
 		gap: 6px;
+		flex-shrink: 0;
 		background: var(--bg-elevated);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
@@ -979,7 +978,8 @@
 		font-weight: 500;
 		color: var(--text-muted);
 		cursor: pointer;
-		max-width: 160px;
+		min-width: 0;
+		max-width: 45%;
 		-webkit-tap-highlight-color: transparent;
 	}
 
@@ -987,7 +987,7 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		flex: 1;
+		min-width: 0;
 	}
 
 	.drawer-chevron { flex-shrink: 0; color: var(--text-faint); }
@@ -1047,20 +1047,25 @@
 	   active), collapse the static topics panel to a drawer just like
 	   on mobile, and show the drawer toggle button.                    */
 	@container main-pane (max-width: 699px) {
+		/* container-type: inline-size on .main-content traps position:fixed children,
+		   so we use position:absolute here (relative to .page which is position:relative). */
+		.drawer-backdrop {
+			position: absolute;
+		}
 		.topics-panel {
 			display: flex;
-			position: fixed;
+			position: absolute;
 			top: 0;
 			left: 0;
 			bottom: 0;
 			width: 240px;
-			max-width: 80vw;
+			max-width: 80%;
 			z-index: 20;
 			background: var(--bg-elevated);
 			border-right: 1px solid var(--border);
 			transform: translateX(-100%);
 			transition: transform 0.22s ease;
-			padding-top: max(20px, env(safe-area-inset-top, 14px));
+			padding-top: 14px;
 		}
 		.topics-panel.drawer-open { transform: translateX(0); }
 		.drawer-toggle { display: flex; }
@@ -1346,46 +1351,35 @@
 	.notes-header {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
 		padding: 18px 20px 0;
 	}
 
 	@media (max-width: 899px) {
-		.notes-header {
-			padding-top: 14px;
-		}
-        .notes-header-right {
-            margin-left: 118px;
-        }
+		.notes-header { padding-top: 14px; }
 	}
-
-	/* Same narrow treatment for split-pane primary pane */
 	@container main-pane (max-width: 699px) {
-		.notes-header {
-			padding-top: 14px;
-		}
-		.notes-header-right {
-			margin-left: 118px;
-		}
+		.notes-header { padding-top: 14px; }
 	}
 
-    .notes-header-right {
-        gap: 8px;
-        /* this div should stick to right side of the header */
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-
-    }
-
-	.notes-title { font-size: 16px; font-weight: 600; }
-
+	/* Full-width flex row: drawer toggle (shrinks) + right actions (pushes right) */
 	.notes-header-actions {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-        justify-content: space-between;
+		gap: 8px;
+		width: 100%;
+		min-width: 0;
 	}
+
+	.notes-header-right {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 8px;
+		margin-left: auto;
+		flex-shrink: 0;
+	}
+
+	.notes-title { font-size: 16px; font-weight: 600; }
 
 	/* ── Sort controls ─────────────────────────────────────────── */
 	.sort-wrap {
@@ -1471,7 +1465,10 @@
 		-webkit-overflow-scrolling: touch;
 		overscroll-behavior: contain;
 		flex: 1;
+		scrollbar-width: none;
+		-ms-overflow-style: none;
 	}
+	.note-list::-webkit-scrollbar { display: none; }
 
 	/* Custom sort: insertion line above the target note */
 	.drop-target-note {

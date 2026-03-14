@@ -136,7 +136,7 @@ await app.register(fastifyCors, {
 // Global 200 req/min limit; auth routes apply stricter limits themselves.
 await app.register(fastifyRateLimit, {
   global: true,
-  max: 200,
+  max: 250,
   timeWindow: '1 minute',
   // Use real IP from X-Forwarded-For (nginx sets this)
   keyGenerator: (req) => req.ip,

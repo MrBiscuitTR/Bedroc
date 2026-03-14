@@ -204,6 +204,35 @@ class SyncIntervalStore {
 export const syncIntervalStore = new SyncIntervalStore();
 
 // ---------------------------------------------------------------------------
+// Inactivity lock (localStorage — user pref)
+// ---------------------------------------------------------------------------
+
+const LS_INACTIVITY_KEY = 'bedroc_inactivity_ms';
+const INACTIVITY_DEFAULT_MS = 30 * 60 * 1000; // 30 minutes
+
+function readInactivityMs(): number {
+  if (typeof localStorage === 'undefined') return INACTIVITY_DEFAULT_MS;
+  const raw = localStorage.getItem(LS_INACTIVITY_KEY);
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  // 0 = disabled; otherwise minimum 1 minute
+  if (parsed === 0) return 0;
+  return Number.isFinite(parsed) && parsed >= 60_000 ? parsed : INACTIVITY_DEFAULT_MS;
+}
+
+class InactivityLockStore {
+  ms = $state(readInactivityMs());
+  get minutes() { return this.ms === 0 ? 0 : Math.round(this.ms / 60_000); }
+  set(ms: number) {
+    this.ms = ms;
+    if (typeof localStorage !== 'undefined') localStorage.setItem(LS_INACTIVITY_KEY, String(ms));
+  }
+  setMinutes(min: number) {
+    this.set(min === 0 ? 0 : Math.max(60_000, min * 60_000));
+  }
+}
+export const inactivityLockStore = new InactivityLockStore();
+
+// ---------------------------------------------------------------------------
 // Load from IndexedDB on login
 // ---------------------------------------------------------------------------
 
@@ -675,7 +704,7 @@ export async function createNote(topicId: string | null = null): Promise<string>
 /** Save (upsert) a note — encrypt → IndexedDB → server. */
 export async function saveNote(note: Note): Promise<void> {
   const userId = auth.userId!;
-  const dek = auth.dek!;
+  const dek = auth.dek;
   const now = Date.now();
   const updated = { ...note, updatedAt: now };
 
@@ -684,7 +713,7 @@ export async function saveNote(note: Note): Promise<void> {
   const serverUpdatedAt = existing?.serverUpdatedAt ?? 0;
   const version = existing?.version ?? 1;
 
-  // Write plaintext to IndexedDB
+  // Write plaintext to IndexedDB — always safe regardless of DEK state
   const local: NoteLocal = {
     id: note.id, userId, topicId: note.topicId,
     title: note.title, body: note.body, customOrder: note.customOrder,
@@ -693,7 +722,8 @@ export async function saveNote(note: Note): Promise<void> {
   await idbSaveNote(local);
   notesMap.set(note.id, updated);
 
-  // Encrypt and send to server
+  // Encrypt and sync to server — requires DEK (skip if locked/offline-unlocked without key)
+  if (!dek) return;
   const { encryptedTitle, encryptedBody } = await encryptNote(note.title, note.body, dek);
   await queueNoteUpsert(note.id, userId, note.topicId, encryptedTitle, encryptedBody, note.customOrder, now, version);
   await tryServerUpsertNote(note.id, userId, note.topicId, encryptedTitle, encryptedBody, note.customOrder, now, version);

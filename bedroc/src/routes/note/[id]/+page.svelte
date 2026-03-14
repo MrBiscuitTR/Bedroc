@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
+	import { auth, serverStatus } from '$lib/stores/auth.svelte.js';
 	import {
 		notesMap, topicsMap, foldersMap, conflictsMap,
 		getNotes, getTopics, getFolders,
@@ -98,6 +99,11 @@
 	async function doSave() {
 		if (saved) return;
 		const body = bodyEl?.innerHTML ?? '';
+
+		// Capture cursor position before save — notesMap.set() inside saveNote
+		// can trigger Svelte effect scheduling which may lose the selection.
+		const savedCharOffset = bodyEl ? getCharOffset(bodyEl) : -1;
+
 		if (isNew) {
 			const id = await createNote(null);
 			const created = notesMap.get(id)!;
@@ -109,6 +115,16 @@
 			if (!existing) return;
 			await saveNote({ ...existing, title: dedupTitle(title.trim() || 'Untitled', existing.topicId, existing.id), body });
 			saved = true;
+		}
+
+		// Restore cursor if the editor still has focus and position is known.
+		// Use requestAnimationFrame so any pending Svelte DOM updates flush first.
+		if (bodyEl && savedCharOffset >= 0 && document.activeElement === bodyEl) {
+			requestAnimationFrame(() => {
+				if (bodyEl && document.activeElement === bodyEl) {
+					setCharOffset(bodyEl, savedCharOffset);
+				}
+			});
 		}
 	}
 
@@ -256,8 +272,36 @@
 
 	// ── Rich text commands ────────────────────────────────────────
 	// PLACEHOLDER: uses document.execCommand (deprecated). Phase 6: ProseMirror.
+
+	// Saved selection range from the last editor focus — restored before execCommand
+	// so toolbar button clicks don't lose the cursor position.
+	let _savedRange: Range | null = null;
+
+	function onEditorFocus() {
+		// Clear stale saved range when editor gains focus so we always track current
+		_savedRange = null;
+	}
+
+	function onEditorBlur() {
+		// Save the selection range when editor loses focus (e.g. toolbar button click)
+		const sel = window.getSelection();
+		if (sel && sel.rangeCount > 0 && bodyEl?.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+			_savedRange = sel.getRangeAt(0).cloneRange();
+		}
+	}
+
+	function restoreSavedRange() {
+		if (!_savedRange) return;
+		const sel = window.getSelection();
+		if (sel) {
+			sel.removeAllRanges();
+			sel.addRange(_savedRange);
+		}
+	}
+
 	function exec(cmd: string, value?: string) {
 		bodyEl?.focus();
+		restoreSavedRange(); // restore cursor after focus (toolbar click blurs editor)
 		document.execCommand(cmd, false, value);
 		// Update state immediately after command (not waiting for keyup/mouseup)
 		updateFormatState();
@@ -270,6 +314,7 @@
 	// unreliable execCommand fontSize workaround.
 	function execFontSize(px: string) {
 		bodyEl?.focus();
+		restoreSavedRange();
 		// Step 1: remove any existing font-size span inside the selection
 		// Step 2: wrap selection in <span style="font-size:Xpx">
 		document.execCommand('fontSize', false, '7');
@@ -356,18 +401,16 @@
 	// ── Delete confirm ────────────────────────────────────────────
 	let confirmDelete = $state(false);
 
-	// ── Topics side drawer (mirrors +page.svelte) ─────────────────
+	// ── Topics side drawer (mirrors +page.svelte aside) ───────────
 	let drawerOpen = $state(false);
-	let drawerView = $state<'topics' | 'topicNotes'>('topics');
-	let selectedDrawerTopic = $state<string | null>(null);
 
 	let allNotes    = $derived((notesMap.size, getNotes()));
 	let allTopics   = $derived((topicsMap.size, getTopics()));
 	let allFolders  = $derived((foldersMap.size, getFolders()));
 
-	// Active topic derived from the current note
-	let currentNote   = $derived(isNew ? null : notesMap.get(noteId!));
-	let activeTopicId = $derived(currentNote?.topicId ?? null);
+	// The topic the current note belongs to (for border highlight)
+	let currentNote    = $derived(isNew ? null : notesMap.get(noteId!));
+	let activeTopicId  = $derived(currentNote?.topicId ?? null);
 
 	function topicsInFolder(folderId: string | null): Topic[] {
 		return allTopics.filter(t => t.folderId === folderId).sort((a, b) => a.order - b.order);
@@ -379,12 +422,13 @@
 		return allNotes.filter(n => n.topicId === topicId).length;
 	}
 
-	/** Open a note from the drawer: save current note first, then navigate. */
-	function openNoteFromDrawer(id: string) {
-		if (id === noteId) { drawerOpen = false; return; }
+	/** Navigate to the notes list filtered by topic. Saves first if dirty. */
+	function goToTopic(id: string | null | 'all') {
 		if (!saved) doSave();
 		drawerOpen = false;
-		goto(`/note/${id}`, { replaceState: false });
+		if (id === 'all') goto('/');
+		else if (id === null) goto('/');
+		else goto(`/?topic=${id}`);
 	}
 
 	// Topic editor modal state (inline, same as +page.svelte)
@@ -406,6 +450,22 @@
 	function handleDeleteTopic(id: string) {
 		deleteTopic(id);
 		showTopicEditor = false;
+	}
+
+	// Folder editor modal state
+	let showFolderEditor = $state(false);
+	let editingFolder    = $state<Folder | null>(null);
+	let folderName       = $state('');
+	let folderParentId   = $state<string | null>(null);
+
+	function openEditFolder(folder: Folder) {
+		editingFolder = folder; folderName = folder.name; folderParentId = folder.parentId;
+		showFolderEditor = true;
+	}
+	function saveFolderModal() {
+		if (!folderName.trim()) return;
+		if (editingFolder) saveFolder({ ...editingFolder, name: folderName.trim(), parentId: folderParentId });
+		showFolderEditor = false;
 	}
 </script>
 
@@ -476,6 +536,17 @@
 		spellcheck="true"
 		autocapitalize="sentences"
 	/>
+
+	<!-- ── No-DEK banner (split-pane / iframe without vault key) ── -->
+	{#if !auth.dek}
+		<div class="no-dek-banner" role="status">
+			<svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+				<rect x="3" y="6" width="8" height="7" rx="1.2" stroke="currentColor" stroke-width="1.3"/>
+				<path d="M5 6V4.5a2 2 0 114 0V6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+			</svg>
+			<span>Vault locked — edits saved locally but not synced to server until you unlock.</span>
+		</div>
+	{/if}
 
 	<!-- ── Incoming update banner (real-time, unsaved conflict) ─── -->
 	{#if incomingUpdate}
@@ -756,6 +827,8 @@
 		onmouseup={updateFormatState}
 		ontouchend={updateFormatState}
 		onselectionchange={updateFormatState}
+		onfocus={onEditorFocus}
+		onblur={onEditorBlur}
 		data-placeholder="Start writing…"
 		spellcheck="true"
 		role="textbox"
@@ -767,92 +840,115 @@
 <!-- ── Topics side drawer ─────────────────────────────────────── -->
 {#if drawerOpen}
 	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div class="drawer-backdrop" onclick={() => { drawerOpen = false; drawerView = 'topics'; selectedDrawerTopic = null; }}></div>
+	<div class="drawer-backdrop" onclick={() => (drawerOpen = false)}></div>
 {/if}
 
+<!-- Mirrors +page.svelte <aside class="topics-panel"> exactly.
+     Topic clicks navigate to /?topic=<id> (note editor → list).
+     The topic of the current note gets an accent border highlight. -->
 <aside
 	class="topics-drawer"
 	class:open={drawerOpen}
-	aria-label="Topics"
+	aria-label="Topics and folders"
+	role="navigation"
 >
-	<div class="drawer-header">
-		{#if drawerView === 'topics'}
-			<img src="/icons/appicon-96.png" alt="Bedroc" class="logo-icon" width="28" height="28" />
-		{:else}
-			<button class="btn-icon" onclick={() => { drawerView = 'topics'; selectedDrawerTopic = null; }} aria-label="Back">
-				<svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-					<path d="M8.5 2.5L4 6.5l4.5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+	<div class="topics-header">
+		<span class="label">Topics</span>
+		<div class="header-actions">
+			<button class="btn-icon" onclick={() => { editingFolder = null; folderName = ''; folderParentId = null; showFolderEditor = true; }} title="New folder" aria-label="New folder">
+				<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+					<path d="M1 3a1 1 0 0 1 1-1h2.5l1 1H10a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3z" stroke="currentColor" stroke-width="1.2"/>
+					<path d="M6 5v4M4 7h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
 				</svg>
 			</button>
-			<span class="label">{allTopics.find(t => t.id === selectedDrawerTopic)?.name ?? 'Notes'}</span>
-		{/if}
-		<span class="logo-text">Bedroc</span>
-		<button class="btn-icon" onclick={() => (drawerOpen = false)} aria-label="Close">
-			<svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-				<path d="M1.5 1.5l10 10M11.5 1.5l-10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-			</svg>
-		</button>
+			<button class="btn-icon" onclick={() => { showTopicEditor = true; editingTopic = null; topicName = ''; topicColor = '#6b8afd'; topicFolderId = null; }} title="New topic" aria-label="New topic">
+				<svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+					<path d="M6.5 1v11M1 6.5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+				</svg>
+			</button>
+			<button class="btn-icon" onclick={() => (drawerOpen = false)} aria-label="Close">
+				<svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+					<path d="M1.5 1.5l10 10M11.5 1.5l-10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+				</svg>
+			</button>
+		</div>
 	</div>
 
-	<nav class="drawer-nav">
-		{#if drawerView === 'topics'}
+	<nav class="topic-list">
+		<button
+			class="topic-item topic-item-all"
+			onclick={() => goToTopic('all')}
+		>
+			<span class="topic-dot" style="background: var(--text-faint)"></span>
+			<span class="topic-name">All notes</span>
+			<span class="topic-count">{allNotes.length}</span>
+		</button>
 
-			<!-- Topics & folders (filesystem style) -->
-			<div class="drawer-section-title">Topics</div>
+		<button
+			class="topic-item"
+			onclick={() => goToTopic(null)}
+		>
+			<span class="topic-dot topic-dot-uncategorised"></span>
+			<span class="topic-name">Uncategorised</span>
+			<span class="topic-count">{allNotes.filter(n => !n.topicId).length}</span>
+		</button>
 
-			<!-- All notes + Uncategorised top items -->
-			<button class="topic-item active" onclick={() => { /* visual only */ }}>
-				<span class="topic-dot" style="background: var(--text-faint)"></span>
-				<span class="topic-name">All notes</span>
-				<span class="topic-count">{allNotes.length}</span>
-			</button>
-			<button class="topic-item" onclick={() => { /* visual only */ }}>
-				<span class="topic-dot topic-dot-uncategorised"></span>
-				<span class="topic-name">Uncategorised</span>
-				<span class="topic-count">{allNotes.filter(n => !n.topicId).length}</span>
-			</button>
-
+		{#if allTopics.length > 0 || allFolders.length > 0}
 			<div class="topic-separator"></div>
-
-			{#each childFolders(null) as folder (folder.id)}
-				{@render drawerFolderRow(folder, 0)}
-			{/each}
-			{#each topicsInFolder(null) as topic (topic.id)}
-				{@render drawerTopicRow(topic, 0)}
-			{/each}
-
-		{:else}
-
-			<!-- Selected topic notes -->
-			{#if selectedDrawerTopic}
-				<div class="drawer-section-title">Notes</div>
-				{#each allNotes.filter(n => n.topicId === selectedDrawerTopic) as note (note.id)}
-					<button class="drawer-note-btn indented" class:active={note.id === noteId} onclick={() => openNoteFromDrawer(note.id)}>
-						<span class="drawer-note-title">{note.title || 'Untitled'}</span>
-						<span class="drawer-note-time">{relativeTime(note.updatedAt)}</span>
-					</button>
-				{/each}
-			{/if}
-
 		{/if}
+
+		{#each childFolders(null) as folder (folder.id)}
+			{@render drawerFolderRow(folder, 0)}
+		{/each}
+		{#each topicsInFolder(null) as topic (topic.id)}
+			{@render drawerTopicRow(topic, 0)}
+		{/each}
 	</nav>
+
+	<!-- Panel footer: user + status dot (same as +page.svelte mobile drawer) -->
+	<div class="panel-footer">
+		<button class="btn-ghost panel-user" onclick={() => {}}>
+			<span class="panel-user-avatar" aria-hidden="true">{(auth.username ?? 'A')[0].toUpperCase()}</span>
+			<span class="panel-user-name">{auth.username ?? 'Account'}</span>
+		</button>
+		{#if serverStatus.value !== 'unknown'}
+			<span class="panel-srv-dot panel-srv-dot-{serverStatus.value}" title={serverStatus.value === 'online' ? 'Server online' : serverStatus.value === 'offline' ? 'Server unreachable' : 'Checking…'}></span>
+		{/if}
+	</div>
 </aside>
 
-<!-- ── Drawer folder snippet ───────────────────────────────────── -->
+<!-- ── Drawer folder snippet (mirrors +page.svelte folderRow) ─── -->
 {#snippet drawerFolderRow(folder: Folder, depth = 0)}
-	<div class="drawer-folder folder-row">
-		<div class="folder-item" style="padding-left: {10 + depth * 14}px" draggable="true">
-			<button class="drawer-folder-btn" onclick={() => toggleFolderCollapsed(folder.id)} aria-label="Collapse folder">
-				<svg class="drawer-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 3.5L5 6.5 8 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path></svg>
-				<svg class="folder-icon" width="13" height="12" viewBox="0 0 13 12" fill="none"><path d="M1 3a1 1 0 0 1 1-1h2.5l1 1H11a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3z" stroke="currentColor" stroke-width="1.2"></path></svg>
-				<span class="drawer-folder-name folder-name">{formatName(folder.name)}</span>
+	<div class="folder-row">
+		<div
+			class="folder-item"
+			data-folder-id={folder.id}
+			style="padding-left: {10 + depth * 14}px"
+		>
+			<button
+				class="folder-chevron"
+				class:collapsed={folder.collapsed}
+				onclick={() => toggleFolderCollapsed(folder.id)}
+				aria-label={folder.collapsed ? 'Expand folder' : 'Collapse folder'}
+			>
+				<svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+					<path d="M2 3.5L5 6.5 8 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
 			</button>
+			<svg class="folder-icon" width="13" height="12" viewBox="0 0 13 12" fill="none">
+				<path d="M1 3a1 1 0 0 1 1-1h2.5l1 1H11a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3z" stroke="currentColor" stroke-width="1.2"/>
+			</svg>
+			<span class="folder-name">{folder.name}</span>
 			<div class="folder-actions">
-				<button class="btn-icon folder-action-btn" title="New topic" aria-label="New topic" onclick={() => createTopic('New topic', '#6b8afd', folder.id)}>
-					<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M5 1v8M1 5h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"></path></svg>
+				<button class="btn-icon folder-action-btn" onclick={() => { showTopicEditor = true; editingTopic = null; topicName = ''; topicColor = '#6b8afd'; topicFolderId = folder.id; }} title="New topic" aria-label="New topic">
+					<svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+						<path d="M5 1v8M1 5h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+					</svg>
 				</button>
-				<button class="btn-icon folder-action-btn" title="Edit folder" aria-label="Edit folder" onclick={() => openEditFolder ? openEditFolder(folder) : null}>
-					<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M6 1.5l2.5 2.5-5 5H1v-2.5l5-5z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"></path></svg>
+				<button class="btn-icon folder-action-btn" onclick={() => openEditFolder(folder)} title="Edit folder" aria-label="Edit folder">
+					<svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+						<path d="M6 1.5l2.5 2.5-5 5H1v-2.5l5-5z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
+					</svg>
 				</button>
 			</div>
 		</div>
@@ -867,25 +963,27 @@
 	</div>
 {/snippet}
 
-<!-- ── Drawer topic snippet ────────────────────────────────────── -->
+<!-- ── Drawer topic snippet (mirrors +page.svelte topicRow) ───── -->
 {#snippet drawerTopicRow(topic: Topic, depth = 0)}
-	<div class="drawer-topic topic-row">
-		<div class="topic-item" style="padding-left: {14 + depth * 14}px">
-			<button class="topic-item-btn topic-select" draggable="true" onclick={() => { /* select topic visually */ }}>
-				<span class="drawer-topic-dot topic-dot" style="background:{topic.color}"></span>
-				<span class="drawer-topic-name topic-name">{formatName(topic.name)}</span>
-				<span class="drawer-topic-count topic-count">{noteCountForTopic(topic.id)}</span>
-			</button>
-			<button class="btn-icon topic-edit-btn" aria-label="Edit topic" onclick={() => openEditTopic(topic)}>
-				<svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M7.5 1.5l2 2-6 6H1.5v-2l6-6z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"></path></svg>
-			</button>
-		</div>
-		{#each allNotes.filter(n => n.topicId === topic.id).sort((a,b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()) as note (note.id)}
-			<button class="drawer-note-btn indented" class:active={note.id === noteId} onclick={() => openNoteFromDrawer(note.id)} style="padding-left: {32 + depth * 14}px">
-				<span class="drawer-note-title">{note.title || 'Untitled'}</span>
-				<span class="drawer-note-time">{relativeTime(note.updatedAt)}</span>
-			</button>
-		{/each}
+	<div
+		class="topic-row"
+		class:current-topic={topic.id === activeTopicId}
+	>
+		<button
+			class="topic-item"
+			data-topic-id={topic.id}
+			style="padding-left: {14 + depth * 14}px"
+			onclick={() => goToTopic(topic.id)}
+		>
+			<span class="topic-dot" style="background: {topic.color}"></span>
+			<span class="topic-name">{topic.name}</span>
+			<span class="topic-count">{noteCountForTopic(topic.id)}</span>
+		</button>
+		<button class="btn-icon topic-edit-btn" onclick={() => openEditTopic(topic)} aria-label="Edit topic">
+			<svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+				<path d="M7.5 1.5l2 2-6 6H1.5v-2l6-6z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+			</svg>
+		</button>
 	</div>
 {/snippet}
 
@@ -921,12 +1019,43 @@
 	</div>
 {/if}
 
+<!-- ── Folder editor modal ─────────────────────────────────────── -->
+{#if showFolderEditor}
+	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+	<div class="modal-backdrop" onclick={() => (showFolderEditor = false)}></div>
+	<div class="modal" role="dialog" aria-modal="true" aria-label="Edit folder">
+		<h3 class="modal-title">{editingFolder ? 'Edit folder' : 'New folder'}</h3>
+		<div class="modal-field">
+			<label class="field-label" for="folder-name-e">Name</label>
+			<input id="folder-name-e" type="text" bind:value={folderName} placeholder="Folder name" autocorrect="off" autocapitalize="words" />
+		</div>
+		<div class="modal-field">
+			<label class="field-label" for="folder-parent-e">Parent folder</label>
+			<select id="folder-parent-e" bind:value={folderParentId}>
+				<option value={null}>— Root (no parent) —</option>
+				{#each allFolders.filter(f => f.id !== editingFolder?.id) as f (f.id)}
+					<option value={f.id}>{f.name}</option>
+				{/each}
+			</select>
+		</div>
+		<div class="modal-actions">
+			{#if editingFolder}
+				<button class="btn-danger" onclick={() => { deleteFolder(editingFolder!.id); showFolderEditor = false; }}>Delete</button>
+			{/if}
+			<button class="btn-ghost" onclick={() => (showFolderEditor = false)}>Cancel</button>
+			<button class="btn-primary modal-save" onclick={saveFolderModal} disabled={!folderName.trim()}>
+				{editingFolder ? 'Save' : 'Create'}
+			</button>
+		</div>
+	</div>
+{/if}
+
 <style>
 	.editor-page {
 		display: flex;
 		flex-direction: column;
 		height: 100%;
-		overflow: hidden;
+		/* overflow: hidden; */ /*cagan - 3-14-26 3:33*/
 	}
 
 	/* ── Visibility helpers ────────────────────────────────────── */
@@ -1108,6 +1237,19 @@
 		border-color: var(--text-muted);
 	}
 
+	/* ── No-DEK (vault locked) banner ────────────────────────── */
+	.no-dek-banner {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 16px;
+		background: color-mix(in srgb, var(--text-faint) 8%, transparent);
+		border-bottom: 1px solid var(--border);
+		font-size: 12px;
+		color: var(--text-faint);
+		flex-shrink: 0;
+	}
+
 	/* ── Incoming real-time update banner ────────────────────── */
 	.incoming-banner {
 		display: flex;
@@ -1144,7 +1286,7 @@
 		margin: 0 20px 16px;
 		border: 1px solid color-mix(in srgb, #e09a3c 40%, transparent);
 		border-radius: var(--radius-sm);
-		overflow: hidden;
+		/* overflow: hidden; */
 		font-size: 13px;
 	}
 
@@ -1475,7 +1617,7 @@
 		line-height: 1.7;
 		color: var(--text);
 		outline: none;
-		overflow-y: auto;
+		/* overflow-y: auto; */ /*cagan - 3-14-26 3:33 -- needs scroll not hidden*/
 		-webkit-overflow-scrolling: touch;
 		overscroll-behavior: contain;
 		word-break: break-word;
@@ -1495,7 +1637,7 @@
 	.body-editor :global(u)      { text-decoration: underline; }
 	.body-editor :global(strike), .body-editor :global(s) { text-decoration: line-through; }
 
-	/* ── Topics side drawer ───────────────────────────────────── */
+	/* ── Topics side drawer (mirrors +page.svelte aside exactly) ── */
 	.drawer-backdrop {
 		position: fixed;
 		inset: 0;
@@ -1508,8 +1650,8 @@
 		top: 0;
 		left: 0;
 		bottom: 0;
-		width: 260px;
-		max-width: 82vw;
+		width: 240px;
+		max-width: 80vw;
 		z-index: 30;
 		background: var(--bg-elevated);
 		border-right: 1px solid var(--border);
@@ -1517,110 +1659,97 @@
 		flex-direction: column;
 		transform: translateX(-100%);
 		transition: transform 0.22s ease;
-		padding-top: max(16px, env(safe-area-inset-top, 0px));
+		padding: max(20px, env(safe-area-inset-top, 14px)) 8px 0;
+		gap: 4px;
 	}
 
-	.topics-drawer.open {
-		transform: translateX(0);
+	.topics-drawer.open { transform: translateX(0); }
+
+	.label {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--text-faint);
+		padding: 0 4px;
 	}
 
-	.drawer-header {
+	/* Topics header row */
+	.topics-header {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 0 12px 10px;
-		border-bottom: 1px solid var(--border);
+		padding: 0 4px 8px;
 		flex-shrink: 0;
-
-		height: 42px;
 	}
 
-	.logo-text {
-		font-size: 15px;
-		font-weight: 600;
-		color: var(--text);
-		letter-spacing: -0.01em;
-	}
+	.header-actions { display: flex; align-items: center; gap: 2px; }
 
-	.header-actions { display: flex; gap: 8px; align-items: center; }
-
-	.drawer-nav {
+	/* Topic list scroll area */
+	.topic-list {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
 		flex: 1;
 		overflow-y: auto;
 		-webkit-overflow-scrolling: touch;
 		overscroll-behavior: contain;
-		padding: 8px 8px 32px;
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
 	}
 
-	.drawer-section-title {
-		font-size: 10px;
-		font-weight: 600;
-		letter-spacing: 0.07em;
-		text-transform: uppercase;
-		color: var(--text-faint);
-		padding: 8px 8px 4px;
-	}
+	.topic-separator { height: 1px; background: var(--border); margin: 6px 4px; }
 
-	.drawer-divider {
-		height: 1px;
-		background: var(--border);
-		margin: 8px 4px;
-	}
-
-	/* Note button inside the drawer */
-	.drawer-note-btn {
+	/* Topic row — highlight border when note belongs to this topic */
+	.topic-row {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: 8px;
+		gap: 2px;
+		border-radius: var(--radius-sm);
+	}
+
+	.topic-row.current-topic .topic-item {
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
+		color: var(--text);
+		outline: 1.5px solid var(--accent);
+		outline-offset: -1px;
+		border-radius: var(--radius-sm);
+	}
+
+	.topic-item {
 		width: 100%;
-		padding: 7px 8px;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 6px 6px 0;
 		border-radius: var(--radius-sm);
 		background: none;
 		border: none;
-		text-align: left;
 		cursor: pointer;
+		text-align: left;
 		color: var(--text-muted);
-		font-size: 12.5px;
-		transition: background 0.1s ease, color 0.1s ease;
+		font-size: 13px;
+		transition: background 0.12s ease, color 0.12s ease;
+		min-width: 0;
 		-webkit-tap-highlight-color: transparent;
 	}
 
-	.drawer-note-btn:hover { background: var(--bg-hover); color: var(--text); }
+	.topic-item:hover { background: var(--bg-hover); color: var(--text); }
 
-	.drawer-note-btn.active {
-		background: color-mix(in srgb, var(--accent) 12%, transparent);
-		color: var(--text);
+	.topic-item-all { /* same as topic-item */ }
+
+	.topic-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
+		margin-left: 4px;
 	}
 
-	.drawer-note-btn.indented { padding-left: 22px; }
+	.topic-dot-uncategorised {
+		background: transparent !important;
+		border: 1.5px dashed var(--text-faint);
+	}
 
-	/* Aliases to match target classes */
-	.topic-list { padding: 0 6px; }
-	.topic-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border-radius: var(--radius-sm); background: none; border: none; text-align: left; cursor: pointer; color: var(--text-muted); font-size: 12.5px; }
-	.topic-item:hover { background: var(--bg-hover); color: var(--text); }
-	.topic-item.active { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text); }
-	.topic-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-	.topic-name { flex: 1; font-size: 11.5px; font-weight: 600; color: var(--text); letter-spacing: 0.02em; }
-	.topic-count { font-size: 10px; color: var(--text-faint); }
-	.topic-separator { height: 1px; background: var(--border); margin: 8px 4px; }
-	.folder-row { display: flex; flex-direction: column; gap: 2px; }
-	.folder-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 2px 8px; background: none; border: none; text-align: left; cursor: pointer; color: var(--text); font-size: 12px; }
-	.folder-actions { margin-left: auto; display: flex; gap: 6px; }
-	.folder-action-btn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; }
-	.topic-row { display: flex; flex-direction: column; gap: 0; }
-	.topic-item { display: flex; align-items: center; width: 100%; }
-	.topic-item-btn { display: flex; align-items: center; gap: 7px; padding: 2px 4px; background: none; border: none; width: 100%; flex: 1; }
-	.topic-edit-btn { margin-left: 8px; flex-shrink: 0; }
-	.topic-name { flex: 1; min-width: 0; text-align: left; }
-	.topic-count { margin-left: auto; flex-shrink: 0; color: var(--text-faint); }
-	.drawer-topic .drawer-note-btn { padding-top: 4px; padding-bottom: 4px; border-radius: 6px; }
-	.drawer-note-btn.indented { padding-left: 24px; }
-
-	.drawer-note-title {
+	.topic-name {
 		flex: 1;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -1628,82 +1757,134 @@
 		font-size: 12.5px;
 	}
 
-	.drawer-note-time {
-		font-size: 10px;
-		color: var(--text-faint);
+	.topic-count { font-size: 11px; color: var(--text-faint); flex-shrink: 0; }
+
+	.topic-edit-btn {
+		opacity: 0;
 		flex-shrink: 0;
+		padding: 5px;
+		color: var(--text-faint);
+		transition: opacity 0.1s ease;
 	}
 
-	/* Folder rows in drawer */
-	.drawer-folder { display: flex; flex-direction: column; }
+	.topic-row:hover .topic-edit-btn { opacity: 1; }
 
-	.drawer-folder-btn {
+	/* Folder rows */
+	.folder-row {
+		display: flex;
+		flex-direction: column;
+		border-radius: var(--radius-sm);
+	}
+
+	.folder-item {
 		display: flex;
 		align-items: center;
 		gap: 5px;
-		width: 100%;
-		padding: 3px 4px;
+		padding-right: 4px;
+		padding-top: 5px;
+		padding-bottom: 5px;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+	}
+
+	.folder-item:hover { background: var(--bg-hover); }
+
+	.folder-chevron {
 		background: none;
 		border: none;
-		text-align: left;
+		padding: 2px;
 		cursor: pointer;
-		color: var(--text);
-		font-size: 12px;
-		font-weight: 500;
-		-webkit-tap-highlight-color: transparent;
-	}
-
-	.drawer-folder-btn:hover { color: var(--text); }
-
-	.drawer-chevron { color: var(--text-faint); flex-shrink: 0; transition: transform 0.15s ease; }
-	.drawer-chevron.collapsed { transform: rotate(-90deg); }
-	.drawer-folder-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-	/* Topic rows in drawer */
-	.drawer-topic { display: flex; flex-direction: column; }
-
-	.drawer-topic-header {
+		color: var(--text-faint);
 		display: flex;
 		align-items: center;
-		gap: 7px;
-		padding: 5px 8px 3px;
+		justify-content: center;
+		flex-shrink: 0;
+		transition: transform 0.15s ease;
 	}
 
-	.drawer-topic-dot {
+	.folder-chevron.collapsed svg { transform: rotate(-90deg); }
+
+	.folder-icon { color: var(--text-faint); flex-shrink: 0; }
+
+	.folder-name {
+		flex: 1;
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--text-muted);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.folder-actions {
+		display: flex;
+		align-items: center;
+		gap: 1px;
+		opacity: 0;
+		transition: opacity 0.1s ease;
+	}
+
+	.folder-item:hover .folder-actions { opacity: 1; }
+
+	.folder-action-btn { padding: 4px; color: var(--text-faint); }
+
+	/* Panel footer: user + status dot */
+	.panel-footer {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 8px 10px 10px;
+		margin-top: auto;
+		border-top: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+
+	.panel-user {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex: 1;
+		min-width: 0;
+		padding: 6px 8px;
+		border-radius: var(--radius-sm);
+		text-align: left;
+	}
+
+	.panel-user-avatar {
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		background: var(--accent-dim);
+		color: var(--accent);
+		font-size: 11px;
+		font-weight: 600;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+	}
+
+	.panel-user-name {
+		font-size: 13px;
+		color: var(--text-muted);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.panel-srv-dot {
 		width: 7px;
 		height: 7px;
 		border-radius: 50%;
 		flex-shrink: 0;
+		margin-left: auto;
 	}
-
-	.drawer-topic-name {
-		flex: 1;
-		font-size: 11.5px;
-		font-weight: 600;
-		color: var(--text);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		letter-spacing: 0.02em;
-		text-transform: none;
-	}
-
-	.drawer-note-preview {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 8px;
-		color: var(--text-faint);
-		font-size: 13px;
-		padding-top: 2px;
-		padding-bottom: 2px;
-	}
-	.drawer-note-preview-title { color: var(--text-faint); font-size: 13px; }
-	.drawer-note-preview-time { font-size: 11px; color: var(--text-faint); }
-
-	.drawer-topic-count {
-		font-size: 10px;
-		color: var(--text-faint);
+	.panel-srv-dot-checking { background: var(--text-faint); animation: panel-srv-pulse 1s infinite; }
+	.panel-srv-dot-online   { background: var(--success); }
+	.panel-srv-dot-offline  { background: var(--danger); }
+	@keyframes panel-srv-pulse {
+		0%, 100% { opacity: 1; }
+		50%       { opacity: 0.3; }
 	}
 
 	/* ── Modals ──────────────────────────────────────────────────── */

@@ -278,8 +278,16 @@ export async function apiFetch(
       headers.set('Authorization', `Bearer ${_accessToken}`);
       return fetch(url, { ...init, headers, credentials: 'include' });
     }
-    // Refresh failed (expired or offline) — force logout
-    await logout();
+    if (refreshResult === 'offline') {
+      // Network error — server unreachable. Don't log out; keep local data intact.
+      // Return the original 401 so callers can fail gracefully without wiping state.
+      return res;
+    }
+    // 'expired': refresh cookie absent or revoked — session is truly gone.
+    // Log out locally (clears DEK / memory state) and redirect to login.
+    // Key material stays in IndexedDB so the unlock prompt appears on next load.
+    _accessToken = null;
+    _dek = null;
     goto('/login');
   }
 
@@ -289,6 +297,43 @@ export async function apiFetch(
 // ---------------------------------------------------------------------------
 // Token refresh
 // ---------------------------------------------------------------------------
+
+/**
+ * Decode the exp claim from a JWT without verifying the signature.
+ * Returns the expiry time in milliseconds, or 0 if not decodable.
+ */
+function getTokenExpMs(token: string): number {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1])) as { exp?: number };
+    return payload.exp ? payload.exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Schedule a proactive token refresh 2 minutes before the access token expires.
+ * Returns a cleanup function (call to cancel). Safe to call multiple times —
+ * each call replaces the previous timer.
+ */
+let _proactiveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+export function scheduleProactiveRefresh(): void {
+  if (_proactiveRefreshTimer) {
+    clearTimeout(_proactiveRefreshTimer);
+    _proactiveRefreshTimer = null;
+  }
+  if (!_accessToken || _accessToken === 'offline') return;
+  const expMs = getTokenExpMs(_accessToken);
+  if (!expMs) return;
+  // Refresh 2 minutes before expiry (120_000ms). If less than 30s away, refresh immediately.
+  const msUntilExpiry = expMs - Date.now();
+  const delay = Math.max(0, msUntilExpiry - 120_000);
+  _proactiveRefreshTimer = setTimeout(async () => {
+    _proactiveRefreshTimer = null;
+    const result = await tryRefreshToken();
+    if (result === 'ok') scheduleProactiveRefresh(); // reschedule for new token
+  }, delay);
+}
 
 /**
  * Attempt to get a new access token via the httpOnly refresh cookie.
@@ -309,6 +354,7 @@ async function tryRefreshToken(): Promise<'ok' | 'expired' | 'offline'> {
     }
     const data = await res.json() as { accessToken: string };
     _accessToken = data.accessToken;
+    scheduleProactiveRefresh();
     return 'ok';
   } catch {
     // Network error — server unreachable or offline
@@ -387,6 +433,7 @@ export async function register(username: string, password: string): Promise<void
     _dek = dek;
     _userId = data.userId;
     _username = data.username;
+    scheduleProactiveRefresh();
 
     // Save key material to IndexedDB for next login (allows offline DEK restore)
     await saveKeyMaterial({
@@ -495,6 +542,7 @@ export async function login(username: string, password: string): Promise<void> {
     _dek = dek;
     _userId = verifyData.userId;
     _username = verifyData.username;
+    scheduleProactiveRefresh();
 
     // Persist key material for offline DEK restore
     await saveKeyMaterial({
@@ -520,8 +568,30 @@ export async function login(username: string, password: string): Promise<void> {
 // Logout
 // ---------------------------------------------------------------------------
 
+/**
+ * Lock the vault without logging out.
+ * Clears the DEK from memory so all crypto operations fail until the user
+ * re-enters their password (unlock prompt). Access token is preserved so
+ * the server session is not invalidated — no network call needed.
+ * Key material stays in IndexedDB for the unlock flow.
+ */
+export function lockVault(): void {
+  if (_proactiveRefreshTimer) {
+    clearTimeout(_proactiveRefreshTimer);
+    _proactiveRefreshTimer = null;
+  }
+  _dek = null;
+  // Keep _accessToken, _userId, _username — they're needed by the unlock page
+}
+
 export async function logout(): Promise<void> {
   const userId = _userId;
+
+  // Cancel any pending proactive refresh
+  if (_proactiveRefreshTimer) {
+    clearTimeout(_proactiveRefreshTimer);
+    _proactiveRefreshTimer = null;
+  }
 
   // Clear memory first
   _accessToken = null;
@@ -600,6 +670,7 @@ export async function restoreSession(): Promise<void> {
         _accessToken = null;
       }
     }
+    scheduleProactiveRefresh();
   } else if (result === 'offline') {
     // Network error — server unreachable. Show offline unlock if user was logged in before.
     const km = await loadKeyMaterial();

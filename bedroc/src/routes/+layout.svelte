@@ -3,9 +3,9 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { auth, restoreSession } from '$lib/stores/auth.svelte.js';
+	import { auth, restoreSession, serverStatus, lockVault } from '$lib/stores/auth.svelte.js';
 	import { connect as wsConnect, disconnect as wsDisconnect } from '$lib/sync/websocket.js';
-	import { syncFromServer, syncIntervalStore } from '$lib/stores/notes.svelte.js';
+	import { syncFromServer, syncIntervalStore, loadFromDb, inactivityLockStore } from '$lib/stores/notes.svelte.js';
 
 	let { children } = $props();
 
@@ -50,6 +50,11 @@
 			// Don't redirect iframes to /login — they share the parent's vault
 			// state and will work once the parent window unlocks the DEK.
 			if (!isInIframe) goto('/login');
+			else {
+				// Iframe: userId is set from the refresh token even without a DEK.
+				// Load notes from the shared IndexedDB so the pane shows content.
+				if (auth.userId) loadFromDb().catch(() => {});
+			}
 		} else if (auth.dek) {
 			// Logged in with DEK available — do one immediate sync so UI is
 			// up-to-date without waiting for the first periodic interval tick.
@@ -91,6 +96,52 @@
 		};
 	});
 
+	// ── Inactivity vault lock ──────────────────────────────────────
+	// Tracks the last time the user did something on THIS device (keyboard,
+	// mouse, touch). Sync events do NOT count. When idle for the configured
+	// duration the vault is locked — DEK wiped, user sees unlock prompt.
+	$effect(() => {
+		const inactivityMs = inactivityLockStore.ms;
+		const hasDek = !!auth.dek;
+		// Disabled (0) or vault already locked or on auth pages — nothing to do
+		if (!inactivityMs || !hasDek || isAuthRoute) return;
+
+		let timer: ReturnType<typeof setTimeout>;
+
+		function resetTimer() {
+			clearTimeout(timer);
+			timer = setTimeout(() => {
+				if (auth.dek) {
+					lockVault();
+					goto('/login');
+				}
+			}, inactivityMs);
+		}
+
+		const events = ['keydown', 'pointerdown', 'pointermove', 'touchstart', 'scroll'] as const;
+		// Throttle: only reset the timer at most once per 10 seconds to avoid
+		// hammering state updates on every mousemove.
+		let lastReset = 0;
+		function onActivity() {
+			const now = Date.now();
+			if (now - lastReset < 10_000) return;
+			lastReset = now;
+			resetTimer();
+		}
+
+		resetTimer(); // start timer immediately
+		for (const ev of events) {
+			window.addEventListener(ev, onActivity, { passive: true, capture: true });
+		}
+
+		return () => {
+			clearTimeout(timer);
+			for (const ev of events) {
+				window.removeEventListener(ev, onActivity, { capture: true });
+			}
+		};
+	});
+
 	const navItems = [
 		{ href: '/',         label: 'Notes',    icon: 'notes' },
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
@@ -101,8 +152,14 @@
 	let splitUrl     = $state('/');
 	let splitWidth   = $state(50);
 	let isDragging   = $state(false);
+	// Ghost position (% from right) shown during drag; committed on pointer-up
+	let ghostPct     = $state(50);
 	let splitterEl: HTMLDivElement;
 	let containerEl: HTMLDivElement;
+
+	// Min secondary pane: 20%. Min primary pane: 20% (so max secondary is 80%).
+	const SPLIT_MIN = 20;
+	const SPLIT_MAX = 80;
 
 	function openSplit() {
 		splitUrl    = '/';
@@ -116,19 +173,23 @@
 	function onSplitterPointerDown(e: PointerEvent) {
 		e.preventDefault();
 		isDragging = true;
+		ghostPct   = splitWidth;
+		// Capture pointer so all subsequent move/up events fire on the splitter
+		// regardless of where the pointer travels (fixes touch on iPad/iPhone).
 		splitterEl.setPointerCapture(e.pointerId);
 	}
 
 	function onSplitterPointerMove(e: PointerEvent) {
 		if (!isDragging || !containerEl) return;
 		const rect = containerEl.getBoundingClientRect();
-		const rightPct = Math.max(20, Math.min(80, ((rect.right - e.clientX) / rect.width) * 100));
-		splitWidth = rightPct;
+		ghostPct = Math.max(SPLIT_MIN, Math.min(SPLIT_MAX, ((rect.right - e.clientX) / rect.width) * 100));
 	}
 
-	function onSplitterPointerUp(e: PointerEvent) {
+	function onSplitterPointerUp(_e: PointerEvent) {
+		if (isDragging) {
+			splitWidth = ghostPct;
+		}
 		isDragging = false;
-		splitterEl?.releasePointerCapture(e.pointerId);
 	}
 </script>
 
@@ -197,9 +258,12 @@
 
 			<div class="sidebar-footer">
 				<button class="btn-ghost sidebar-user" onclick={() => {}}>
-					<span class="user-avatar" aria-hidden="true">U</span>
+					<span class="user-avatar" aria-hidden="true">{(auth.username ?? 'A')[0].toUpperCase()}</span>
 					<span class="user-name">{auth.username ?? 'Account'}</span>
 				</button>
+				{#if serverStatus.value !== 'unknown'}
+					<span class="sidebar-srv-dot sidebar-srv-dot-{serverStatus.value}" title={serverStatus.value === 'online' ? 'Server online' : serverStatus.value === 'offline' ? 'Server unreachable' : 'Checking…'}></span>
+				{/if}
 			</div>
 		</aside>
 
@@ -207,8 +271,6 @@
 		<div
 			class="main-wrap"
 			bind:this={containerEl}
-			onpointermove={onSplitterPointerMove}
-			onpointerup={onSplitterPointerUp}
 		>
 			<!-- Mobile header — hidden on desktop and on note editor pages
 			     (the editor renders its own full-width toolbar that includes
@@ -234,8 +296,12 @@
 			{/if}
 
 			<!-- Pane container -->
-			<div class="pane-container" class:split={splitActive}>
-				<!-- Primary pane -->
+			<div
+				class="pane-container"
+				class:split={splitActive}
+				class:is-dragging={isDragging}
+			>
+				<!-- Primary pane — width committed on pointer-up, blurred while dragging -->
 				<main
 					class="main-content"
 					style={splitActive ? `width: calc(${100 - splitWidth}% - 2px)` : ''}
@@ -251,6 +317,9 @@
 						class:dragging={isDragging}
 						bind:this={splitterEl}
 						onpointerdown={onSplitterPointerDown}
+						onpointermove={onSplitterPointerMove}
+						onpointerup={onSplitterPointerUp}
+						onpointercancel={onSplitterPointerUp}
 						title="Drag to resize"
 					>
 						<div class="splitter-handle"></div>
@@ -270,9 +339,13 @@
 							class="split-iframe"
 							src={splitUrl}
 							title="Second pane"
-							allow="same-origin"
 						></iframe>
 					</div>
+
+					<!-- Ghost divider: zero-cost position indicator during drag -->
+					{#if isDragging}
+						<div class="splitter-ghost" style="right: {ghostPct}%"></div>
+					{/if}
 				{/if}
 			</div>
 
@@ -427,6 +500,26 @@
 	.sidebar-footer {
 		padding: 12px 10px;
 		border-top: 1px solid var(--border);
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	/* Status dot — sidebar footer (desktop only) */
+	.sidebar-srv-dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		flex-shrink: 0;
+		margin-left: auto;
+	}
+	.sidebar-srv-dot-checking { background: var(--text-faint); animation: sidebar-srv-pulse 1s infinite; }
+	.sidebar-srv-dot-online   { background: var(--success); }
+	.sidebar-srv-dot-offline  { background: var(--danger); }
+
+	@keyframes sidebar-srv-pulse {
+		0%, 100% { opacity: 1; }
+		50%       { opacity: 0.3; }
 	}
 
 	.sidebar-user {
@@ -508,6 +601,7 @@
 		display: flex;
 		overflow: hidden;
 		min-height: 0;
+		position: relative;
 	}
 
 	/* ── Main content (primary pane) ──────────────────── */
@@ -518,11 +612,36 @@
 		overscroll-behavior: contain;
 		min-width: 0;
 		transition: width 0.05s ease;
+		/* CSS container so children can query available width (split-pane responsive) */
+		container-type: inline-size;
+		container-name: main-pane;
 	}
 
 	/* In split mode, primary pane has explicit width set inline */
 	.pane-container.split .main-content {
 		flex: none;
+	}
+
+	/* Blur primary + secondary pane content while dragging — no layout reflow */
+	.pane-container.is-dragging .main-content,
+	.pane-container.is-dragging .split-pane {
+		pointer-events: none;
+		filter: blur(2px);
+		opacity: 0.6;
+		transition: none;
+	}
+
+	/* Ghost divider line: absolute, zero layout impact, shows where split will land */
+	.splitter-ghost {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		width: 2px;
+		background: var(--accent);
+		opacity: 0.7;
+		pointer-events: none;
+		z-index: 10;
+		transform: translateX(50%);
 	}
 
 	/* ── Splitter ─────────────────────────────────────── */
@@ -536,6 +655,16 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
+		/* Expand touch target to 20px without affecting layout */
+		touch-action: none;
+	}
+
+	/* Invisible wider hit area for touch */
+	.splitter::before {
+		content: '';
+		position: absolute;
+		inset: 0 -8px;
+		z-index: 1;
 	}
 
 	.splitter:hover,
@@ -604,6 +733,7 @@
 
 	.bottom-nav {
 		display: flex;
+		position: relative;
 		background: var(--bg-elevated);
 		border-top: 1px solid var(--border);
 		/* Safe area for home indicator — zero on non-notch devices */

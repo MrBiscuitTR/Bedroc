@@ -423,7 +423,7 @@
 					if (!dragging) return;
 					const newW = Math.max(40, Math.round(startW + e.clientX - startX));
 					img.style.width = newW + 'px';
-					wrapper.style.width = newW + 'px';
+					img.style.height = 'auto';
 				});
 				handle.addEventListener('pointerup', (e) => {
 					if (!dragging) return;
@@ -445,27 +445,30 @@
 				function applyAttrs(attrs: Record<string, unknown>) {
 					img.src = (attrs.src as string) ?? '';
 					img.alt = (attrs.alt as string) ?? '';
-					// Width
+					// Width — apply to img only; wrapper always fits to image
 					if (attrs.width) {
 						img.style.width = attrs.width + 'px';
-						wrapper.style.width = attrs.width + 'px';
+						img.style.height = 'auto';
 					} else {
 						img.style.width = '';
-						wrapper.style.width = '';
+						img.style.height = '';
 					}
 					// Float alignment on wrapper
+					// wrapper is always inline-block so it shrinks to image size.
+					// For block mode we set display:block + width:fit-content so it
+					// sits on its own line but doesn't stretch the full editor width.
 					const align = (attrs.align as string) || 'none';
 					if (align === 'left') {
-						wrapper.style.float = 'left';
+						wrapper.style.cssFloat = 'left';
 						wrapper.style.margin = '4px 16px 8px 0';
-						wrapper.style.display = '';
+						wrapper.style.display = 'inline-block';
 					} else if (align === 'right') {
-						wrapper.style.float = 'right';
+						wrapper.style.cssFloat = 'right';
 						wrapper.style.margin = '4px 0 8px 16px';
-						wrapper.style.display = '';
+						wrapper.style.display = 'inline-block';
 					} else {
-						wrapper.style.float = '';
-						wrapper.style.margin = '';
+						wrapper.style.cssFloat = '';
+						wrapper.style.margin = '4px 0';
 						wrapper.style.display = 'block';
 					}
 					// Highlight active align button
@@ -1847,13 +1850,15 @@
 				{:else if !previewContent}
 					<div class="preview-error">Attachment unavailable (vault may be locked or file missing).</div>
 				{:else if previewState.mimeType === 'application/pdf'}
-					<!-- Blob URL avoids CSP data: iframe restriction -->
-					<iframe
-						src={previewContent}
-						title={previewState.fileName}
+					<!-- object tag avoids Edge/Chrome blocking blob PDFs in iframes -->
+					<object
+						data={previewContent}
+						type="application/pdf"
 						class="preview-pdf"
-						sandbox="allow-scripts allow-same-origin"
-					></iframe>
+						aria-label={previewState.fileName}
+					>
+						<p class="preview-error">PDF cannot display inline — use the Download button.</p>
+					</object>
 				{:else}
 					<!-- previewContent is already decoded text (set in openPreview) -->
 					<pre class="preview-text">{previewContent}</pre>
@@ -2594,9 +2599,10 @@
 		z-index: 20;
 	}
 
-	/* Gapcursor — the blinking text cursor that appears before/after
-	   block nodes (tables, images) that can't hold a text cursor inside.
-	   Without this CSS the cursor is invisible even though it works. */
+	/* Gapcursor — blinking cursor that appears before/after block nodes
+	   (tables, images) that cannot hold a real text cursor inside.
+	   This is the canonical ProseMirror gapcursor CSS. Without it the
+	   cursor exists but is invisible, so clicks appear to do nothing. */
 	.body-editor-wrap :global(.ProseMirror-gapcursor) {
 		display: none;
 		pointer-events: none;
@@ -2617,26 +2623,19 @@
 	@keyframes ProseMirror-cursor-blink {
 		to { visibility: hidden; }
 	}
-	/* Left-side gap cursor (cursor before the node) */
-	.body-editor-wrap :global(.ProseMirror-gapcursor.left:after),
-	.body-editor-wrap :global(.-left .ProseMirror-gapcursor:after) {
-		left: -1px;
-	}
-	/* Right-side gap cursor (cursor after the node) */
-	.body-editor-wrap :global(.ProseMirror-gapcursor.right:after),
-	.body-editor-wrap :global(.-right .ProseMirror-gapcursor:after) {
-		right: -1px;
-	}
+	/* The gapcursor div is inserted as a sibling of the block node.
+	   :after positions left=0 by default (cursor before the block).
+	   When cursor is after the block, ProseMirror puts the gapcursor after it. */
 
-	/* Images — block NodeView wrapper */
+	/* Images — NodeView wrapper always shrink-wraps the image.
+	   JS sets display/float per alignment mode; CSS just ensures
+	   the wrapper never grows beyond the image itself. */
 	.body-editor-wrap :global(.img-node-wrapper) {
-		display: block;
 		position: relative;
+		width: fit-content;   /* shrink-wrap — never stretches full editor width */
 		max-width: 100%;
-		line-height: 0; /* prevents phantom gap below image */
+		line-height: 0;       /* prevents phantom gap below image */
 		user-select: none;
-		/* clearfix so floated images don't collapse the parent */
-		overflow: visible;
 	}
 	/* Selected state */
 	.body-editor-wrap :global(.img-node-wrapper.ProseMirror-selectednode) {

@@ -493,6 +493,40 @@ docker compose up -d --build
 
 Docker rebuilds only what changed. Your data is untouched (it lives in Docker volumes, not in the container).
 
+### Changing the maximum attachment size
+
+The default maximum file size for uploaded attachments (images, PDFs, etc.) is **15 MB per file**. To change it, edit two places:
+
+**1. Server route body limit** — `server/src/routes/attachments.ts`:
+
+```typescript
+// Find this line and change the multiplier:
+bodyLimit: 20 * 1024 * 1024,   // 20 MB HTTP body limit
+```
+
+**2. Zod validation schema** — same file, a few lines above:
+
+```typescript
+const MAX_ENCRYPTED_DATA_LENGTH = 19_000_000;  // ~19 MB for base64-encoded 14 MB file
+
+const UploadSchema = z.object({
+  encryptedData: z.string().min(10).max(MAX_ENCRYPTED_DATA_LENGTH),
+  ...
+  sizeBytes: z.number().int().min(0).max(15_000_000),  // 15 MB plaintext
+});
+```
+
+The relationship between these numbers:
+- `sizeBytes` max = the max **plaintext** file size you want to allow.
+- `MAX_ENCRYPTED_DATA_LENGTH` ≈ `sizeBytes * 1.37` (base64 overhead) + a few hundred bytes for the JSON envelope.
+- `bodyLimit` = `MAX_ENCRYPTED_DATA_LENGTH` + ~1 MB safety margin.
+
+After changing, rebuild and restart the server:
+
+```bash
+docker compose up -d --build server
+```
+
 ---
 
 ## Backing up your data

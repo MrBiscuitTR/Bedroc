@@ -23,13 +23,13 @@ import {
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 
-// enc:<JSON {iv,ct}> — base64 chars + JSON punctuation. Max ~3MB (2MB file + overhead).
-const MAX_ENCRYPTED_DATA_LENGTH = 3_200_000;
+// enc:<JSON {iv,ct}> — base64 chars + JSON punctuation. Max ~19MB (14MB file base64-encoded + overhead).
+const MAX_ENCRYPTED_DATA_LENGTH = 19_000_000;
 
 const UploadSchema = z.object({
   encryptedData: z.string().min(10).max(MAX_ENCRYPTED_DATA_LENGTH),
   mimeType:      z.string().min(1).max(120),
-  sizeBytes:     z.number().int().min(0).max(10_000_000), // max 10 MB plaintext
+  sizeBytes:     z.number().int().min(0).max(15_000_000), // max 15 MB plaintext
 });
 
 const CheckSchema = z.object({
@@ -58,7 +58,10 @@ export default async function attachmentRoutes(fastify: FastifyInstance): Promis
   });
 
   // ── PUT /api/attachments/:hash — upload (idempotent) ──────────────────────
+  // bodyLimit: 20MB — PDFs and other large files need headroom.
+  // A 14MB PDF base64-encoded is ~19MB; AES-GCM overhead is negligible.
   fastify.put('/api/attachments/:hash', {
+    bodyLimit: 20 * 1024 * 1024,
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
   }, async (req: FastifyRequest, reply: FastifyReply) => {
     await verifyAuth(req, reply);

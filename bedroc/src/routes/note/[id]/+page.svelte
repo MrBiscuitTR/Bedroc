@@ -319,62 +319,94 @@
 	let fontsizeBtnEl = $state<HTMLButtonElement | undefined>(undefined);
 	let fontsizePanelEl = $state<HTMLDivElement | undefined>(undefined);
 
-	// ── Image resize overlay ──────────────────────────────────────
-	// We track the currently-selected image node to show resize handles.
-	let resizingImg = $state<HTMLImageElement | null>(null);
-	let resizeOverlayEl = $state<HTMLDivElement | undefined>(undefined);
+	// ── Custom Image extension with per-image resize handles ────────
+	// Replaces the built-in Image extension. Stores 'width' and 'align'
+	// as explicit node attributes so they persist to HTML on save/reload.
+	// Each image gets its own NodeView with inline resize handles — this
+	// avoids the "overlay selects first image only" problem entirely.
+	const ResizableImage = Image.extend({
+		addAttributes() {
+			return {
+				...this.parent?.(),
+				width:  { default: null, renderHTML: (a) => a.width  ? { width: a.width }  : {} },
+				align:  { default: 'none', renderHTML: (a) => a.align && a.align !== 'none' ? { style: `float:${a.align};margin:${a.align === 'left' ? '0 12px 4px 0' : '0 0 4px 12px'}` } : {} },
+			};
+		},
+		addNodeView() {
+			return ({ node, getPos }) => {
+				const wrapper = document.createElement('span');
+				wrapper.className = 'img-node-wrapper';
+				wrapper.setAttribute('contenteditable', 'false');
+				wrapper.setAttribute('draggable', 'true');
 
-	// Watch for image selection changes and position the resize overlay.
-	function updateImageResize() {
-		if (!editor) { resizingImg = null; return; }
-		const { selection } = editor.state;
-		const node = selection.empty ? null : (editor.state.doc.nodeAt(selection.anchor) ?? null);
-		if (node?.type.name === 'image') {
-			// Find the DOM element for this node
-			const dom = editor.view.domAtPos(selection.anchor + 1).node as HTMLElement;
-			const img = dom?.tagName === 'IMG' ? dom as HTMLImageElement
-				: dom?.querySelector?.('img') as HTMLImageElement | null;
-			resizingImg = img ?? null;
-		} else {
-			resizingImg = null;
-		}
-	}
+				const img = document.createElement('img');
+				img.src = node.attrs.src ?? '';
+				img.alt = node.attrs.alt ?? '';
+				img.title = node.attrs.title ?? '';
+				if (node.attrs.width) img.width = node.attrs.width;
+				if (node.attrs.align && node.attrs.align !== 'none') {
+					img.style.float = node.attrs.align;
+					img.style.margin = node.attrs.align === 'left' ? '0 12px 4px 0' : '0 0 4px 12px';
+				}
 
-	// Resize handle drag
-	let _resizeDragging = false;
-	let _resizeStartX = 0;
-	let _resizeStartW = 0;
+				// Resize handle (right edge)
+				const handle = document.createElement('span');
+				handle.className = 'img-resize-handle-inline';
+				handle.title = 'Drag to resize';
 
-	function onResizeHandleDown(e: PointerEvent) {
-		if (!resizingImg) return;
-		e.preventDefault();
-		_resizeDragging = true;
-		_resizeStartX = e.clientX;
-		_resizeStartW = resizingImg.getBoundingClientRect().width;
-		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-	}
+				let dragging = false;
+				let startX = 0;
+				let startW = 0;
 
-	function onResizeHandleMove(e: PointerEvent) {
-		if (!_resizeDragging || !resizingImg) return;
-		const dx = e.clientX - _resizeStartX;
-		const newW = Math.max(40, Math.round(_resizeStartW + dx));
-		resizingImg.style.width = `${newW}px`;
-		resizingImg.style.maxWidth = '';
-	}
+				handle.addEventListener('pointerdown', (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					dragging = true;
+					startX = e.clientX;
+					startW = img.getBoundingClientRect().width;
+					handle.setPointerCapture(e.pointerId);
+				});
+				handle.addEventListener('pointermove', (e) => {
+					if (!dragging) return;
+					const newW = Math.max(40, Math.round(startW + e.clientX - startX));
+					img.width = newW;
+					wrapper.style.width = newW + 'px';
+				});
+				handle.addEventListener('pointerup', (e) => {
+					if (!dragging) return;
+					dragging = false;
+					const newW = Math.max(40, Math.round(startW + e.clientX - startX));
+					if (typeof getPos === 'function') {
+						const pos = getPos();
+						if (typeof pos === 'number') {
+							editor?.chain().focus().setNodeSelection(pos).updateAttributes('image', { width: newW }).run();
+							saved = false;
+							scheduleAutosave();
+						}
+					}
+				});
+				handle.addEventListener('pointercancel', () => { dragging = false; });
 
-	function onResizeHandleDone(e: PointerEvent) {
-		if (!_resizeDragging || !resizingImg) return;
-		_resizeDragging = false;
-		const w = resizingImg.style.width;
-		// Persist the width into the TipTap document
-		if (editor && w) {
-			editor.chain().focus().updateAttributes('image', { style: `width:${w}` }).run();
-		}
-		saved = false;
-		scheduleAutosave();
-	}
+				wrapper.append(img, handle);
 
-	// ── File attachment ──────────────────────────────────────────
+				return {
+					dom: wrapper,
+					update(updatedNode) {
+						if (updatedNode.type.name !== 'image') return false;
+						img.src = updatedNode.attrs.src ?? '';
+						if (updatedNode.attrs.width) { img.width = updatedNode.attrs.width; wrapper.style.width = updatedNode.attrs.width + 'px'; }
+						else { img.removeAttribute('width'); wrapper.style.width = ''; }
+						return true;
+					},
+				};
+			};
+		},
+	});
+
+	// updateImageResize is now a no-op — handled per-node in ResizableImage nodeView
+	function updateImageResize() {}
+
+		// ── File attachment ──────────────────────────────────────────
 	// Custom TipTap node for embedded files (PDF, zip, etc.)
 	// Rendered as a download card. Stored as encrypted base64 in IndexedDB.
 
@@ -441,7 +473,7 @@
 				const dlBtn = document.createElement('button');
 				dlBtn.className = 'file-attachment-dl';
 				dlBtn.title = 'Download';
-				dlBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1v8M4 7l2.5 2.5L9 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 11h11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
+				dlBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 12 12" fill="none" style="flex-shrink:0"><path d="M6 1v7M3.5 6l2.5 2 2.5-2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 10h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg><span>Download</span>`;
 				dlBtn.onclick = async (e) => {
 					e.stopPropagation();
 					const dataUri = await loadAttachment(node.attrs.hash, auth.userId!, auth.dek);
@@ -479,20 +511,46 @@
 	// ── File preview modal ───────────────────────────────────────
 	type PreviewState = { hash: string; fileName: string; mimeType: string } | null;
 	let previewState = $state<PreviewState>(null);
-	let previewContent = $state<string | null>(null); // decoded text/PDF URL
+	// For PDFs: a Blob URL (avoids CSP data: iframe restriction)
+	// For text/code: the decoded string
+	let previewContent = $state<string | null>(null);
 	let previewLoading = $state(false);
+	let _previewBlobUrl: string | null = null; // revoke on close
 
 	async function openPreview(hash: string, fileName: string, mimeType: string) {
 		previewState = { hash, fileName, mimeType };
 		previewContent = null;
 		previewLoading = true;
+
 		const dataUri = await loadAttachment(hash, auth.userId!, auth.dek);
 		previewLoading = false;
-		if (!dataUri) { previewContent = null; return; }
-		previewContent = dataUri;
+		if (!dataUri) return;
+
+		if (mimeType === 'application/pdf') {
+			// Convert data URI → Blob URL so the browser doesn't block it in an iframe
+			const comma = dataUri.indexOf(',');
+			const b64 = dataUri.slice(comma + 1);
+			const binary = atob(b64);
+			const bytes = new Uint8Array(binary.length);
+			for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+			const blob = new Blob([bytes], { type: 'application/pdf' });
+			if (_previewBlobUrl) URL.revokeObjectURL(_previewBlobUrl);
+			_previewBlobUrl = URL.createObjectURL(blob);
+			previewContent = _previewBlobUrl;
+		} else {
+			// Text/code: decode base64 → string
+			try {
+				const comma = dataUri.indexOf(',');
+				const b64 = dataUri.slice(comma + 1);
+				previewContent = atob(b64);
+			} catch {
+				previewContent = dataUri; // already text (edge case)
+			}
+		}
 	}
 
 	function closePreview() {
+		if (_previewBlobUrl) { URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl = null; }
 		previewState = null;
 		previewContent = null;
 	}
@@ -501,8 +559,7 @@
 		return (
 			mimeType === 'application/pdf' ||
 			mimeType.startsWith('text/') ||
-			/\/(javascript|json|xml|x-python|x-sh|x-c|x-c\+\+|x-java|x-ruby|x-php|x-rust|x-go|x-typescript|x-yaml|x-toml|csv)/.test(mimeType) ||
-			/\.(py|js|ts|cpp|c|h|java|rb|php|rs|go|sh|yaml|yml|toml|json|xml|csv|md|txt|log)$/.test('')
+			/\/(javascript|json|xml|x-python|x-sh|x-c|x-c\+\+|x-java|x-ruby|x-php|x-rust|x-go|x-typescript|x-yaml|x-toml|csv)/.test(mimeType)
 		);
 	}
 
@@ -683,7 +740,7 @@
 		editor = new Editor({
 			element: editorEl,
 			extensions: [
-				StarterKit,
+				StarterKit.configure({ link: false, underline: false }),
 				Underline,
 				TextStyle,
 				Color,
@@ -704,7 +761,7 @@
 				TableRow,
 				TableHeader,
 				TableCell,
-				Image.configure({ inline: false, allowBase64: true, HTMLAttributes: { style: '' } }),
+				ResizableImage.configure({ inline: true, allowBase64: true }),
 				FileAttachmentNode,
 				Placeholder.configure({ placeholder: 'Start writing…' }),
 			],
@@ -1447,48 +1504,6 @@
 	<div class="editor-scroll-area">
 		<div class="body-editor-wrap" bind:this={editorEl}></div>
 
-		<!-- Image resize overlay: appears when an image node is selected -->
-		{#if resizingImg}
-			<div
-				class="img-resize-overlay"
-				bind:this={resizeOverlayEl}
-				style="
-					position: absolute;
-					top: {resizingImg.getBoundingClientRect().top - (resizingImg.closest('.editor-scroll-area')?.getBoundingClientRect().top ?? 0) + (resizingImg.closest('.editor-scroll-area')?.scrollTop ?? 0)}px;
-					left: {resizingImg.getBoundingClientRect().left - (resizingImg.closest('.editor-scroll-area')?.getBoundingClientRect().left ?? 0)}px;
-					width: {resizingImg.getBoundingClientRect().width}px;
-					height: {resizingImg.getBoundingClientRect().height}px;
-					pointer-events: none;
-					outline: 2px solid var(--accent);
-					border-radius: 3px;
-					z-index: 10;
-				"
-			>
-				<!-- Right-edge resize handle -->
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<div
-					class="img-resize-handle img-resize-handle-e"
-					style="pointer-events: all;"
-					onpointerdown={onResizeHandleDown}
-					onpointermove={onResizeHandleMove}
-					onpointerup={onResizeHandleDone}
-					onpointercancel={onResizeHandleDone}
-					title="Drag to resize"
-				></div>
-				<!-- Bottom-right corner resize handle -->
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<div
-					class="img-resize-handle img-resize-handle-se"
-					style="pointer-events: all;"
-					onpointerdown={onResizeHandleDown}
-					onpointermove={onResizeHandleMove}
-					onpointerup={onResizeHandleDone}
-					onpointercancel={onResizeHandleDone}
-					title="Drag to resize"
-				></div>
-			</div>
-		{/if}
-
 		<!-- ── Word count footer ─────────────────────────────── -->
 		<div class="word-count" aria-live="polite" aria-atomic="true">
 			<span>{wordCount} word{wordCount === 1 ? '' : 's'}</span>
@@ -1721,18 +1736,17 @@
 			<div class="preview-header">
 				<span class="preview-filename">{previewState.fileName}</span>
 				<div class="preview-header-actions">
-					{#if previewContent}
-						<button class="btn-ghost preview-dl-btn" onclick={async () => {
-							if (!previewContent) return;
+					<button class="btn-ghost preview-dl-btn" onclick={async () => {
+							const dataUri = await loadAttachment(previewState!.hash, auth.userId!, auth.dek);
+							if (!dataUri) return;
 							const a = document.createElement('a');
-							a.href = previewContent;
+							a.href = dataUri;
 							a.download = previewState!.fileName;
 							a.click();
 						}}>
-							<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1v8M4 7l2.5 2.5L9 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 11h11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-							Download
-						</button>
-					{/if}
+						<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v7M3.5 6l2.5 2 2.5-2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 10h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+						Download
+					</button>
 					<button class="preview-close-btn" onclick={closePreview} aria-label="Close preview">
 						<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 					</button>
@@ -1744,18 +1758,16 @@
 				{:else if !previewContent}
 					<div class="preview-error">Attachment unavailable (vault may be locked or file missing).</div>
 				{:else if previewState.mimeType === 'application/pdf'}
+					<!-- Blob URL avoids CSP data: iframe restriction -->
 					<iframe
 						src={previewContent}
 						title={previewState.fileName}
 						class="preview-pdf"
+						sandbox="allow-scripts allow-same-origin"
 					></iframe>
 				{:else}
-					<!-- Text / code preview -->
-					<pre class="preview-text">{#await (async () => {
-						const comma = previewContent!.indexOf(',');
-						const b64 = previewContent!.slice(comma + 1);
-						try { return atob(b64); } catch { return previewContent!; }
-					})() then text}{text}{/await}</pre>
+					<!-- previewContent is already decoded text (set in openPreview) -->
+					<pre class="preview-text">{previewContent}</pre>
 				{/if}
 			</div>
 		</div>
@@ -2475,16 +2487,45 @@
 		z-index: 20;
 	}
 
-	/* Images */
-	.body-editor-wrap :global(.ProseMirror img) {
+	/* Images — inline NodeView wrapper */
+	.body-editor-wrap :global(.img-node-wrapper) {
+		display: inline-block;
+		position: relative;
+		max-width: 100%;
+		vertical-align: middle;
+		line-height: 0;
+		/* Allow cursor placement before/after inline image */
+		user-select: none;
+	}
+	.body-editor-wrap :global(.img-node-wrapper.ProseMirror-selectednode) {
+		outline: 2px solid var(--accent);
+		border-radius: 3px;
+	}
+	.body-editor-wrap :global(.img-node-wrapper img) {
 		max-width: 100%;
 		height: auto;
 		border-radius: var(--radius-sm);
 		display: block;
-		margin: 0.5em 0;
+		cursor: default;
 	}
-	.body-editor-wrap :global(.ProseMirror img.ProseMirror-selectednode) {
-		outline: 2px solid var(--accent);
+	/* Inline resize handle: right edge of each image */
+	.body-editor-wrap :global(.img-resize-handle-inline) {
+		position: absolute;
+		right: -4px;
+		top: 50%;
+		transform: translateY(-50%);
+		width: 8px;
+		height: 40px;
+		background: var(--accent);
+		border-radius: 4px;
+		cursor: ew-resize;
+		opacity: 0;
+		transition: opacity 0.15s;
+		z-index: 5;
+	}
+	.body-editor-wrap :global(.ProseMirror-selectednode .img-resize-handle-inline),
+	.body-editor-wrap :global(.img-node-wrapper:hover .img-resize-handle-inline) {
+		opacity: 0.85;
 	}
 
 	/* Task list */
@@ -2609,25 +2650,6 @@
 	}
 
 	/* ── Image resize handles ──────────────────────────────────── */
-	.img-resize-handle {
-		position: absolute;
-		width: 10px;
-		height: 10px;
-		background: var(--accent);
-		border: 2px solid #fff;
-		border-radius: 2px;
-	}
-	.img-resize-handle-e {
-		top: 50%;
-		right: -5px;
-		transform: translateY(-50%);
-		cursor: ew-resize;
-	}
-	.img-resize-handle-se {
-		bottom: -5px;
-		right: -5px;
-		cursor: nwse-resize;
-	}
 
 	/* ── File attachment card ──────────────────────────────────── */
 	.body-editor-wrap :global(.file-attachment-card) {
@@ -2673,15 +2695,17 @@
 	.body-editor-wrap :global(.file-attachment-dl) {
 		display: flex;
 		align-items: center;
-		justify-content: center;
-		width: 28px;
+		gap: 5px;
+		padding: 4px 10px;
 		height: 28px;
 		border-radius: var(--radius-sm);
 		border: 1px solid var(--border);
 		background: var(--bg-hover);
 		color: var(--text-muted);
+		font-size: 12px;
 		cursor: pointer;
 		flex-shrink: 0;
+		white-space: nowrap;
 		transition: color 0.1s, background 0.1s;
 	}
 	.body-editor-wrap :global(.file-attachment-dl:hover) {

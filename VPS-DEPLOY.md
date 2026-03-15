@@ -328,6 +328,39 @@ docker compose -f docker-compose.public.yml up -d
 
 ---
 
+## Changing the maximum attachment size
+
+The default maximum file size for uploaded attachments (images, PDFs, etc.) is **15 MB per file**. To change it, edit two places in `server/src/routes/attachments.ts`:
+
+**1. HTTP body limit** (line with `bodyLimit`):
+
+```typescript
+bodyLimit: 20 * 1024 * 1024,   // change 20 to your desired MB ceiling
+```
+
+**2. Zod validation schema** (two constants near the top of the file):
+
+```typescript
+const MAX_ENCRYPTED_DATA_LENGTH = 19_000_000;  // ≈ sizeBytes * 1.37 + overhead
+
+sizeBytes: z.number().int().min(0).max(15_000_000),  // max plaintext size
+```
+
+The relationship between these numbers:
+
+- `sizeBytes` max = the maximum plaintext file size you want to allow.
+- `MAX_ENCRYPTED_DATA_LENGTH` ≈ `sizeBytes × 1.37` + JSON envelope overhead (base64 inflation + AES-GCM wrapping).
+- `bodyLimit` = `MAX_ENCRYPTED_DATA_LENGTH` + ~1 MB safety margin.
+
+After editing, rebuild and restart the server container:
+
+```bash
+docker compose -f docker-compose.public.yml build --no-cache server
+docker compose -f docker-compose.public.yml up -d server
+```
+
+---
+
 ## Security hardening checklist
 
 ### Server-level

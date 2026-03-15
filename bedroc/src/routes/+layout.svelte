@@ -334,10 +334,7 @@
 <style>
 	/* ── Auth shell ───────────────────────────────────── */
 	.auth-shell {
-		/* position:fixed + inset:0 covers the full physical screen on iOS
-		   standalone PWA (viewport-fit:cover), closing the safe-area gap. */
-		position: fixed;
-		inset: 0;
+		min-height: calc(100vh + env(safe-area-inset-bottom, 0px));
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -352,11 +349,11 @@
 	/* ── App shell ────────────────────────────────────── */
 	.app-shell {
 		display: flex;
-		/* position:fixed + inset:0 covers the full physical screen on iOS
-		   standalone PWA (viewport-fit:cover), including the home-indicator
-		   region that percentage heights don't reach. */
-		position: fixed;
-		inset: 0;
+		/* On iOS standalone PWA, 100vh may exclude the home-indicator
+		   safe area. Add the bottom inset so the app shell stretches
+		   to the full physical screen edge. overflow:hidden clips any
+		   excess on browsers where 100vh already covers the full screen. */
+		height: calc(100vh + env(safe-area-inset-bottom, 0px));
 		overflow: hidden;
 		overscroll-behavior: none;
 	}

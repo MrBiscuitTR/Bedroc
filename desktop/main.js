@@ -89,7 +89,7 @@ function serveFile(res, filePath, isSpaFallback = false) {
         "connect-src *; " +
         "worker-src 'self' blob:; " +
         "object-src blob:; " +
-        "frame-src blob:;";
+        "frame-src 'self' blob:;";
     }
     res.writeHead(200, headers);
     res.end(data);

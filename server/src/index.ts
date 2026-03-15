@@ -37,6 +37,7 @@ import { getRedis, closeRedis } from './plugins/redis.js';
 import authRoutes from './routes/auth.js';
 import noteRoutes from './routes/notes.js';
 import syncRoutes from './routes/sync.js';
+import attachmentRoutes from './routes/attachments.js';
 
 // ---------------------------------------------------------------------------
 // Validate required env vars early so failures are obvious
@@ -195,6 +196,7 @@ app.log.info('Redis connected.');
 await app.register(authRoutes);
 await app.register(noteRoutes);
 await app.register(syncRoutes); // registers GET /ws
+await app.register(attachmentRoutes);
 
 // ---------------------------------------------------------------------------
 // Health check (unauthenticated — used by Docker healthcheck)

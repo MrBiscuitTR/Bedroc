@@ -493,6 +493,40 @@ docker compose up -d --build
 
 Docker rebuilds only what changed. Your data is untouched (it lives in Docker volumes, not in the container).
 
+### Changing the maximum attachment size
+
+The default maximum file size for uploaded attachments (images, PDFs, etc.) is **15 MB per file**. To change it, edit two places:
+
+**1. Server route body limit** — `server/src/routes/attachments.ts`:
+
+```typescript
+// Find this line and change the multiplier:
+bodyLimit: 20 * 1024 * 1024,   // 20 MB HTTP body limit
+```
+
+**2. Zod validation schema** — same file, a few lines above:
+
+```typescript
+const MAX_ENCRYPTED_DATA_LENGTH = 19_000_000;  // ~19 MB for base64-encoded 14 MB file
+
+const UploadSchema = z.object({
+  encryptedData: z.string().min(10).max(MAX_ENCRYPTED_DATA_LENGTH),
+  ...
+  sizeBytes: z.number().int().min(0).max(15_000_000),  // 15 MB plaintext
+});
+```
+
+The relationship between these numbers:
+- `sizeBytes` max = the max **plaintext** file size you want to allow.
+- `MAX_ENCRYPTED_DATA_LENGTH` ≈ `sizeBytes * 1.37` (base64 overhead) + a few hundred bytes for the JSON envelope.
+- `bodyLimit` = `MAX_ENCRYPTED_DATA_LENGTH` + ~1 MB safety margin.
+
+After changing, rebuild and restart the server:
+
+```bash
+docker compose up -d --build server
+```
+
 ---
 
 ## Backing up your data
@@ -645,6 +679,17 @@ ports:
 Then connect to `https://10.66.66.1:8443` instead.
 
 ---
+
+## Images and file attachments
+
+Bedroc supports embedding images and file attachments (PDF, code files, zip, etc.) directly in notes.
+
+- **How it works:** When you upload an image or attach a file, it is encrypted on your device with your DEK (the same key that encrypts your notes) before being stored anywhere. The server receives and stores only AES-256-GCM ciphertext — never plaintext.
+- **Cross-device sync:** Attachments are uploaded to the server once (identified by content hash). When you open the same note on another device, the attachment is fetched from the server, cached locally, and decrypted — so every device can view it.
+- **Bandwidth-efficient:** Regular autosaves only transmit a tiny `attachment:<hash>` placeholder in the note body. The actual binary blob is only uploaded once, and only downloaded once per new device.
+- **File previews:** Click the file icon or name on an attached file card to preview it directly in the app — no download required. PDFs open in an inline viewer. Text, code, CSV, and JSON files show in a scrollable preview pane with selectable text.
+- **Storage:** Attachment data is stored in the `attachments` table in the same PostgreSQL database as your notes. There is no separate object storage required.
+- **Deletion:** Removing a file card from a note removes it from the editor, but the encrypted blob persists on the server until you delete your account (which cascades all data). A future release will support explicit attachment pruning.
 
 ## Security notes
 

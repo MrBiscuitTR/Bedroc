@@ -502,10 +502,22 @@ WebSocket message types:
 - [ ] Audit: ensure no plaintext note data ever logged or stored server-side
 - [ ] Audit: memory hygiene (zero out keys after use where possible in JS)
 
-### Phase 6 — Data Export & Settings
-- [ ] Export notes as decrypted JSON with security warning modal
-- [ ] Basic settings page: change password (re-encrypt DEK), manage devices/sessions
-- [ ] Dark/light theme
+### Phase 6 — Editor Enhancements ✅ COMPLETE
+
+- [x] Replace `document.execCommand` with TipTap (ProseMirror) — MIT-licensed, bundled, zero telemetry
+- [x] Extensions: StarterKit, Underline, TextStyle, Color, FontSize, TextAlign, Subscript, Superscript, Highlight (multi-color), Typography, TaskList, TaskItem (nested), CharacterCount, Link, Table, TableRow, TableHeader, TableCell, Image (base64), Placeholder
+- [x] Headings H1–H4 via dropdown; Code, Blockquote, Code block toolbar buttons
+- [x] Text alignment (left / center / right / justify)
+- [x] Font color — swatch panel + native color picker; color-at-cursor via `editor.getAttributes('textStyle').color`
+- [x] Font size — preset dropdown; stored as `"16px"` (with unit) by extension, displayed without unit
+- [x] Tables — insert 3×3, contextual add/delete row/column, delete table
+- [x] Images — upload from device as base64 data URI (no server upload, fully encrypted)
+- [x] Task lists with nested support and strikethrough on completion
+- [x] Multi-color highlights via `<mark data-color="...">`
+- [x] Link dialog — insert/remove inline links
+- [x] Word/character count footer via CharacterCount storage
+- [x] Cursor position preserved across saves and real-time sync updates
+- [x] Sync, encrypt/decrypt, autosave, conflict resolution all preserved
 
 ### Phase 7 — Docker & Self-Hosting Documentation
 - [ ] `docker-compose.yml` (production)

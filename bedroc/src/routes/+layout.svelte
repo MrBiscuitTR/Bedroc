@@ -4,6 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { auth, restoreSession, serverStatus, lockVault } from '$lib/stores/auth.svelte.js';
+	import { initTheme } from '$lib/stores/theme.svelte.js';
 	import { connect as wsConnect, disconnect as wsDisconnect } from '$lib/sync/websocket.js';
 	import { syncFromServer, syncIntervalStore, loadFromDb, inactivityLockStore } from '$lib/stores/notes.svelte.js';
 
@@ -18,9 +19,10 @@
 	// mobile header on that route to avoid doubling up.
 	let isNoteRoute = $derived(path.startsWith('/note'));
 
-	// ── Service worker registration ───────────────────────────────
-	// Runs once on mount. Safe on all platforms (iOS 11.3+, Android, desktop).
+	// ── Service worker registration + theme ──────────────────────
 	onMount(() => {
+		// Apply saved theme (data-theme attribute on <html>)
+		initTheme();
 		if ('serviceWorker' in navigator) {
 			navigator.serviceWorker.register('/sw.js').catch(() => {
 				// Registration failure is non-fatal — app still works without SW
@@ -146,11 +148,6 @@
 		};
 	});
 
-	const navItems = [
-		{ href: '/',         label: 'Notes',    icon: 'notes' },
-		{ href: '/settings', label: 'Settings', icon: 'settings' }
-	];
-
 	// ── Split-window state ─────────────────────────────────────────
 	let splitActive  = $state(false);
 	let splitUrl     = $state('/');
@@ -168,11 +165,25 @@
 	function openSplit() {
 		splitUrl    = '/';
 		splitActive = true;
+		window.dispatchEvent(new CustomEvent('bedroc:split-changed', { detail: { active: true } }));
 	}
 
 	function closeSplit() {
 		splitActive = false;
+		window.dispatchEvent(new CustomEvent('bedroc:split-changed', { detail: { active: false } }));
 	}
+
+	// Listen for split open/close requests from child pages (e.g. topics panel)
+	onMount(() => {
+		function onOpen() { openSplit(); }
+		function onClose() { closeSplit(); }
+		window.addEventListener('bedroc:open-split', onOpen);
+		window.addEventListener('bedroc:close-split', onClose);
+		return () => {
+			window.removeEventListener('bedroc:open-split', onOpen);
+			window.removeEventListener('bedroc:close-split', onClose);
+		};
+	});
 
 	function onSplitterPointerDown(e: PointerEvent) {
 		e.preventDefault();
@@ -203,74 +214,6 @@
 	</div>
 {:else}
 	<div class="app-shell">
-		<!-- ── Sidebar (desktop) ───────────────────────── -->
-		<aside class="sidebar">
-			<div class="sidebar-logo">
-				<img src="/icons/appicon-96.png" alt="Bedroc" class="logo-icon" width="28" height="28" />
-				<span class="logo-text">Bedroc</span>
-			</div>
-
-			<nav class="sidebar-nav">
-				{#each navItems as item}
-					<a
-						href={item.href}
-						class="nav-item"
-						class:active={path === item.href ||
-							(path.startsWith('/note') && item.href === '/')}
-					>
-						<span class="nav-icon" aria-hidden="true">
-							{#if item.icon === 'notes'}
-								<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-									<rect x="2" y="2" width="12" height="2" rx="1" fill="currentColor"/>
-									<rect x="2" y="6" width="9" height="2" rx="1" fill="currentColor"/>
-									<rect x="2" y="10" width="11" height="2" rx="1" fill="currentColor"/>
-									<rect x="2" y="14" width="7" height="1.5" rx="0.75" fill="currentColor"/>
-								</svg>
-							{:else if item.icon === 'settings'}
-								<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-									<circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/>
-									<path d="M8 1v2M8 13v2M1 8h2M13 8h2M2.93 2.93l1.41 1.41M11.66 11.66l1.41 1.41M2.93 13.07l1.41-1.41M11.66 4.34l1.41-1.41" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-								</svg>
-							{/if}
-						</span>
-						<span>{item.label}</span>
-					</a>
-				{/each}
-			</nav>
-
-			<!-- Split window toggle -->
-			<div class="sidebar-split">
-				{#if splitActive}
-					<button class="btn-ghost split-btn" onclick={closeSplit} title="Close split view" aria-label="Close split view">
-						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-							<rect x="1" y="1" width="5.5" height="12" rx="1" stroke="currentColor" stroke-width="1.3"/>
-							<rect x="7.5" y="1" width="5.5" height="12" rx="1" stroke="currentColor" stroke-width="1.3" opacity="0.4"/>
-							<path d="M10 5l2 2-2 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-						</svg>
-						<span>Close split</span>
-					</button>
-				{:else}
-					<button class="btn-ghost split-btn" onclick={openSplit} title="Open split view" aria-label="Open split view">
-						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-							<rect x="1" y="1" width="5.5" height="12" rx="1" stroke="currentColor" stroke-width="1.3"/>
-							<rect x="7.5" y="1" width="5.5" height="12" rx="1" stroke="currentColor" stroke-width="1.3"/>
-						</svg>
-						<span>Split view</span>
-					</button>
-				{/if}
-			</div>
-
-			<div class="sidebar-footer">
-				<button class="btn-ghost sidebar-user" onclick={() => {}}>
-					<span class="user-avatar" aria-hidden="true">{(auth.username ?? 'A')[0].toUpperCase()}</span>
-					<span class="user-name">{auth.username ?? 'Account'}</span>
-				</button>
-				{#if serverStatus.value !== 'unknown'}
-					<span class="sidebar-srv-dot sidebar-srv-dot-{serverStatus.value}" title={serverStatus.value === 'online' ? 'Server online' : serverStatus.value === 'offline' ? 'Server unreachable' : 'Checking…'}></span>
-				{/if}
-			</div>
-		</aside>
-
 		<!-- ── Main content area ────────────────────────── -->
 		<div
 			class="main-wrap"
@@ -355,31 +298,34 @@
 
 			<!-- Mobile bottom nav -->
 			<nav class="bottom-nav" aria-label="Main navigation">
-				{#each navItems as item}
-					<a
-						href={item.href}
-						class="bottom-nav-item"
-						class:active={path === item.href ||
-							(path.startsWith('/note') && item.href === '/')}
-					>
-						<span class="nav-icon" aria-hidden="true">
-							{#if item.icon === 'notes'}
-								<svg width="20" height="20" viewBox="0 0 16 16" fill="none">
-									<rect x="2" y="2" width="12" height="2" rx="1" fill="currentColor"/>
-									<rect x="2" y="6" width="9" height="2" rx="1" fill="currentColor"/>
-									<rect x="2" y="10" width="11" height="2" rx="1" fill="currentColor"/>
-									<rect x="2" y="14" width="7" height="1.5" rx="0.75" fill="currentColor"/>
-								</svg>
-							{:else if item.icon === 'settings'}
-								<svg width="20" height="20" viewBox="0 0 16 16" fill="none">
-									<circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/>
-									<path d="M8 1v2M8 13v2M1 8h2M13 8h2M2.93 2.93l1.41 1.41M11.66 11.66l1.41 1.41M2.93 13.07l1.41-1.41M11.66 4.34l1.41-1.41" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-								</svg>
-							{/if}
-						</span>
-						<span class="bottom-nav-label">{item.label}</span>
-					</a>
-				{/each}
+				<a
+					href="/"
+					class="bottom-nav-item"
+					class:active={path === '/' || path.startsWith('/note')}
+				>
+					<span class="nav-icon" aria-hidden="true">
+						<svg width="20" height="20" viewBox="0 0 16 16" fill="none">
+							<rect x="2" y="2" width="12" height="2" rx="1" fill="currentColor"/>
+							<rect x="2" y="6" width="9" height="2" rx="1" fill="currentColor"/>
+							<rect x="2" y="10" width="11" height="2" rx="1" fill="currentColor"/>
+							<rect x="2" y="14" width="7" height="1.5" rx="0.75" fill="currentColor"/>
+						</svg>
+					</span>
+					<span class="bottom-nav-label">Notes</span>
+				</a>
+				<a
+					href="/settings"
+					class="bottom-nav-item"
+					class:active={path === '/settings'}
+				>
+					<span class="nav-icon" aria-hidden="true">
+						<svg width="20" height="20" viewBox="0 0 16 16" fill="none">
+							<circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+							<path d="M8 1v2M8 13v2M1 8h2M13 8h2M2.93 2.93l1.41 1.41M11.66 11.66l1.41 1.41M2.93 13.07l1.41-1.41M11.66 4.34l1.41-1.41" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+						</svg>
+					</span>
+					<span class="bottom-nav-label">Settings</span>
+				</a>
 			</nav>
 		</div>
 	</div>
@@ -392,9 +338,21 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		/* Top safe area ensures the login form isn't under the status bar on iOS PWA */
-		padding: max(env(safe-area-inset-top, 0px), 24px) 16px max(env(safe-area-inset-bottom, 0px), 24px);
+		/* Top safe area ensures the login form isn't under the status bar.
+		   In Safari browser: safe-area-inset-top = 0, so 24px fallback applies.
+		   In PWA standalone: safe-area-inset-top = status bar height (~59px). */
+		padding-top: max(env(safe-area-inset-top, 0px), 24px);
+		padding-bottom: max(env(safe-area-inset-bottom, 0px), 24px);
+		padding-left: 16px;
+		padding-right: 16px;
 		background: var(--bg);
+	}
+
+	/* Standalone PWA: ensure top safe area is always applied */
+	@media (display-mode: standalone) {
+		.auth-shell {
+			padding-top: max(env(safe-area-inset-top, 44px), 44px);
+		}
 	}
 
 	/* ── App shell ────────────────────────────────────── */
@@ -403,160 +361,6 @@
 		height: 100dvh;
 		overflow: hidden;
 		overscroll-behavior: none;
-	}
-
-	/* ── Sidebar ──────────────────────────────────────── */
-	.sidebar {
-		width: var(--sidebar-w);
-		background: var(--bg-elevated);
-		border-right: 1px solid var(--border);
-		display: none;
-		flex-direction: column;
-		flex-shrink: 0;
-	}
-
-	@media (min-width: 768px) {
-		.sidebar { display: flex; }
-	}
-
-	.sidebar-logo {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		min-height: var(--nav-h);
-		padding: max(env(safe-area-inset-top, 0px), 8px) 18px;
-		border-bottom: 1px solid var(--border);
-	}
-
-	.logo-icon {
-		width: 28px;
-		height: 28px;
-		border-radius: 7px;
-		flex-shrink: 0;
-		object-fit: cover;
-	}
-
-	.logo-text {
-		font-size: 15px;
-		font-weight: 600;
-		color: var(--text);
-		letter-spacing: -0.01em;
-	}
-
-	.sidebar-nav {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		padding: 12px 10px;
-		flex: 1;
-	}
-
-	.nav-item {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		padding: 8px 10px;
-		border-radius: var(--radius-sm);
-		color: var(--text-muted);
-		font-size: 13.5px;
-		font-weight: 500;
-		text-decoration: none;
-		transition: background 0.12s ease, color 0.12s ease;
-	}
-
-	.nav-item:hover {
-		background: var(--bg-hover);
-		color: var(--text);
-		text-decoration: none;
-	}
-
-	.nav-item.active {
-		background: color-mix(in srgb, var(--accent) 14%, transparent);
-		color: var(--accent);
-	}
-
-	.nav-icon {
-		display: flex;
-		align-items: center;
-		flex-shrink: 0;
-	}
-
-	/* Split button in sidebar */
-	.sidebar-split {
-		padding: 6px 10px;
-		border-top: 1px solid var(--border);
-	}
-
-	.split-btn {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		width: 100%;
-		padding: 7px 10px;
-		font-size: 12.5px;
-		border-radius: var(--radius-sm);
-		color: var(--text-muted);
-	}
-
-	.split-btn:hover {
-		color: var(--text);
-	}
-
-	.sidebar-footer {
-		padding: 12px 10px;
-		border-top: 1px solid var(--border);
-		display: flex;
-		align-items: center;
-		gap: 4px;
-	}
-
-	/* Status dot — sidebar footer (desktop only) */
-	.sidebar-srv-dot {
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-		flex-shrink: 0;
-		margin-left: auto;
-	}
-	.sidebar-srv-dot-checking { background: var(--text-faint); animation: sidebar-srv-pulse 1s infinite; }
-	.sidebar-srv-dot-online   { background: var(--success); }
-	.sidebar-srv-dot-offline  { background: var(--danger); }
-
-	@keyframes sidebar-srv-pulse {
-		0%, 100% { opacity: 1; }
-		50%       { opacity: 0.3; }
-	}
-
-	.sidebar-user {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		width: 100%;
-		padding: 8px 10px;
-		border-radius: var(--radius-sm);
-		text-align: left;
-	}
-
-	.user-avatar {
-		width: 26px;
-		height: 26px;
-		border-radius: 50%;
-		background: var(--accent-dim);
-		color: var(--accent);
-		font-size: 12px;
-		font-weight: 600;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		flex-shrink: 0;
-	}
-
-	.user-name {
-		font-size: 13px;
-		color: var(--text-muted);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
 
 	/* ── Main wrap ────────────────────────────────────── */
@@ -577,7 +381,11 @@
 		align-items: center; /* center vertically to match sidebar logo */
 		justify-content: space-between;
 		min-height: var(--nav-h);
-		padding: max(env(safe-area-inset-top, 0px), 8px) 16px; /* symmetric vertical padding */
+		/* Only apply safe area on TOP — no safe area padding on bottom */
+		padding-top: max(env(safe-area-inset-top, 0px), 8px);
+		padding-bottom: 8px;
+		padding-left: 16px;
+		padding-right: 16px;
 		background: var(--bg-elevated);
 		border-bottom: 1px solid var(--border);
 		flex-shrink: 0;

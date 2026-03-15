@@ -76,13 +76,73 @@ All Phase 1 placeholders have been replaced. See `lib/crypto/`, `lib/stores/auth
 
 ---
 
-## Phase 6 — Editor Enhancements
+## Phase 6 — Editor Enhancements ✅ COMPLETE
 
-| File | What is placeholder | Replace with |
+| File | Status | Notes |
 | --- | --- | --- |
-| `routes/note/[id]/+page.svelte` | Text formatting uses `document.execCommand` (deprecated) | Migrate to ProseMirror or custom contenteditable model in Phase 6 |
-| `routes/note/[id]/+page.svelte` | Font color picker is a native `<input type="color">` | Custom color palette matching design system |
-| `routes/note/[id]/+page.svelte` | Font size select is a plain `<select>` | Styled custom dropdown |
+| `routes/note/[id]/+page.svelte` | ✅ Done | `document.execCommand` replaced with TipTap (ProseMirror). Extensions: StarterKit, Underline, TextStyle, Color, FontSize, TextAlign, Subscript, Superscript, Link, Table, Image, Placeholder, Highlight, Typography, TaskList, TaskItem, CharacterCount. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Font color picker: custom swatch panel + native `<input type="color">` fallback; color-at-cursor reads from `editor.getAttributes('textStyle').color`; preview swatch updates in real time. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Font size: dropdown with preset sizes; value stored as `"16px"` (with unit) via FontSize extension; display strips unit with `.replace('px','')` to avoid double-unit bug. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Word/char count footer via CharacterCount extension — updates in real time, also updated on external sync. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Tables: insert 3×3 table, add/delete row/column, delete table. Contextual table toolbar appears only when cursor is inside a table. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Images: upload from device → base64 data URI stored in note HTML (no server upload, fully private, encrypted with rest of note). |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Task lists: checkboxes with nested support; completed items struck through via CSS. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Highlights: multi-color highlight via `<mark>` with `data-color`. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Link dialog: inline URL input; Enter or Apply inserts link; clicking button again on a link removes it. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Typography: smart quotes, em-dashes, ellipsis auto-substitution. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Headings H1–H4 via dropdown; Code, Blockquote, Code block via toolbar buttons. |
+
+### Current note storage format
+
+Notes are stored as **semantic HTML** output by TipTap/ProseMirror. The decrypted `body` field is an HTML string such as:
+
+```html
+<h2>My heading</h2>
+<p>Hello <span style="font-size:24px;color:#6b8afd;">world</span>, this is a <strong>note</strong>.</p>
+<ul data-type="taskList"><li data-checked="true"><p>Done item</p></li></ul>
+<table><tbody><tr><th><p>Cell</p></th></tr></tbody></table>
+<img src="attachment:a3f1..." style="width:400px">
+<div data-file-attachment data-hash="b2e4..." data-file-name="report.pdf" ...></div>
+```
+
+This is clean ProseMirror HTML — semantic tags (`<strong>`, `<em>`, `<h1>`–`<h4>`, `<mark>`, `<table>`, task list `<ul>`) with inline styles only for font-size and color overrides. It is backward-compatible with notes written before the TipTap migration (old `<b>`/`<span>` execCommand HTML renders fine in ProseMirror).
+
+Images use `attachment:<sha256-hex>` placeholders in the `src` attribute. File cards use a custom `<div data-file-attachment>` node serialised by TipTap. Both are restored to their data URIs before the editor renders them.
+
+---
+
+## Phase 7 — Attachment sync ✅ COMPLETE
+
+| File | Status | Notes |
+| --- | --- | --- |
+| `lib/attachments.ts` | ✅ Done | `extractAttachments()`: extracts `data:` URIs from HTML, encrypts with DEK (AES-256-GCM), stores in IndexedDB, uploads to server, replaces with `attachment:<hash>` placeholder. |
+| `lib/attachments.ts` | ✅ Done | `rehydrateAttachments()`: replaces placeholders with decrypted data URIs. If hash is missing from IndexedDB, fetches encrypted blob from server (cross-device sync), caches locally, then decrypts. |
+| `lib/attachments.ts` | ✅ Done | `uploadFileAttachment()`: used by file/image upload in editor. Encrypts immediately, stores in IndexedDB, fires background upload to server. |
+| `lib/attachments.ts` | ✅ Done | `loadFileAttachment()`: used by download/preview buttons. Decrypts from IndexedDB; falls back to server fetch if not cached locally. |
+| `lib/db/indexeddb.ts` | ✅ Done | `attachments` object store (DB v3): keyed by `hash`, stores `enc:<JSON>` ciphertext. |
+| `server/src/db/migrations/004_attachments.sql` | ✅ Done | `attachments` table: `(hash TEXT, user_id UUID)` primary key; stores `encrypted_data TEXT`, `mime_type`, `size_bytes`. |
+| `server/src/db/queries/attachments.ts` | ✅ Done | `upsertAttachment`, `getAttachment`, `getExistingHashes`, `deleteAttachment`, `deleteAllAttachments`. |
+| `server/src/routes/attachments.ts` | ✅ Done | `POST /api/attachments/check`, `PUT /api/attachments/:hash`, `GET /api/attachments/:hash`, `DELETE /api/attachments/:hash`. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | File attachment card: custom TipTap node (`fileAttachment`), download button, preview trigger (PDF/text/code). |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Image resize: drag handle on selected image; persists `style="width:Xpx"` into TipTap node attributes. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | File preview modal: PDF shown via `<iframe>`, text/code shown in scrollable `<pre>`. Triggered by clicking file icon or name for previewable types. |
+
+### Attachment sync design
+
+- **Content-addressed**: SHA-256 of the **plaintext** data URI is the key. Same file on any device → same hash → single server record.
+- **Upload: once only**: the server `PUT /api/attachments/:hash` uses `ON CONFLICT DO NOTHING`. Normal note saves never re-upload attachment blobs — only the tiny placeholder text travels with the note body.
+- **Cross-device**: when `rehydrateAttachments()` finds a hash not in local IndexedDB, it calls `GET /api/attachments/:hash`, caches the encrypted blob in IndexedDB, then decrypts it. Subsequent loads are fully offline.
+- **Deletion**: server attachment records are deleted only when the user explicitly calls `DELETE /api/attachments/:hash` (e.g. when removing a file card). Account deletion cascades via `ON DELETE CASCADE` on `user_id`.
+- **Encryption**: everything stored on the server is `enc:<JSON {iv,ct}>` (AES-256-GCM with the user's DEK). The server never sees plaintext. If the vault is locked, placeholders remain in the editor.
+- **Bandwidth**: large binary blobs only travel once (upload) or on first cross-device access (download). Regular autosaves only carry the placeholder text.
+
+---
+
+## Appearance / theming
+
+| File | Status | Notes |
+| --- | --- | --- |
+| `lib/stores/theme.svelte.ts` | ✅ Done | Dark/light theme toggle; persisted to localStorage; `data-theme` attribute on `<html>`; flash-free via inline script in `app.html`. |
 
 ---
 

@@ -14,6 +14,21 @@
 	import { page } from '$app/state';
 	import { auth, serverStatus } from '$lib/stores/auth.svelte.js';
 
+	// Split-view state exposed from layout via a store-like pattern.
+	// We use a custom event to tell the layout to open/close split.
+	// But since +page is a child of +layout we can't directly access layout state.
+	// Instead we dispatch a custom event on the window.
+	function openSplit() { window.dispatchEvent(new CustomEvent('bedroc:open-split')); }
+	function closeSplit() { window.dispatchEvent(new CustomEvent('bedroc:close-split')); }
+
+	// Track whether split is active by listening for layout state changes.
+	let splitActive = $state(false);
+	$effect(() => {
+		function onSplitChange(e: Event) { splitActive = (e as CustomEvent).detail.active; }
+		window.addEventListener('bedroc:split-changed', onSplitChange as EventListener);
+		return () => window.removeEventListener('bedroc:split-changed', onSplitChange as EventListener);
+	});
+
 	// ── Filter / navigation state ──────────────────────────────────
 	let search        = $state('');
 	// Honour ?topic=<id> query param set by the note editor drawer
@@ -539,6 +554,12 @@
 		role="navigation"
 		aria-label="Topics and folders"
 	>
+		<!-- Logo row — desktop only (mirrors layout sidebar logo) -->
+		<div class="panel-logo desktop-only">
+			<img src="/icons/appicon-96.png" alt="Bedroc" class="panel-logo-icon" width="24" height="24" />
+			<span class="panel-logo-text">Bedroc</span>
+		</div>
+
 		<div class="topics-header">
 			<span class="label">Topics</span>
 			<div class="header-actions">
@@ -561,7 +582,8 @@
 			</div>
 		</div>
 
-		<nav class="topic-list">
+		<!-- Pinned: All notes + Uncategorised always visible, never scroll away -->
+		<div class="topic-list-pinned">
 			<button
 				class="topic-item topic-item-all"
 				class:active={activeTopicId === 'all'}
@@ -592,7 +614,10 @@
 			{#if allTopics.length > 0 || allFolders.length > 0}
 				<div class="topic-separator"></div>
 			{/if}
+		</div>
 
+		<!-- Scrollable: folders + topics -->
+		<nav class="topic-list">
 			{#each childFolders(null) as folder (folder.id)}
 				{@render folderRow(folder, 0)}
 			{/each}
@@ -602,13 +627,40 @@
 			{/each}
 		</nav>
 
-		<!-- Panel footer: user info + server status dot — shown in drawer (mobile only).
-		     Desktop shows this in the layout sidebar footer instead. -->
+		<!-- Split-view button — desktop only -->
+		<div class="panel-split desktop-only">
+			{#if splitActive}
+				<button class="btn-ghost panel-split-btn" onclick={closeSplit} title="Close split view" aria-label="Close split view">
+					<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+						<rect x="1" y="1" width="5.5" height="12" rx="1" stroke="currentColor" stroke-width="1.3"/>
+						<rect x="7.5" y="1" width="5.5" height="12" rx="1" stroke="currentColor" stroke-width="1.3" opacity="0.4"/>
+						<path d="M10 5l2 2-2 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+					</svg>
+					<span>Close split</span>
+				</button>
+			{:else}
+				<button class="btn-ghost panel-split-btn" onclick={openSplit} title="Open split view" aria-label="Open split view">
+					<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+						<rect x="1" y="1" width="5.5" height="12" rx="1" stroke="currentColor" stroke-width="1.3"/>
+						<rect x="7.5" y="1" width="5.5" height="12" rx="1" stroke="currentColor" stroke-width="1.3"/>
+					</svg>
+					<span>Split view</span>
+				</button>
+			{/if}
+		</div>
+
+		<!-- Panel footer: user info + status dot + settings link -->
 		<div class="panel-footer">
 			<button class="btn-ghost panel-user" onclick={() => {}}>
 				<span class="panel-user-avatar" aria-hidden="true">{(auth.username ?? 'A')[0].toUpperCase()}</span>
 				<span class="panel-user-name">{auth.username ?? 'Account'}</span>
 			</button>
+			<a href="/settings" class="panel-settings-btn" aria-label="Settings">
+				<svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+					<circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+					<path d="M8 1v2M8 13v2M1 8h2M13 8h2M2.93 2.93l1.41 1.41M11.66 11.66l1.41 1.41M2.93 13.07l1.41-1.41M11.66 4.34l1.41-1.41" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+				</svg>
+			</a>
 			{#if serverStatus.value !== 'unknown'}
 				<span class="panel-srv-dot panel-srv-dot-{serverStatus.value}" title={serverStatus.value === 'online' ? 'Server online' : serverStatus.value === 'offline' ? 'Server unreachable' : 'Checking…'}></span>
 			{/if}
@@ -1005,15 +1057,14 @@
 
 	/* ── Topics panel ──────────────────────────────────────────── */
 	.topics-panel {
-		width: 200px;
+		width: var(--sidebar-w);
 		flex-shrink: 0;
 		border-right: 1px solid var(--border);
 		display: none;
 		flex-direction: column;
-		overflow-y: auto;
-		-webkit-overflow-scrolling: touch;
-		padding: 14px 8px;
-		gap: 4px;
+		overflow: hidden;
+		padding: 0;
+		gap: 0;
 	}
 
 	@media (min-width: 900px) {
@@ -1025,21 +1076,22 @@
 
 	@media (max-width: 899px) {
 		.topics-panel {
-		display: flex;
-		position: fixed;
-		top: 0;
-		left: 0;
-		bottom: 0;
-		width: 240px;
-		max-width: 80vw;
-		z-index: 20;
-		background: var(--bg-elevated);
-		border-right: 1px solid var(--border);
-		transform: translateX(-100%);
-		transition: transform 0.22s ease;
-		padding-top: max(20px, env(safe-area-inset-top, 14px));
+			display: flex;
+			position: fixed;
+			top: 0;
+			left: 0;
+			bottom: 0;
+			width: 240px;
+			max-width: 80vw;
+			z-index: 20;
+			background: var(--bg-elevated);
+			border-right: 1px solid var(--border);
+			transform: translateX(-100%);
+			transition: transform 0.22s ease;
+			padding-top: max(20px, env(safe-area-inset-top, 14px));
 		}
 		.topics-panel.drawer-open { transform: translateX(0); }
+		.desktop-only { display: none !important; }
 	}
 
 	/* ── Split-pane container queries ──────────────────────────────
@@ -1070,29 +1122,107 @@
 		.topics-panel.drawer-open { transform: translateX(0); }
 		.drawer-toggle { display: flex; }
 		.drawer-close-btn { display: flex; }
-		/* Show panel footer in the drawer when in narrow split mode */
-		.panel-footer { display: flex; }
+		.desktop-only { display: none !important; }
 	}
 
-	/* Panel footer: user + status dot — at bottom of drawer (mobile) and desktop topics panel */
+	/* ── Panel logo (desktop only) ─────────────────────────────── */
+	.panel-logo {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: max(env(safe-area-inset-top, 0px), 8px) 14px;
+		min-height: var(--nav-h);
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+
+	.panel-logo-icon {
+		width: 24px;
+		height: 24px;
+		border-radius: 6px;
+		object-fit: cover;
+		flex-shrink: 0;
+	}
+
+	.panel-logo-text {
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--text);
+		letter-spacing: -0.01em;
+	}
+
+	/* ── Topics header ─────────────────────────────────────────── */
+	.topics-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 10px 12px 4px;
+		flex-shrink: 0;
+	}
+
+	/* ── Pinned topic items (All notes + Uncategorised) ────────── */
+	.topic-list-pinned {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		padding: 0 8px;
+		flex-shrink: 0;
+	}
+
+	/* Pinned items have no edit-btn sibling; add matching right padding so the
+	   count column lines up with regular topic counts (edit-btn = ~21px + 2px gap) */
+	.topic-list-pinned .topic-item {
+		padding-right: 29px;
+		cursor: pointer;
+	}
+
+	/* ── Scrollable topic list ─────────────────────────────────── */
+	/* Panel footer: user + status dot — at bottom of panel */
 	.panel-footer {
 		display: flex;
 		align-items: center;
 		gap: 4px;
-		padding: 8px 10px 10px;
-		margin-top: auto;
+		padding: 8px 10px;
 		border-top: 1px solid var(--border);
 		flex-shrink: 0;
 	}
 
-	/* Hide on desktop when full-width — the layout sidebar footer handles it there.
-	   The container query above re-shows it when in narrow split mode. */
+	/* ── Split view button (desktop only) ─────────────────────── */
+	.panel-split {
+		padding: 4px 8px;
+		border-top: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+
+	.panel-split-btn {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+		padding: 6px 8px;
+		font-size: 12px;
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+	}
+
+	.panel-split-btn:hover { color: var(--text); }
+
+	/* Settings icon link in panel footer — desktop only (mobile has bottom nav) */
+	.panel-settings-btn {
+		display: none; /* hidden by default; shown on desktop below */
+		align-items: center;
+		justify-content: center;
+		padding: 6px;
+		color: var(--text-faint);
+		border-radius: var(--radius-sm);
+		transition: background 0.12s, color 0.12s;
+		flex-shrink: 0;
+		text-decoration: none;
+	}
 	@media (min-width: 900px) {
-		.panel-footer { display: none; }
+		.panel-settings-btn { display: flex; }
 	}
-	@container main-pane (min-width: 700px) {
-		.panel-footer { display: none; }
-	}
+	.panel-settings-btn:hover { background: var(--bg-hover); color: var(--text); text-decoration: none; }
 
 	.panel-user {
 		display: flex;
@@ -1132,7 +1262,6 @@
 		height: 7px;
 		border-radius: 50%;
 		flex-shrink: 0;
-		margin-left: auto;
 	}
 	.panel-srv-dot-checking { background: var(--text-faint); animation: panel-srv-pulse 1s infinite; }
 	.panel-srv-dot-online   { background: var(--success); }
@@ -1142,16 +1271,19 @@
 		50%       { opacity: 0.3; }
 	}
 
-	.topics-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 0 4px 8px;
-	}
-
 	.header-actions { display: flex; align-items: center; gap: 2px; }
 
-	.topic-list { display: flex; flex-direction: column; gap: 1px; }
+	/* Scrollable topics/folders list */
+	.topic-list {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		flex: 1;
+		overflow-y: auto;
+		-webkit-overflow-scrolling: touch;
+		overscroll-behavior: contain;
+		padding: 0 8px 8px;
+	}
 
 	.topic-separator { height: 1px; background: var(--border); margin: 6px 4px; }
 

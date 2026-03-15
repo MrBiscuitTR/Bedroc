@@ -682,8 +682,23 @@ export async function restoreSession(): Promise<void> {
       _accessToken = 'offline';
     }
     // No key material → fresh device, show normal login form
+  } else if (result === 'expired') {
+    // Cookie absent or revoked — but also check if this device has key material.
+    // Safari ITP blocks cross-site httpOnly cookies, causing 'expired' even when the user
+    // was genuinely logged in. If key material exists, show the unlock prompt so the user
+    // can re-derive their DEK locally without losing access to their notes.
+    const km = await loadKeyMaterial();
+    if (km && km.userId) {
+      _username = km.username;
+      _userId = km.userId;
+      _serverUrl = km.serverUrl;
+      // Use the 'offline' sentinel — unlock works the same way for both offline and
+      // cookie-blocked cases: user enters password, DEK is derived, then the first
+      // API call will trigger a normal login flow (or the unlock page can redirect to /login).
+      _accessToken = 'offline';
+    }
+    // No key material → truly new device / first visit, show normal login form
   }
-  // result === 'expired': cookie absent or revoked → show normal login form (no sentinel)
 }
 
 /**

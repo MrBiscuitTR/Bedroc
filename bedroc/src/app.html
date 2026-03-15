@@ -56,5 +56,37 @@
 	</head>
 	<body data-sveltekit-preload-data="hover">
 		<div style="display: contents">%sveltekit.body%</div>
+		<!-- TEMPORARY DEBUG: remove after diagnosing iOS standalone gap -->
+		<script>
+			if (window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches) {
+				var d = document.createElement('div');
+				d.id = 'dbg-overlay';
+				d.style.cssText = 'position:fixed;top:0;left:0;right:0;background:rgba(0,0,0,0.85);color:#0f0;font:11px/1.4 monospace;padding:6px 10px;z-index:99999;pointer-events:none;white-space:pre';
+				document.body.appendChild(d);
+				function upd() {
+					var cs = getComputedStyle(document.documentElement);
+					var saiT = cs.getPropertyValue('--_sai-t') || '?';
+					var saiB = cs.getPropertyValue('--_sai-b') || '?';
+					var html = document.documentElement;
+					var body = document.body;
+					var shell = document.querySelector('.app-shell') || document.querySelector('.auth-shell');
+					d.textContent =
+						'screen: ' + screen.width + 'x' + screen.height +
+						'\ninner: ' + window.innerWidth + 'x' + window.innerHeight +
+						'\nhtml: ' + html.clientWidth + 'x' + html.clientHeight + ' (offset: ' + html.offsetHeight + ')' +
+						'\nbody: ' + body.clientWidth + 'x' + body.clientHeight + ' (offset: ' + body.offsetHeight + ')' +
+						'\nshell: ' + (shell ? shell.clientWidth + 'x' + shell.clientHeight + ' (offset: ' + shell.offsetHeight + ')' : 'none') +
+						'\nsai-top: ' + saiT + '  sai-bot: ' + saiB +
+						'\nstandalone: ' + (window.navigator.standalone ? 'apple' : 'manifest');
+				}
+				// Expose safe-area values via CSS custom properties so JS can read them
+				var s = document.createElement('style');
+				s.textContent = ':root{--_sai-t:env(safe-area-inset-top,0px);--_sai-b:env(safe-area-inset-bottom,0px)}';
+				document.head.appendChild(s);
+				setTimeout(upd, 500);
+				setTimeout(upd, 2000);
+				window.addEventListener('resize', upd);
+			}
+		</script>
 	</body>
 </html>

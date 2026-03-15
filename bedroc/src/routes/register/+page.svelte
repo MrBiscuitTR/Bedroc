@@ -575,7 +575,7 @@
 		font-size: 18px; line-height: 1;
 		transition: background 0.12s, color 0.12s;
 	}
-	.corner-menu-btn:hover { background: var(--bg-hover); color: var(--text); }
+	@media (hover: hover) { .corner-menu-btn:hover { background: var(--bg-hover); color: var(--text); } }
 	.corner-menu-backdrop { position: fixed; inset: 0; z-index: 99; }
 	.corner-menu {
 		position: absolute; top: 38px; right: 0; min-width: 220px;
@@ -589,9 +589,9 @@
 		background: none; border: none; border-radius: var(--radius-sm);
 		cursor: pointer; text-align: left;
 	}
-	.corner-menu-item:hover { background: var(--bg-hover); color: var(--text); }
+	@media (hover: hover) { .corner-menu-item:hover { background: var(--bg-hover); color: var(--text); } }
 	.corner-menu-danger { color: var(--danger) !important; }
-	.corner-menu-danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+	@media (hover: hover) { .corner-menu-danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); } }
 	.corner-menu-confirm-text { font-size: 12px; color: var(--text-muted); padding: 8px 10px 4px; line-height: 1.5; }
 	.corner-menu-confirm-btns { display: flex; gap: 4px; padding: 4px; }
 </style>

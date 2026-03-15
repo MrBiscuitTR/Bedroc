@@ -73,8 +73,10 @@ a {
 	text-decoration: none;
 }
 
-a:hover {
-	text-decoration: underline;
+@media (hover: hover) {
+	a:hover {
+		text-decoration: underline;
+	}
 }
 
 /* ─── Form elements ───────────────────────────────────────────── */
@@ -129,8 +131,10 @@ button:disabled {
 	padding: 11px;
 }
 
-.btn-primary:hover:not(:disabled) {
-	background: var(--accent-dim);
+@media (hover: hover) {
+	.btn-primary:hover:not(:disabled) {
+		background: var(--accent-dim);
+	}
 }
 
 .btn-ghost {
@@ -139,9 +143,11 @@ button:disabled {
 	padding: 8px 12px;
 }
 
-.btn-ghost:hover:not(:disabled) {
-	background: var(--bg-hover);
-	color: var(--text);
+@media (hover: hover) {
+	.btn-ghost:hover:not(:disabled) {
+		background: var(--bg-hover);
+		color: var(--text);
+	}
 }
 
 .btn-danger {
@@ -150,8 +156,10 @@ button:disabled {
 	border: 1px solid var(--danger);
 }
 
-.btn-danger:hover:not(:disabled) {
-	background: color-mix(in srgb, var(--danger) 12%, transparent);
+@media (hover: hover) {
+	.btn-danger:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--danger) 12%, transparent);
+	}
 }
 
 .btn-icon {
@@ -165,9 +173,11 @@ button:disabled {
 	line-height: 1;
 }
 
-.btn-icon:hover:not(:disabled) {
-	background: var(--bg-hover);
-	color: var(--text);
+@media (hover: hover) {
+	.btn-icon:hover:not(:disabled) {
+		background: var(--bg-hover);
+		color: var(--text);
+	}
 }
 
 /* ─── Scrollbar ───────────────────────────────────────────────── */

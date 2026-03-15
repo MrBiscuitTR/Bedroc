@@ -212,10 +212,11 @@
 		const el = document.elementFromPoint(t.clientX, t.clientY) as Element | null;
 
 		// Detect "uncategorize" drop zone (All notes / Uncategorised buttons)
-		const uncategorizeEl = el?.closest('[data-drop-uncategorize]') as Element | null;
+		const uncategorizeEl = el?.closest('[data-drop-uncategorize]') as HTMLElement | null;
 		if (uncategorizeEl && dragKind === 'note') {
+			const which = uncategorizeEl.getAttribute('data-drop-uncategorize');
 			dropZone = 'uncategorize';
-			dropTarget = '__uncategorize__';
+			dropTarget = which === 'allnotes' ? '__allnotes__' : '__uncategorize__';
 			dropSide = 'into';
 			return;
 		}
@@ -587,9 +588,12 @@
 			<button
 				class="topic-item topic-item-all"
 				class:active={activeTopicId === 'all'}
-				class:drop-highlight={dropZone === 'uncategorize' && dragKind === 'note'}
-				data-drop-uncategorize="true"
+				class:drop-highlight={dropTarget === '__allnotes__' && dragKind === 'note'}
+				data-drop-uncategorize="allnotes"
 				onclick={() => selectTopic('all')}
+				ondragover={(e) => { e.preventDefault(); e.dataTransfer!.dropEffect = 'move'; if (dragKind === 'note') { dropZone = 'uncategorize'; dropTarget = '__allnotes__'; dropSide = 'into'; } }}
+				ondragleave={onDragLeave}
+				ondrop={(e) => { e.preventDefault(); if (dragKind === 'note' && dragId) { const note = notesMap.get(dragId); if (note) saveNote({ ...note, topicId: null }); } onDragEnd(); }}
 			>
 				<span class="topic-dot" style="background: var(--text-faint)"></span>
 				<span class="topic-name">All notes</span>
@@ -598,13 +602,13 @@
 
 			<button
 				class="topic-item"
-				class:drop-highlight={dropZone === 'uncategorize' && dragKind === 'note'}
-				data-drop-uncategorize="true"
+				class:drop-highlight={dropTarget === '__uncategorize__' && dragKind === 'note'}
+				data-drop-uncategorize="uncategorised"
 				class:active={activeTopicId === null}
-				class:drop-target-topic={dropZone === 'root' && dragKind === 'note'}
 				onclick={() => selectTopic(null)}
-				ondragover={(e) => onDragOver(e, 'uncategorised', 'root')}
-				ondrop={(e) => onDrop(e, null, 'root')}
+				ondragover={(e) => { e.preventDefault(); e.dataTransfer!.dropEffect = 'move'; if (dragKind === 'note') { dropZone = 'uncategorize'; dropTarget = '__uncategorize__'; dropSide = 'into'; } }}
+				ondragleave={onDragLeave}
+				ondrop={(e) => { e.preventDefault(); if (dragKind === 'note' && dragId) { const note = notesMap.get(dragId); if (note) saveNote({ ...note, topicId: null }); } onDragEnd(); }}
 			>
 				<span class="topic-dot topic-dot-uncategorised"></span>
 				<span class="topic-name">Uncategorised</span>
@@ -1205,7 +1209,7 @@
 		color: var(--text-muted);
 	}
 
-	.panel-split-btn:hover { color: var(--text); }
+	@media (hover: hover) { .panel-split-btn:hover { color: var(--text); } }
 
 	/* Settings icon link in panel footer — desktop only (mobile has bottom nav) */
 	.panel-settings-btn {
@@ -1222,7 +1226,7 @@
 	@media (min-width: 768px) {
 		.panel-settings-btn { display: flex; }
 	}
-	.panel-settings-btn:hover { background: var(--bg-hover); color: var(--text); text-decoration: none; }
+	@media (hover: hover) { .panel-settings-btn:hover { background: var(--bg-hover); color: var(--text); text-decoration: none; } }
 
 	.panel-user {
 		display: flex;
@@ -1316,7 +1320,7 @@
 	}
 
 	.folder-item:active { cursor: grabbing; }
-	.folder-item:hover { background: var(--bg-hover); border-radius: var(--radius-sm); }
+	@media (hover: hover) { .folder-item:hover { background: var(--bg-hover); border-radius: var(--radius-sm); } }
 
 	.folder-chevron {
 		background: none;
@@ -1353,7 +1357,7 @@
 		transition: opacity 0.1s ease;
 	}
 
-	.folder-item:hover .folder-actions { opacity: 1; }
+	@media (hover: hover) { .folder-item:hover .folder-actions { opacity: 1; } }
 
 	.folder-action-btn { padding: 4px; color: var(--text-faint); }
 
@@ -1412,7 +1416,7 @@
 
 	.topic-item:active { cursor: grabbing; }
 
-	.topic-item:hover { background: var(--bg-hover); color: var(--text); }
+	@media (hover: hover) { .topic-item:hover { background: var(--bg-hover); color: var(--text); } }
 
 	/* When long-press dragging on touch, disable selection/drag highlights to avoid accidental text selection */
 	.page.long-press-active .topic-item,
@@ -1467,7 +1471,7 @@
 		transition: opacity 0.1s ease;
 	}
 
-	.topic-row:hover .topic-edit-btn { opacity: 1; }
+	@media (hover: hover) { .topic-row:hover .topic-edit-btn { opacity: 1; } }
 
 	.dragging { opacity: 0.4; }
 
@@ -1538,7 +1542,7 @@
 		-webkit-tap-highlight-color: transparent;
 	}
 
-	.sort-btn:hover { color: var(--text-muted); }
+	@media (hover: hover) { .sort-btn:hover { color: var(--text-muted); } }
 
 	.sort-btn.active {
 		background: color-mix(in srgb, var(--accent) 15%, transparent);
@@ -1562,7 +1566,7 @@
 		-webkit-tap-highlight-color: transparent;
 	}
 
-	.new-btn:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+	@media (hover: hover) { .new-btn:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); } }
 
 	.sort-hint {
 		font-size: 11px;
@@ -1624,10 +1628,12 @@
 
 	.note-card:active { cursor: grabbing; }
 
-	.note-card:hover {
-		background: var(--bg-hover);
-		border-color: color-mix(in srgb, var(--border) 50%, var(--accent));
-		text-decoration: none;
+	@media (hover: hover) {
+		.note-card:hover {
+			background: var(--bg-hover);
+			border-color: color-mix(in srgb, var(--border) 50%, var(--accent));
+			text-decoration: none;
+		}
 	}
 
 	.note-card.dragging { opacity: 0.35; cursor: grabbing; }
@@ -1750,7 +1756,7 @@
 		flex-shrink: 0;
 	}
 
-	.color-swatch:hover { transform: scale(1.15); }
+	@media (hover: hover) { .color-swatch:hover { transform: scale(1.15); } }
 	.color-swatch.selected { border-color: var(--text); }
 
 	.color-picker-input {

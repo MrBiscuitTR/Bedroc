@@ -695,7 +695,7 @@
 		text-decoration: none;
 		transition: background 0.1s ease, color 0.1s ease;
 	}
-	.topic-item:hover { background: var(--bg-hover); color: var(--text); text-decoration: none; }
+	@media (hover: hover) { .topic-item:hover { background: var(--bg-hover); color: var(--text); text-decoration: none; } }
 	.topic-item.active { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
 	.topic-item-all { font-weight: 500; }
 
@@ -772,8 +772,8 @@
 		transition: background 0.12s, color 0.12s;
 		flex-shrink: 0; text-decoration: none;
 	}
-	.panel-settings-btn:hover,
 	.panel-settings-active { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); text-decoration: none; }
+	@media (hover: hover) { .panel-settings-btn:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); text-decoration: none; } }
 	.panel-srv-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 	.panel-srv-dot-checking { background: var(--text-faint); animation: srv-pulse 1s infinite; }
 	.panel-srv-dot-online   { background: var(--success); }
@@ -863,8 +863,10 @@
 		transition: background 0.12s ease;
 	}
 
-	.row-btn:hover {
-		background: var(--bg-hover);
+	@media (hover: hover) {
+		.row-btn:hover {
+			background: var(--bg-hover);
+		}
 	}
 
 	.row-info {
@@ -961,8 +963,10 @@
 		flex-shrink: 0;
 	}
 
-	.revoke-btn:hover {
-		background: color-mix(in srgb, var(--danger) 10%, transparent);
+	@media (hover: hover) {
+		.revoke-btn:hover {
+			background: color-mix(in srgb, var(--danger) 10%, transparent);
+		}
 	}
 
 	.danger-btn {

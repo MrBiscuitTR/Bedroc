@@ -485,9 +485,11 @@
 		white-space: nowrap;
 	}
 
-	.saved-server-btn:hover {
-		background: var(--bg-hover);
-		color: var(--text);
+	@media (hover: hover) {
+		.saved-server-btn:hover {
+			background: var(--bg-hover);
+			color: var(--text);
+		}
 	}
 
 	.remove-server {
@@ -495,8 +497,10 @@
 		color: var(--text-faint);
 	}
 
-	.remove-server:hover {
-		color: var(--danger);
+	@media (hover: hover) {
+		.remove-server:hover {
+			color: var(--danger);
+		}
 	}
 
 	.server-hint {
@@ -588,9 +592,11 @@
 		cursor: pointer;
 		transition: background 0.12s, color 0.12s;
 	}
-	.corner-menu-btn:hover {
-		background: var(--bg-hover);
-		color: var(--text);
+	@media (hover: hover) {
+		.corner-menu-btn:hover {
+			background: var(--bg-hover);
+			color: var(--text);
+		}
 	}
 
 	.corner-menu-backdrop {
@@ -626,9 +632,9 @@
 		cursor: pointer;
 		text-align: left;
 	}
-	.corner-menu-item:hover { background: var(--bg-hover); color: var(--text); }
+	@media (hover: hover) { .corner-menu-item:hover { background: var(--bg-hover); color: var(--text); } }
 	.corner-menu-danger { color: var(--danger) !important; }
-	.corner-menu-danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+	@media (hover: hover) { .corner-menu-danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); } }
 
 	.corner-menu-confirm-text {
 		font-size: 12px;

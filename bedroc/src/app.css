@@ -44,22 +44,20 @@
 	padding: 0;
 }
 
-html {
+html, body {
 	-webkit-text-size-adjust: 100%;
 	text-size-adjust: 100%;
 	height: 100%;
 	overflow: hidden;
+	overscroll-behavior: none;
 }
 
 body {
-	/* -webkit-fill-available on iOS fills the full physical screen
-	   including the home-indicator region in standalone PWA mode,
-	   where percentage and viewport-unit heights stop at the safe area. */
-	height: 100%;
-	height: -webkit-fill-available;
-	overflow: hidden;
-	overscroll-behavior: none;
-	background-color: var(--bg);
+	/* --bg-elevated so the iOS standalone PWA home-indicator region
+	   (which iOS paints with the body background, outside CSS layout
+	   reach) blends with the bottom nav / main-wrap. Content areas
+	   that need --bg set it on their own containers. */
+	background-color: var(--bg-elevated);
 	color: var(--text);
 	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue',
 		Arial, sans-serif;

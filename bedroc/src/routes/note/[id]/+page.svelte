@@ -332,10 +332,10 @@
 	// Link insert UI
 	let showLinkDialog = $state(false);
 	// Link tooltip (hover/cursor)
-	let linkTooltip = <{ href: string; x: number; y: number } | null>(null);
+	let linkTooltip = $state<{ href: string; x: number; y: number } | null>(null);
 	let _linkTooltipFadeTimer: ReturnType<typeof setTimeout> | null = null;
 	let _linkHoverTimer: ReturnType<typeof setTimeout> | null = null;
-	let _linkTooltipVisible = (false); // false = fading out
+	let _linkTooltipVisible = $state(false);
 	let linkUrl = $state('');
 	let linkBtnEl = $state<HTMLButtonElement | undefined>(undefined);
 	// Image insert UI
@@ -746,7 +746,9 @@
 
 	function showLinkTooltip(href: string, x: number, y: number) {
 		if (_linkTooltipFadeTimer) { clearTimeout(_linkTooltipFadeTimer); _linkTooltipFadeTimer = null; }
-		linkTooltip = { href, x, y };
+		// Clamp x so the tooltip doesn't overflow viewport edges
+		const cx = Math.max(160, Math.min(x, window.innerWidth - 160));
+		linkTooltip = { href, x: cx, y };
 		_linkTooltipVisible = true;
 	}
 
@@ -1087,7 +1089,7 @@
 						// Get DOM position for tooltip anchor
 						try {
 							const coords = ed.view.coordsAtPos(state.selection.from);
-							showLinkTooltip(href, coords.left, coords.top);
+							showLinkTooltip(href, coords.left, coords.bottom + 6);
 						} catch {}
 					} else {
 						if (linkTooltip) hideLinkTooltip();
@@ -1210,7 +1212,7 @@
 			const rect = a.getBoundingClientRect();
 			if (_linkHoverTimer) clearTimeout(_linkHoverTimer);
 			_linkHoverTimer = setTimeout(() => {
-				showLinkTooltip(href, rect.left + rect.width / 2, rect.top - 4);
+				showLinkTooltip(href, rect.left + rect.width / 2, rect.bottom + 6);
 				_linkHoverTimer = null;
 			}, 1000);
 		});
@@ -3345,8 +3347,7 @@
 	.link-tooltip {
 		position: fixed;
 		z-index: 500;
-		transform: translate(-50%, -100%);
-		margin-top: -6px;
+		transform: translateX(-50%);
 		background: var(--bg-elevated);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
@@ -3355,7 +3356,7 @@
 		pointer-events: auto;
 		opacity: 1;
 		transition: opacity 0.5s ease;
-		max-width: 320px;
+		max-width: min(320px, 90vw);
 	}
 	.link-tooltip.link-tooltip-fade {
 		opacity: 0;

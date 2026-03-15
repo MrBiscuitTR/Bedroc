@@ -20,7 +20,7 @@
 		<meta name="application-name" content="Bedroc" />
 
 		<!-- Theme color (browser chrome + Android task switcher) -->
-		<meta name="theme-color" content="#0f1117" />
+		<meta name="theme-color" content="#16181f" />
 
 		<!-- Prevent phone number detection -->
 		<meta name="format-detection" content="telephone=no" />
@@ -63,6 +63,17 @@
 				d.id = 'dbg-overlay';
 				d.style.cssText = 'position:fixed;top:0;left:0;right:0;background:rgba(0,0,0,0.85);color:#0f0;font:11px/1.4 monospace;padding:6px 10px;z-index:99999;pointer-events:none;white-space:pre';
 				document.body.appendChild(d);
+
+				// Red bar at the very bottom of the viewport to visually mark where innerHeight ends
+				var redBar = document.createElement('div');
+				redBar.style.cssText = 'position:fixed;bottom:0;left:0;right:0;height:4px;background:red;z-index:99999;pointer-events:none';
+				document.body.appendChild(redBar);
+
+				// Green bar at the bottom of the screen (using screen.height offset)
+				var greenBar = document.createElement('div');
+				greenBar.style.cssText = 'position:fixed;left:0;right:0;height:4px;background:lime;z-index:99998;pointer-events:none;bottom:0';
+				document.body.appendChild(greenBar);
+
 				function upd() {
 					var cs = getComputedStyle(document.documentElement);
 					var saiT = cs.getPropertyValue('--_sai-t') || '?';
@@ -74,15 +85,19 @@
 					var mwrapRect = mwrap ? mwrap.getBoundingClientRect() : null;
 					var shellRect = shell ? shell.getBoundingClientRect() : null;
 					var navCS = nav ? getComputedStyle(nav) : null;
+
+					// Also measure the visualViewport if available
+					var vv = window.visualViewport;
+					var vvInfo = vv ? ('vv: h=' + Math.round(vv.height) + ' offT=' + Math.round(vv.offsetTop) + ' pgT=' + Math.round(vv.pageTop)) : 'vv: N/A';
+
 					d.textContent =
 						'scr:' + screen.height + ' inner:' + window.innerHeight +
-						' html:' + document.documentElement.clientHeight +
-						' body:' + document.body.clientHeight +
+						' dpr:' + window.devicePixelRatio +
+						'\n' + vvInfo +
 						'\nshell: ' + (shellRect ? 'b=' + Math.round(shellRect.bottom) + ' h=' + Math.round(shellRect.height) : 'NONE') +
-						'\nmwrap: ' + (mwrapRect ? 'b=' + Math.round(mwrapRect.bottom) + ' h=' + Math.round(mwrapRect.height) : 'NONE') +
 						'\nnav: ' + (navRect ? 'b=' + Math.round(navRect.bottom) + ' h=' + Math.round(navRect.height) + ' pb=' + (navCS ? navCS.paddingBottom : '?') : 'NONE') +
 						'\nsai: t=' + saiT + ' b=' + saiB +
-						'\nGAP: ' + (navRect ? Math.round(window.innerHeight - navRect.bottom) : (shellRect ? Math.round(window.innerHeight - shellRect.bottom) : '?')) + 'px below last elem';
+						'\nRED bar = position:fixed;bottom:0';
 				}
 				var s = document.createElement('style');
 				s.textContent = ':root{--_sai-t:env(safe-area-inset-top,0px);--_sai-b:env(safe-area-inset-bottom,0px)}';

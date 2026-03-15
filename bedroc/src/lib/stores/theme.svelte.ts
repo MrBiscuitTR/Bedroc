@@ -9,8 +9,15 @@ const LS_THEME_KEY = 'bedroc_theme';
 
 function loadTheme(): 'dark' | 'light' {
   if (typeof localStorage === 'undefined') return 'dark';
+  // 1. Explicit user preference
   const stored = localStorage.getItem(LS_THEME_KEY);
   if (stored === 'light') return 'light';
+  if (stored === 'dark') return 'dark';
+  // 2. System preference (no stored value)
+  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: light)').matches) {
+    return 'light';
+  }
+  // 3. Default dark
   return 'dark';
 }
 

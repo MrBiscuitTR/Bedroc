@@ -147,20 +147,19 @@ export async function extractAttachments(
     }
 
     const existing = await getAttachment(hash);
-    let needsUpload = false;
 
     if (!existing) {
       const record: AttachmentRecord = { hash, userId, dataUri: storedUri, mimeType, createdAt: Date.now() };
       await saveAttachment(record);
-      needsUpload = true;
     } else if (dek && !existing.dataUri.startsWith('enc:')) {
       // Upgrade plaintext → encrypted
       await saveAttachment({ ...existing, dataUri: storedUri });
-      needsUpload = true;
     }
 
-    // Upload to server (idempotent — server ignores duplicate hashes)
-    if (dek && (needsUpload || !existing)) {
+    // Always attempt server upload — server uses ON CONFLICT DO NOTHING so
+    // re-uploading an already-stored hash is a no-op. This ensures the server
+    // gets the blob even if a previous fire-and-forget upload silently failed.
+    if (dek) {
       uploadToServer(hash, storedUri, mimeType, sizeBytes); // fire-and-forget
     }
   }
@@ -263,11 +262,13 @@ export async function uploadFileAttachment(
   const existing = await getAttachment(hash);
   if (!existing) {
     await saveAttachment({ hash, userId, dataUri: storedUri, mimeType, createdAt: Date.now() });
-    if (dek) uploadToServer(hash, storedUri, mimeType, sizeBytes); // fire-and-forget
   } else if (dek && !existing.dataUri.startsWith('enc:')) {
     await saveAttachment({ ...existing, dataUri: storedUri });
-    if (dek) uploadToServer(hash, storedUri, mimeType, sizeBytes);
   }
+
+  // Always attempt upload — server ignores duplicates (ON CONFLICT DO NOTHING).
+  // This covers the case where a previous fire-and-forget upload silently failed.
+  if (dek) uploadToServer(hash, storedUri, mimeType, sizeBytes);
 
   return hash;
 }

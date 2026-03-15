@@ -1,0 +1,111 @@
+# =============================================================================
+# docker-compose.public.yml — Bedroc public VPS stack
+# =============================================================================
+#
+# Use this on a public VPS (DigitalOcean, Hetzner, Vultr, etc.) where Caddy
+# (installed on the host) handles TLS termination and proxies to this stack.
+#
+# Differences from docker-compose.yml (WireGuard/private):
+#   - No nginx container — Caddy on the host handles TLS
+#   - No bedroc container — frontend is served from Vercel (bedroc.cagancalidag.com)
+#   - Server binds to 127.0.0.1:3000 (localhost only, Caddy proxies to it)
+#   - ENABLE_ACCESS_LOG=true — writes login/register events to logs/access.log
+#   - logs/ volume mounted to host for persistent, readable log files
+#
+# Usage:
+#   cp .env.example .env.public
+#   # Edit .env.public — fill in all secrets (see VPS-DEPLOY.md)
+#   docker compose -f docker-compose.public.yml --env-file .env.public up -d
+#
+# =============================================================================
+
+services:
+
+  # ── PostgreSQL 16 ───────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: bedroc
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_URL: ${DATABASE_URL}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    networks:
+      - internal
+    # NOT exposed on any host port — internal Docker network only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d bedroc"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── Redis 7 ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+    # NOT exposed on any host port — internal Docker network only
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Fastify backend ──────────────────────────────────────────────────────────
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0        # Bind inside the container; port mapping locks to 127.0.0.1 below
+      PORT: 3000
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      POSTGRES_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/bedroc
+      REDIS_URL: ${REDIS_URL}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
+      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-30d}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      ENABLE_ACCESS_LOG: "true"
+    ports:
+      # Exposed on localhost ONLY — Caddy on the host proxies to this.
+      # NEVER change to 0.0.0.0:3000 — that would expose the API directly.
+      - "127.0.0.1:3000:3000"
+    volumes:
+      # Mount the logs directory so access.log persists and is readable on the host.
+      # On the host: ./logs/access.log
+      - ./logs:/app/logs
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+# ── Networks ───────────────────────────────────────────────────────────────────
+networks:
+  internal:
+    driver: bridge
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:

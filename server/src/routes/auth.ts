@@ -36,6 +36,7 @@ import {
 } from '../db/queries/users.js';
 import { hashToken, verifyAuth } from '../middleware/auth.js';
 import { getRedis } from '../plugins/redis.js';
+import { writeAccessLog } from '../plugins/accessLog.js';
 
 // ---------------------------------------------------------------------------
 // SRP-6a constants  (RFC 3526 — 3072-bit MODP group)
@@ -366,6 +367,8 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
       maxAge:   refreshMaxAge,
     });
 
+    writeAccessLog('register', username, getClientIp(req));
+
     return reply.code(201).send({
       accessToken,
       expiresAt: accessExpiresAt.toISOString(),
@@ -450,6 +453,8 @@ export default async function authRoutes(fastify: FastifyInstance): Promise<void
     });
 
     if (!valid) return reply.code(401).send({ error: 'Authentication failed' });
+
+    writeAccessLog('login', username, getClientIp(req));
 
     // Issue JWTs
     const { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt, refreshMaxAge } = issueTokens(fastify, userId);

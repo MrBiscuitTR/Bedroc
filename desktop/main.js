@@ -165,6 +165,10 @@ function createWindow(port) {
       nodeIntegration: false,
       // Allow service worker on localhost
       allowRunningInsecureContent: false,
+      // Keep the renderer painting even while the window is hidden (show: false).
+      // Without this, Chromium may skip compositing frames before show() is called,
+      // leaving a stale/blank frame buffer after SPA navigations.
+      paintWhenInitiallyHidden: true,
     },
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     autoHideMenuBar: process.platform !== 'darwin',
@@ -218,11 +222,28 @@ function createWindow(port) {
     if (menu.items.length > 0) menu.popup({ window: mainWindow });
   });
 
-  // Fix: SvelteKit SPA navigation can leave the renderer blank in dev mode.
-  // did-navigate-in-page fires on every pushState/replaceState (client-side route change).
-  // invalidate() forces Chromium to composite and repaint the frame.
-  mainWindow.webContents.on('did-navigate-in-page', () => {
-    mainWindow.webContents.invalidate();
+  // Fix: After SvelteKit SPA navigation (login → main page), Electron's
+  // renderer can show a blank screen until the window is resized by 1px.
+  // Root cause: Chromium skips
+  // relayout when `body` is `position: fixed` and the top-level child
+  // swaps (auth-shell → app-shell).  A resize forces relayout.
+  // We watch for child-list changes on the body's first div (SvelteKit root)
+  // and force a relayout by toggling a CSS transform.
+  mainWindow.webContents.on('dom-ready', () => {
+    mainWindow.webContents.executeJavaScript(`
+      (function() {
+        const root = document.body.firstElementChild;
+        if (!root) return;
+        new MutationObserver(() => {
+          requestAnimationFrame(() => {
+            document.body.style.transform = 'translateZ(0)';
+            requestAnimationFrame(() => {
+              document.body.style.transform = '';
+            });
+          });
+        }).observe(root, { childList: true });
+      })();
+    `).catch(() => {});
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {

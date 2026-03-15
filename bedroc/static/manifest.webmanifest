@@ -5,8 +5,8 @@
   "start_url": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#16181f",
-  "theme_color": "#16181f",
+  "background_color": "#0f1117",
+  "theme_color": "#0f1117",
   "categories": ["productivity", "utilities"],
   "icons": [
     { "src": "/icons/appicon-16.png",   "sizes": "16x16",   "type": "image/png" },

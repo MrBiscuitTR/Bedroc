@@ -314,43 +314,96 @@
 
 	let showColorPicker = $state(false);
 	let customColor = $state('#e2e4ed');
+	let colorIsDefault = $state(true); // true = cursor is on plain (non-colored) text
 	let colorBtnEl = $state<HTMLButtonElement | undefined>(undefined);
 	let colorPanelEl = $state<HTMLDivElement | undefined>(undefined);
 	let fontsizeBtnEl = $state<HTMLButtonElement | undefined>(undefined);
 	let fontsizePanelEl = $state<HTMLDivElement | undefined>(undefined);
 
-	// ── Custom Image extension with per-image resize handles ────────
-	// Replaces the built-in Image extension. Stores 'width' and 'align'
-	// as explicit node attributes so they persist to HTML on save/reload.
-	// Each image gets its own NodeView with inline resize handles — this
-	// avoids the "overlay selects first image only" problem entirely.
+	// ── Custom Image extension ──────────────────────────────────────
+	// Block node with per-image resize + alignment (float-left, float-right, block).
+	//
+	// Alignment modes:
+	//   'none'  — block, full width of editor column, cursor before/after on own line
+	//   'left'  — float: left, text flows to the right of the image
+	//   'right' — float: right, text flows to the left of the image
+	//
+	// Each image's NodeView renders its own controls (no shared Svelte state),
+	// so multiple images all work independently.
 	const ResizableImage = Image.extend({
+		inline: false,
+		group: 'block',
+
 		addAttributes() {
 			return {
 				...this.parent?.(),
-				width:  { default: null, renderHTML: (a) => a.width  ? { width: a.width }  : {} },
-				align:  { default: 'none', renderHTML: (a) => a.align && a.align !== 'none' ? { style: `float:${a.align};margin:${a.align === 'left' ? '0 12px 4px 0' : '0 0 4px 12px'}` } : {} },
+				width: {
+					default: null,
+					renderHTML: (a) => a.width ? { width: a.width } : {},
+				},
+				align: {
+					default: 'none',
+					renderHTML: (a) => {
+						if (!a.align || a.align === 'none') return {};
+						const margin = a.align === 'left' ? '0 16px 8px 0' : '0 0 8px 16px';
+						return { style: `float:${a.align};margin:${margin};` };
+					},
+				},
 			};
 		},
+
 		addNodeView() {
 			return ({ node, getPos }) => {
-				const wrapper = document.createElement('span');
+				// Outer wrapper — always block-level.
+				// float is applied to the wrapper so text can flow around it.
+				const wrapper = document.createElement('div');
 				wrapper.className = 'img-node-wrapper';
 				wrapper.setAttribute('contenteditable', 'false');
-				wrapper.setAttribute('draggable', 'true');
 
 				const img = document.createElement('img');
 				img.src = node.attrs.src ?? '';
 				img.alt = node.attrs.alt ?? '';
 				img.title = node.attrs.title ?? '';
-				if (node.attrs.width) img.width = node.attrs.width;
-				if (node.attrs.align && node.attrs.align !== 'none') {
-					img.style.float = node.attrs.align;
-					img.style.margin = node.attrs.align === 'left' ? '0 12px 4px 0' : '0 0 4px 12px';
+
+				// Alignment toolbar (block / float-left / float-right)
+				const toolbar = document.createElement('div');
+				toolbar.className = 'img-align-toolbar';
+
+				function makeAlignBtn(alignVal: string, title: string, svgPath: string) {
+					const btn = document.createElement('button');
+					btn.className = 'img-align-btn';
+					btn.title = title;
+					btn.setAttribute('data-align', alignVal);
+					btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none">${svgPath}</svg>`;
+					btn.addEventListener('mousedown', (e) => {
+						e.preventDefault();
+						e.stopPropagation();
+						if (typeof getPos === 'function') {
+							const pos = getPos();
+							if (typeof pos === 'number') {
+								editor?.chain().focus().setNodeSelection(pos).updateAttributes('image', { align: alignVal }).run();
+								saved = false;
+								scheduleAutosave();
+							}
+						}
+					});
+					return btn;
 				}
 
-				// Resize handle (right edge)
-				const handle = document.createElement('span');
+				// Block (no float) — image on its own line
+				const btnBlock = makeAlignBtn('none', 'Block (own line)',
+					'<rect x="1" y="1" width="12" height="3" rx="1" fill="currentColor"/><rect x="1" y="6" width="8" height="2" rx="1" fill="currentColor" opacity=".5"/><rect x="1" y="10" width="6" height="2" rx="1" fill="currentColor" opacity=".5"/>');
+				// Float left — text flows to the right
+				const btnLeft = makeAlignBtn('left', 'Float left (text wraps right)',
+					'<rect x="1" y="1" width="6" height="6" rx="1" fill="currentColor"/><path d="M9 2h4M9 5h4M1 9h12M1 12h10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity=".6"/>');
+				// Float right — text flows to the left
+				const btnRight = makeAlignBtn('right', 'Float right (text wraps left)',
+					'<rect x="7" y="1" width="6" height="6" rx="1" fill="currentColor"/><path d="M1 2h4M1 5h4M1 9h12M1 12h10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity=".6"/>');
+
+				toolbar.append(btnBlock, btnLeft, btnRight);
+
+				// Resize handle (right edge drag)
+				const handle = document.createElement('div');
 				handle.className = 'img-resize-handle-inline';
 				handle.title = 'Drag to resize';
 
@@ -369,7 +422,7 @@
 				handle.addEventListener('pointermove', (e) => {
 					if (!dragging) return;
 					const newW = Math.max(40, Math.round(startW + e.clientX - startX));
-					img.width = newW;
+					img.style.width = newW + 'px';
 					wrapper.style.width = newW + 'px';
 				});
 				handle.addEventListener('pointerup', (e) => {
@@ -387,15 +440,47 @@
 				});
 				handle.addEventListener('pointercancel', () => { dragging = false; });
 
-				wrapper.append(img, handle);
+				wrapper.append(toolbar, img, handle);
+
+				function applyAttrs(attrs: Record<string, unknown>) {
+					img.src = (attrs.src as string) ?? '';
+					img.alt = (attrs.alt as string) ?? '';
+					// Width
+					if (attrs.width) {
+						img.style.width = attrs.width + 'px';
+						wrapper.style.width = attrs.width + 'px';
+					} else {
+						img.style.width = '';
+						wrapper.style.width = '';
+					}
+					// Float alignment on wrapper
+					const align = (attrs.align as string) || 'none';
+					if (align === 'left') {
+						wrapper.style.float = 'left';
+						wrapper.style.margin = '4px 16px 8px 0';
+						wrapper.style.display = '';
+					} else if (align === 'right') {
+						wrapper.style.float = 'right';
+						wrapper.style.margin = '4px 0 8px 16px';
+						wrapper.style.display = '';
+					} else {
+						wrapper.style.float = '';
+						wrapper.style.margin = '';
+						wrapper.style.display = 'block';
+					}
+					// Highlight active align button
+					toolbar.querySelectorAll<HTMLButtonElement>('.img-align-btn').forEach((b) => {
+						b.classList.toggle('active', b.getAttribute('data-align') === align);
+					});
+				}
+
+				applyAttrs(node.attrs);
 
 				return {
 					dom: wrapper,
 					update(updatedNode) {
 						if (updatedNode.type.name !== 'image') return false;
-						img.src = updatedNode.attrs.src ?? '';
-						if (updatedNode.attrs.width) { img.width = updatedNode.attrs.width; wrapper.style.width = updatedNode.attrs.width + 'px'; }
-						else { img.removeAttribute('width'); wrapper.style.width = ''; }
+						applyAttrs(updatedNode.attrs);
 						return true;
 					},
 				};
@@ -403,7 +488,7 @@
 		},
 	});
 
-	// updateImageResize is now a no-op — handled per-node in ResizableImage nodeView
+	// no-op — per-node NodeView handles everything
 	function updateImageResize() {}
 
 		// ── File attachment ──────────────────────────────────────────
@@ -614,9 +699,10 @@
 		const tsAttrs = editor.getAttributes('textStyle');
 		const rawFs: string = tsAttrs.fontSize ?? '';
 		currentFontSize = rawFs ? rawFs.replace('px', '') : '16';
-		// Color: stored in textStyle.color
+		// Color: stored in textStyle.color; reset to default hex when cursor is on plain text
 		const color: string = tsAttrs.color ?? '';
-		if (color) customColor = color;
+		customColor = color || '#e2e4ed';
+		colorIsDefault = !color;
 		// Table context
 		isInTable = editor.isActive('table');
 		// Image selection
@@ -646,6 +732,7 @@
 
 	function applyColor(color: string) {
 		customColor = color;
+		colorIsDefault = false;
 		// setColor is on the chain via the Color extension
 		if (editor) (editor.chain().focus() as any).setColor(color).run();
 		updateFormatState();
@@ -656,6 +743,8 @@
 
 	function unsetColor() {
 		if (editor) (editor.chain().focus() as any).unsetColor().run();
+		colorIsDefault = true;
+		customColor = '#e2e4ed';
 		updateFormatState();
 		saved = false;
 		scheduleAutosave();
@@ -761,7 +850,7 @@
 				TableRow,
 				TableHeader,
 				TableCell,
-				ResizableImage.configure({ inline: true, allowBase64: true }),
+				ResizableImage.configure({ allowBase64: true }),
 				FileAttachmentNode,
 				Placeholder.configure({ placeholder: 'Start writing…' }),
 			],
@@ -1215,7 +1304,7 @@
 					<path d="M2 11.5L6.5 2 11 11.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
 					<path d="M3.5 8.5h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
 				</svg>
-				<span class="color-preview" style="background: {customColor}"></span>
+				<span class="color-preview" class:color-preview-default={colorIsDefault} style={colorIsDefault ? '' : `background: ${customColor}`}></span>
 			</button>
 
 			{#if showColorPicker}
@@ -2315,6 +2404,24 @@
 		border: 1px solid rgba(255,255,255,0.2);
 		display: inline-block;
 	}
+	/* When cursor is on plain (uncolored) text — show a slash to indicate "no color" */
+	.color-preview.color-preview-default {
+		background: transparent;
+		border: 1px solid var(--text-muted);
+		position: relative;
+		overflow: hidden;
+	}
+	.color-preview.color-preview-default::after {
+		content: '';
+		position: absolute;
+		top: 50%;
+		left: -1px;
+		width: 14px;
+		height: 1px;
+		background: var(--text-muted);
+		transform: rotate(-45deg);
+		transform-origin: center;
+	}
 
 	.color-backdrop { position: fixed; inset: 0; z-index: 200; }
 
@@ -2487,16 +2594,51 @@
 		z-index: 20;
 	}
 
-	/* Images — inline NodeView wrapper */
+	/* Gapcursor — the blinking text cursor that appears before/after
+	   block nodes (tables, images) that can't hold a text cursor inside.
+	   Without this CSS the cursor is invisible even though it works. */
+	.body-editor-wrap :global(.ProseMirror-gapcursor) {
+		display: none;
+		pointer-events: none;
+		position: relative;
+	}
+	.body-editor-wrap :global(.ProseMirror-focused .ProseMirror-gapcursor) {
+		display: block;
+	}
+	.body-editor-wrap :global(.ProseMirror-gapcursor:after) {
+		content: '';
+		display: block;
+		position: absolute;
+		top: -2px;
+		width: 20px;
+		border-top: 2px solid var(--text);
+		animation: ProseMirror-cursor-blink 1.1s steps(2, start) infinite;
+	}
+	@keyframes ProseMirror-cursor-blink {
+		to { visibility: hidden; }
+	}
+	/* Left-side gap cursor (cursor before the node) */
+	.body-editor-wrap :global(.ProseMirror-gapcursor.left:after),
+	.body-editor-wrap :global(.-left .ProseMirror-gapcursor:after) {
+		left: -1px;
+	}
+	/* Right-side gap cursor (cursor after the node) */
+	.body-editor-wrap :global(.ProseMirror-gapcursor.right:after),
+	.body-editor-wrap :global(.-right .ProseMirror-gapcursor:after) {
+		right: -1px;
+	}
+
+	/* Images — block NodeView wrapper */
 	.body-editor-wrap :global(.img-node-wrapper) {
-		display: inline-block;
+		display: block;
 		position: relative;
 		max-width: 100%;
-		vertical-align: middle;
-		line-height: 0;
-		/* Allow cursor placement before/after inline image */
+		line-height: 0; /* prevents phantom gap below image */
 		user-select: none;
+		/* clearfix so floated images don't collapse the parent */
+		overflow: visible;
 	}
+	/* Selected state */
 	.body-editor-wrap :global(.img-node-wrapper.ProseMirror-selectednode) {
 		outline: 2px solid var(--accent);
 		border-radius: 3px;
@@ -2508,7 +2650,48 @@
 		display: block;
 		cursor: default;
 	}
-	/* Inline resize handle: right edge of each image */
+
+	/* Alignment toolbar — visible on hover or selection */
+	.body-editor-wrap :global(.img-align-toolbar) {
+		display: none;
+		position: absolute;
+		top: 6px;
+		left: 6px;
+		z-index: 10;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		padding: 3px 4px;
+		gap: 2px;
+		flex-direction: row;
+		box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+	}
+	.body-editor-wrap :global(.img-node-wrapper:hover .img-align-toolbar),
+	.body-editor-wrap :global(.img-node-wrapper.ProseMirror-selectednode .img-align-toolbar) {
+		display: flex;
+	}
+	.body-editor-wrap :global(.img-align-btn) {
+		background: none;
+		border: none;
+		border-radius: 4px;
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 3px 4px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transition: background 0.1s, color 0.1s;
+	}
+	.body-editor-wrap :global(.img-align-btn:hover) {
+		background: var(--bg-hover);
+		color: var(--text);
+	}
+	.body-editor-wrap :global(.img-align-btn.active) {
+		background: color-mix(in srgb, var(--accent) 18%, transparent);
+		color: var(--accent);
+	}
+
+	/* Resize handle: right edge */
 	.body-editor-wrap :global(.img-resize-handle-inline) {
 		position: absolute;
 		right: -4px;
@@ -2523,9 +2706,19 @@
 		transition: opacity 0.15s;
 		z-index: 5;
 	}
-	.body-editor-wrap :global(.ProseMirror-selectednode .img-resize-handle-inline),
+	.body-editor-wrap :global(.img-node-wrapper.ProseMirror-selectednode .img-resize-handle-inline),
 	.body-editor-wrap :global(.img-node-wrapper:hover .img-resize-handle-inline) {
 		opacity: 0.85;
+	}
+
+	/* Clear floats after each block so subsequent content is not pulled up */
+	.body-editor-wrap :global(.ProseMirror > * + *) {
+		clear: none; /* individual clearfix where needed */
+	}
+	/* Paragraph after a floated image should clear it when there's no more text to wrap */
+	.body-editor-wrap :global(.img-node-wrapper[style*="float"] + p:empty),
+	.body-editor-wrap :global(.img-node-wrapper[style*="float"] + br) {
+		clear: both;
 	}
 
 	/* Task list */

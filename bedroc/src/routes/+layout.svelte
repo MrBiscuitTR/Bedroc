@@ -541,7 +541,8 @@
 		background: var(--bg-elevated);
 		border-top: 1px solid var(--border);
 		/* Safe area for home indicator — zero on non-notch devices */
-		padding-bottom: env(safe-area-inset-bottom, 0px);
+		/* padding-bottom: env(safe-area-inset-bottom, 0px); */
+		padding-bottom: max(env(safe-area-inset-bottom, 0px), 12px);
 		flex-shrink: 0;
 	}
 

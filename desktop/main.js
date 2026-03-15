@@ -217,6 +217,13 @@ function createWindow(port) {
     if (menu.items.length > 0) menu.popup({ window: mainWindow });
   });
 
+  // Fix: SvelteKit SPA navigation can leave the renderer blank in dev mode.
+  // did-navigate-in-page fires on every pushState/replaceState (client-side route change).
+  // invalidate() forces Chromium to composite and repaint the frame.
+  mainWindow.webContents.on('did-navigate-in-page', () => {
+    mainWindow.webContents.invalidate();
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (!url.startsWith(`http://localhost:${port}`)) {
       shell.openExternal(url);

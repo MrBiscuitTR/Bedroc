@@ -635,7 +635,7 @@
 		background: var(--bg-elevated);
 	}
 
-	@media (min-width: 900px) {
+	@media (min-width: 768px) {
 		.topics-panel { display: flex; }
 	}
 

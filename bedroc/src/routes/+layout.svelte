@@ -334,32 +334,23 @@
 <style>
 	/* ── Auth shell ───────────────────────────────────── */
 	.auth-shell {
-		min-height: 100dvh;
+		/* Use 100% of the body (position:fixed covers full physical screen with
+		   viewport-fit:cover), not 100dvh (which excludes safe area insets). */
+		min-height: 100%;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		/* Top safe area ensures the login form isn't under the status bar.
-		   In Safari browser: safe-area-inset-top = 0, so 24px fallback applies.
-		   In PWA standalone: safe-area-inset-top = status bar height (~59px). */
 		padding-top: max(env(safe-area-inset-top, 0px), 24px);
-		padding-bottom: 24px;
+		padding-bottom: max(env(safe-area-inset-bottom, 0px), 24px);
 		padding-left: 16px;
 		padding-right: 16px;
 		background: var(--bg);
 	}
 
-	/* Standalone PWA: ensure top safe area is always applied */
-	@media (display-mode: standalone) {
-		.auth-shell {
-			padding-top: max(env(safe-area-inset-top, 44px), 44px);
-			padding-bottom: env(safe-area-inset-bottom, 24px);
-		}
-	}
-
 	/* ── App shell ────────────────────────────────────── */
 	.app-shell {
 		display: flex;
-		height: 100dvh;
+		height: 100%;
 		overflow: hidden;
 		overscroll-behavior: none;
 	}

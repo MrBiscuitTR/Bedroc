@@ -16,7 +16,8 @@
 	} from '$lib/stores/notes.svelte';
 
 	// ── TipTap editor ─────────────────────────────────────────────
-	import { Editor, Node, mergeAttributes } from '@tiptap/core';
+	import { Editor, Node, mergeAttributes, Extension } from '@tiptap/core';
+	import { Plugin } from '@tiptap/pm/state';
 	import StarterKit from '@tiptap/starter-kit';
 	import { Underline } from '@tiptap/extension-underline';
 	import { TextStyle, Color, FontSize } from '@tiptap/extension-text-style';
@@ -32,7 +33,7 @@
 	import { TaskList } from '@tiptap/extension-task-list';
 	import { TaskItem } from '@tiptap/extension-task-item';
 	import { CharacterCount } from '@tiptap/extension-character-count';
-	import { uploadFileAttachment, loadFileAttachment as loadAttachment } from '$lib/attachments.js';
+	import { uploadFileAttachment, loadFileAttachment as loadAttachment, retryAttachmentUpload } from '$lib/attachments.js';
 
 	// ── Note identity ─────────────────────────────────────────────
 	let noteId  = $derived(page.params.id);
@@ -130,9 +131,18 @@
 		if (_saving) return;
 		_saving = true;
 
-		// Snapshot body + cursor position BEFORE any await
+		// Re-attempt server upload for any fileAttachment nodes whose previous
+		// fire-and-forget upload may have silently failed (server is idempotent).
+		if (editor && auth.dek && auth.userId) {
+			editor.state.doc.descendants((node) => {
+				if (node.type.name === 'fileAttachment' && node.attrs.hash) {
+					retryAttachmentUpload(node.attrs.hash, auth.userId!, auth.dek!);
+				}
+			});
+		}
+
+		// Snapshot body BEFORE any await
 		const body = editor?.getHTML() ?? '';
-		const savedPos = editor ? editor.state.selection.anchor : null;
 
 		try {
 			if (isNew) {
@@ -148,18 +158,7 @@
 				saved = true;
 				_lastSaveAt = Date.now();
 			}
-
-			// Restore cursor — TipTap preserves editor state across setContent calls
-			// but after a save-induced re-render we re-focus and restore position.
-			if (savedPos !== null && editor && editor.isFocused) {
-				requestAnimationFrame(() => {
-					if (savedPos !== null && editor) {
-						const docSize = editor.state.doc.content.size;
-						const pos = Math.min(savedPos, docSize - 1);
-						editor.commands.setTextSelection(pos);
-					}
-				});
-			}
+			// saveNote does not call setContent, so TipTap's selection is undisturbed.
 		} finally {
 			_saving = false;
 		}
@@ -339,15 +338,19 @@
 				...this.parent?.(),
 				width: {
 					default: null,
-					renderHTML: (a) => a.width ? { width: a.width } : {},
+					renderHTML: (a) => a.width ? { 'data-width': String(a.width) } : {},
+					parseHTML: (el) => {
+						const v = el.getAttribute('data-width');
+						return v ? Number(v) : null;
+					},
 				},
 				align: {
 					default: 'none',
 					renderHTML: (a) => {
 						if (!a.align || a.align === 'none') return {};
-						const margin = a.align === 'left' ? '0 16px 8px 0' : '0 0 8px 16px';
-						return { style: `float:${a.align};margin:${margin};` };
+						return { 'data-align': a.align };
 					},
+					parseHTML: (el) => el.getAttribute('data-align') || 'none',
 				},
 			};
 		},
@@ -477,13 +480,20 @@
 					});
 				}
 
+				let _lastAttrs = { ...node.attrs };
 				applyAttrs(node.attrs);
 
 				return {
 					dom: wrapper,
 					update(updatedNode) {
 						if (updatedNode.type.name !== 'image') return false;
-						applyAttrs(updatedNode.attrs);
+						const a = updatedNode.attrs;
+						// Only mutate the DOM when attrs actually changed — avoids browser
+						// selection resets caused by DOM mutations during typing transactions.
+						if (a.src !== _lastAttrs.src || a.width !== _lastAttrs.width || a.align !== _lastAttrs.align || a.alt !== _lastAttrs.alt) {
+							_lastAttrs = { ...a };
+							applyAttrs(a);
+						}
 						return true;
 					},
 				};
@@ -827,6 +837,29 @@
 		if (showImageDialog) positionPanel(imageBtnEl as any, document.getElementById('image-dialog') as any);
 	});
 
+	// ── Ensure paragraph padding around block nodes ───────────────
+	// Tables and images are block-level; ProseMirror can't place a cursor
+	// "beside" them since they span the full editor width. This extension
+	// ensures the document always has a trailing paragraph so the user can
+	// click below a table/image and place the cursor there.
+	const TrailingParagraph = Extension.create({
+		name: 'trailingParagraph',
+		addProseMirrorPlugins() {
+			return [
+				new Plugin({
+					appendTransaction(_, __, newState) {
+						const { doc, tr, schema } = newState;
+						const lastNode = doc.lastChild;
+						if (lastNode && lastNode.type.name !== 'paragraph') {
+							return tr.insert(doc.content.size, schema.nodes.paragraph.create());
+						}
+						return null;
+					},
+				}),
+			];
+		},
+	});
+
 	// ── TipTap editor init ────────────────────────────────────────
 	onMount(() => {
 		editor = new Editor({
@@ -856,6 +889,7 @@
 				ResizableImage.configure({ allowBase64: true }),
 				FileAttachmentNode,
 				Placeholder.configure({ placeholder: 'Start writing…' }),
+				TrailingParagraph,
 			],
 			content: '',
 			onUpdate: ({ editor: e }) => {

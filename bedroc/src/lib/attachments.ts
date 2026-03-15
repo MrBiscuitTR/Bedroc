@@ -274,6 +274,21 @@ export async function uploadFileAttachment(
 }
 
 /**
+ * Re-attempt server upload for a known attachment hash (fire-and-forget).
+ * Called on every save to ensure file attachments reach the server even if the
+ * original upload silently failed. Server ignores duplicates (ON CONFLICT DO NOTHING).
+ */
+export function retryAttachmentUpload(hash: string, _userId: string, _dek: CryptoKey): void {
+  getAttachment(hash).then((rec) => {
+    if (rec && rec.dataUri) {
+      const comma = rec.dataUri.indexOf(',');
+      const approxBytes = comma >= 0 ? Math.round((rec.dataUri.length - comma - 1) * 0.75) : 0;
+      uploadToServer(hash, rec.dataUri, rec.mimeType, approxBytes);
+    }
+  });
+}
+
+/**
  * Load and decrypt a file attachment by hash.
  * Tries IndexedDB first, then server.
  */

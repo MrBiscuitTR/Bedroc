@@ -1,0 +1,76 @@
+name: Build Desktop Apps
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install frontend deps and build
+        working-directory: bedroc
+        run: npm install && npm run build
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm install
+
+      - name: Build Linux (AppImage + deb + rpm)
+        working-directory: desktop
+        run: npm run dist:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-builds
+          path: |
+            desktop/dist/*.AppImage
+            desktop/dist/*.deb
+            desktop/dist/*.rpm
+          if-no-files-found: warn
+
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install frontend deps and build
+        working-directory: bedroc
+        run: npm install && npm run build
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm install
+
+      - name: Build macOS (dmg + zip)
+        working-directory: desktop
+        run: npm run dist:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Code signing is skipped (no Apple Developer cert in CI).
+          # Users will need to right-click → Open the first time on macOS.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-builds
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.zip
+          if-no-files-found: warn

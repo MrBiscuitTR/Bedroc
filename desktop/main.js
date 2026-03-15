@@ -88,7 +88,8 @@ function serveFile(res, filePath, isSpaFallback = false) {
         "font-src 'self' data:; " +
         "connect-src *; " +
         "worker-src 'self' blob:; " +
-        "frame-src 'none';";
+        "object-src blob:; " +
+        "frame-src blob:;";
     }
     res.writeHead(200, headers);
     res.end(data);

@@ -568,7 +568,7 @@
 	   the button to the corner of the auth area on all screen sizes. */
 	.corner-menu-wrap {
 		position: fixed;
-		top: 12px;
+		top: max(env(safe-area-inset-top, 0px), 12px);
 		right: 12px;
 		z-index: 100;
 	}

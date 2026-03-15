@@ -99,6 +99,7 @@
 	// Plain let - NOT $state. TipTap editor is imperative, not reactive Svelte state.
 	// bind:this on a plain let works fine in Svelte 5 for DOM element refs.
 	let editorEl: HTMLDivElement;
+	let scrollAreaEl: HTMLDivElement;
 	let editor: Editor | null = null;
 	// Used to trigger $effects that need the editor to be ready
 	let editorReady = $state(false);
@@ -336,6 +337,9 @@
 	let _linkTooltipFadeTimer: ReturnType<typeof setTimeout> | null = null;
 	let _linkHoverTimer: ReturnType<typeof setTimeout> | null = null;
 	let _linkTooltipVisible = $state(false);
+	let _mouseOnTooltip = false;
+	let _mouseOnLink = false;
+	let _cursorInLink = false;
 	let linkUrl = $state('');
 	let linkBtnEl = $state<HTMLButtonElement | undefined>(undefined);
 	// Image insert UI
@@ -744,20 +748,50 @@
 		previewContent = null;
 	}
 
-	function showLinkTooltip(href: string, x: number, y: number) {
+	function showLinkTooltip(href: string, viewportX: number, viewportY: number) {
 		if (_linkTooltipFadeTimer) { clearTimeout(_linkTooltipFadeTimer); _linkTooltipFadeTimer = null; }
-		// Clamp x so the tooltip doesn't overflow viewport edges
-		const cx = Math.max(160, Math.min(x, window.innerWidth - 160));
+		// Convert viewport coords to scroll-area-relative coords
+		const sa = scrollAreaEl;
+		if (!sa) return;
+		const rect = sa.getBoundingClientRect();
+		const x = viewportX - rect.left + sa.scrollLeft;
+		const y = viewportY - rect.top + sa.scrollTop;
+		// Clamp x so tooltip doesn't overflow
+		const saWidth = sa.clientWidth;
+		const cx = Math.max(160, Math.min(x, saWidth - 160));
 		linkTooltip = { href, x: cx, y };
 		_linkTooltipVisible = true;
 	}
 
-	function hideLinkTooltip() {
-		_linkTooltipVisible = false;
+	function scheduleLinkTooltipHide() {
+		if (_linkTooltipFadeTimer) return; // already scheduled
 		_linkTooltipFadeTimer = setTimeout(() => {
-			linkTooltip = null;
-			_linkTooltipFadeTimer = null;
-		}, 500);
+			// Don't hide if mouse is on tooltip or link, or cursor is inside a link
+			if (_mouseOnTooltip || _mouseOnLink || _cursorInLink) {
+				_linkTooltipFadeTimer = null;
+				return;
+			}
+			_linkTooltipVisible = false;
+			_linkTooltipFadeTimer = setTimeout(() => {
+				linkTooltip = null;
+				_linkTooltipFadeTimer = null;
+			}, 150);
+		}, 300);
+	}
+
+	function hideLinkTooltip() {
+		_cursorInLink = false;
+		_mouseOnLink = false;
+		scheduleLinkTooltipHide();
+	}
+
+	function hideLinkTooltipImmediate() {
+		if (_linkTooltipFadeTimer) { clearTimeout(_linkTooltipFadeTimer); _linkTooltipFadeTimer = null; }
+		_linkTooltipVisible = false;
+		linkTooltip = null;
+		_cursorInLink = false;
+		_mouseOnLink = false;
+		_mouseOnTooltip = false;
 	}
 
 	// Browser detection for PDF rendering
@@ -1085,17 +1119,19 @@
 				if (state.selection.empty && state.selection.$from.parent.type.name !== "codeBlock") {
 					const mark = state.doc.resolve(state.selection.from).marks().find((m: any) => m.type.name === "link");
 					if (mark) {
+						_cursorInLink = true;
 						const href: string = mark.attrs.href ?? "";
-						// Get DOM position for tooltip anchor
 						try {
 							const coords = ed.view.coordsAtPos(state.selection.from);
 							showLinkTooltip(href, coords.left, coords.bottom + 6);
 						} catch {}
 					} else {
-						if (linkTooltip) hideLinkTooltip();
+						_cursorInLink = false;
+						if (linkTooltip && !_mouseOnTooltip && !_mouseOnLink) scheduleLinkTooltipHide();
 					}
 				} else {
-					if (linkTooltip) hideLinkTooltip();
+					_cursorInLink = false;
+					if (linkTooltip && !_mouseOnTooltip && !_mouseOnLink) scheduleLinkTooltipHide();
 				}
 			},
 			onFocus: () => {
@@ -1207,20 +1243,29 @@
 		}
 		editorEl.addEventListener("mouseover", (e: MouseEvent) => {
 			const a = getAnchorTarget(e.target);
-			if (!a) { if (_linkHoverTimer) { clearTimeout(_linkHoverTimer); _linkHoverTimer = null; } return; }
+			if (!a) {
+				if (_linkHoverTimer) { clearTimeout(_linkHoverTimer); _linkHoverTimer = null; }
+				_mouseOnLink = false;
+				// Don't hide immediately — cursor might be moving to tooltip or still in link via selection
+				if (linkTooltip && !_cursorInLink && !_mouseOnTooltip) scheduleLinkTooltipHide();
+				return;
+			}
+			_mouseOnLink = true;
+			if (_linkTooltipFadeTimer) { clearTimeout(_linkTooltipFadeTimer); _linkTooltipFadeTimer = null; }
 			const href = a.href;
-			const rect = a.getBoundingClientRect();
 			if (_linkHoverTimer) clearTimeout(_linkHoverTimer);
 			_linkHoverTimer = setTimeout(() => {
+				const rect = a.getBoundingClientRect();
 				showLinkTooltip(href, rect.left + rect.width / 2, rect.bottom + 6);
 				_linkHoverTimer = null;
-			}, 1000);
+			}, 600);
 		});
 		editorEl.addEventListener("mouseout", (e: MouseEvent) => {
 			const a = getAnchorTarget(e.relatedTarget);
 			if (!a) {
+				_mouseOnLink = false;
 				if (_linkHoverTimer) { clearTimeout(_linkHoverTimer); _linkHoverTimer = null; }
-				if (linkTooltip) hideLinkTooltip();
+				if (linkTooltip && !_cursorInLink && !_mouseOnTooltip) scheduleLinkTooltipHide();
 			}
 		});
 		// Signal to $effects that the editor is ready
@@ -2016,7 +2061,7 @@
 	</div>
 
 	<!-- ── TipTap editor + image resize overlay wrapper ───────── -->
-	<div class="editor-scroll-area">
+	<div class="editor-scroll-area" bind:this={scrollAreaEl}>
 		<div class="body-editor-wrap" bind:this={editorEl}></div>
 
 		<!-- Link hover tooltip -->
@@ -2026,15 +2071,15 @@
 				class="link-tooltip"
 				class:link-tooltip-fade={!_linkTooltipVisible}
 				style="left: {linkTooltip.x}px; top: {linkTooltip.y}px"
-				onmouseenter={() => { if (_linkTooltipFadeTimer) { clearTimeout(_linkTooltipFadeTimer); _linkTooltipFadeTimer = null; } _linkTooltipVisible = true; }}
-				onmouseleave={hideLinkTooltip}
+				onmouseenter={() => { _mouseOnTooltip = true; if (_linkTooltipFadeTimer) { clearTimeout(_linkTooltipFadeTimer); _linkTooltipFadeTimer = null; } _linkTooltipVisible = true; }}
+				onmouseleave={() => { _mouseOnTooltip = false; if (!_cursorInLink && !_mouseOnLink) scheduleLinkTooltipHide(); }}
 			>
 				<a
 					href={linkTooltip.href}
 					target="_blank"
 					rel="noopener noreferrer"
 					class="link-tooltip-anchor"
-					onclick={() => { hideLinkTooltip(); }}
+					onclick={() => { hideLinkTooltipImmediate(); }}
 				>
 					<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M1 9L9 1M9 1H4M9 1v5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
 					<span class="link-tooltip-text">{linkTooltip.href}</span>
@@ -3368,7 +3413,7 @@
 
 	/* Link hover tooltip */
 	.link-tooltip {
-		position: fixed;
+		position: absolute;
 		z-index: 500;
 		transform: translateX(-50%);
 		background: var(--bg-elevated);

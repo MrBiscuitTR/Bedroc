@@ -44,13 +44,14 @@ Then restart: `docker compose up -d`
 
 All note content is **encrypted client-side** before it ever reaches the server. The server only stores ciphertext — you cannot read note content from the database.
 
-| Table      | Contents |
-|------------|----------|
-| `users`    | user ID, username, SRP verifier (password-derived, not the password), encrypted DEK, DEK salt |
-| `notes`    | note ID, user ID, encrypted title + body (AES-256-GCM), topic ID, timestamps, version |
-| `topics`   | topic ID, user ID, name, color, folder ID, sort order |
-| `folders`  | folder ID, user ID, name, parent folder ID, sort order |
+| Table | Contents |
+| --- | --- |
+| `users` | user ID, username, SRP verifier (password-derived, not the password), encrypted DEK, DEK salt |
+| `notes` | note ID, user ID, encrypted title + body (AES-256-GCM), topic ID, timestamps, version, `is_deleted` flag |
+| `topics` | topic ID, user ID, name, color, folder ID, sort order |
+| `folders` | folder ID, user ID, name, parent folder ID, sort order |
 | `sessions` | refresh token hash, user ID, expiry, device info |
+| `attachments` | SHA-256 hash + user ID (PK), encrypted blob (AES-256-GCM), mime type, size — keyed by content hash, stored once per user |
 
 ### Viewing all users
 
@@ -75,6 +76,47 @@ FROM users u
 LEFT JOIN notes n ON n.user_id = u.id AND n.is_deleted = false
 GROUP BY u.id, u.username
 ORDER BY note_count DESC;
+```
+
+---
+
+## Cleaning Up Deleted Notes and Orphaned Attachments
+
+Notes are **soft-deleted** — the row stays in the database with `is_deleted = true` so other devices can sync the deletion. Attachments are stored separately and are not automatically cleaned up when a note is deleted (the server stores ciphertext and cannot parse attachment references from note bodies).
+
+Run this periodically to hard-delete old soft-deleted notes and their now-orphaned attachments:
+
+```sql
+-- Step 1: Hard-delete soft-deleted notes older than 30 days.
+-- Adjust the interval as you prefer (7 days, 30 days, etc.).
+DELETE FROM notes
+WHERE is_deleted = true
+  AND server_updated_at < now() - interval '30 days';
+
+-- Step 2: Delete attachment records that are no longer referenced by any note.
+-- Since note bodies are encrypted (ciphertext), the server cannot parse attachment
+-- hashes from them. This query deletes all attachments for users who have zero
+-- remaining notes — safe only if Step 1 has already run.
+--
+-- For users who still have notes, orphaned attachments cannot be identified
+-- server-side. They will linger until account deletion (which cascades via
+-- ON DELETE CASCADE on user_id). This is acceptable — they are encrypted and
+-- only readable by the account owner.
+DELETE FROM attachments
+WHERE user_id NOT IN (SELECT DISTINCT user_id FROM notes WHERE is_deleted = false);
+```
+
+> **Safe to run anytime.** Hard-deleting a soft-deleted note cannot cause data loss — clients have already processed the deletion via the sync delta. The 30-day window gives ample time for offline devices to sync before the row is gone.
+
+### Automating cleanup (optional)
+
+Add a daily cron job on the host:
+
+```bash
+# /etc/cron.d/bedroc-cleanup — runs at 3am every day
+0 3 * * * root docker exec bedroc-postgres-1 psql -U postgres -d bedroc -c \
+  "DELETE FROM notes WHERE is_deleted = true AND server_updated_at < now() - interval '30 days'; \
+   DELETE FROM attachments WHERE user_id NOT IN (SELECT DISTINCT user_id FROM notes WHERE is_deleted = false);"
 ```
 
 ---

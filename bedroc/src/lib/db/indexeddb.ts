@@ -393,6 +393,11 @@ export async function getAttachmentsByUser(userId: string): Promise<AttachmentRe
   return idbRequest<AttachmentRecord[]>(idx.getAll(userId));
 }
 
+export async function deleteAttachmentFromIdb(hash: string): Promise<void> {
+  const store = await getStore('attachments', 'readwrite');
+  await idbRequest(store.delete(hash));
+}
+
 // ---------------------------------------------------------------------------
 // Full wipe (logout / account delete)
 // ---------------------------------------------------------------------------

@@ -26,14 +26,33 @@
 	import { Superscript } from '@tiptap/extension-superscript';
 	import { Link } from '@tiptap/extension-link';
 	import { Table, TableRow, TableHeader, TableCell } from '@tiptap/extension-table';
+	import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
+	import { createLowlight, all } from 'lowlight';
 	import { Image } from '@tiptap/extension-image';
 	import { Placeholder } from '@tiptap/extension-placeholder';
-	import { Highlight } from '@tiptap/extension-highlight';
+	import { Highlight as HighlightBase } from '@tiptap/extension-highlight';
 	import { Typography } from '@tiptap/extension-typography';
 	import { TaskList } from '@tiptap/extension-task-list';
 	import { TaskItem } from '@tiptap/extension-task-item';
 	import { CharacterCount } from '@tiptap/extension-character-count';
 	import { uploadFileAttachment, loadFileAttachment as loadAttachment, retryAttachmentUpload } from '$lib/attachments.js';
+
+	// Highlight extension patched to emit --hl-color CSS custom property
+	// instead of inline background-color so our CSS can apply color-mix transparency.
+	const Highlight = HighlightBase.extend({
+		addAttributes() {
+			return {
+				color: {
+					default: null,
+					parseHTML: (el) => el.style.getPropertyValue('--hl-color') || el.getAttribute('data-color') || null,
+					renderHTML: (attrs) => {
+						if (!attrs.color) return {};
+						return { style: '--hl-color: ' + attrs.color, 'data-color': attrs.color };
+					},
+				},
+			};
+		},
+	});
 
 	// ── Note identity ─────────────────────────────────────────────
 	let noteId  = $derived(page.params.id);
@@ -77,14 +96,14 @@
 	// Notes are stored decrypted in IndexedDB; encryption happens at sync time.
 	let title = $state('');
 	let saved = $state(true);
-	// Plain let — NOT $state. TipTap editor is imperative, not reactive Svelte state.
+	// Plain let - NOT $state. TipTap editor is imperative, not reactive Svelte state.
 	// bind:this on a plain let works fine in Svelte 5 for DOM element refs.
 	let editorEl: HTMLDivElement;
 	let editor: Editor | null = null;
 	// Used to trigger $effects that need the editor to be ready
 	let editorReady = $state(false);
 
-	// Track the last noteId we loaded content for — prevents overwriting user edits
+	// Track the last noteId we loaded content for - prevents overwriting user edits
 	// after saveNote triggers a notesMap update while the user is still on the same note.
 	let loadedNoteId: string | null = null;
 
@@ -102,6 +121,17 @@
 				_bodyText = editor.getText() ?? '';
 				loadedNoteId = noteId ?? null;
 				saved = true;
+				// On note load, retry any file attachment uploads that may have failed.
+				// Runs after setContent so the doc has the fileAttachment nodes.
+				if (auth.dek && auth.userId) {
+					requestAnimationFrame(() => {
+						editor?.state.doc.descendants((node) => {
+							if (node.type.name === 'fileAttachment' && node.attrs.hash) {
+								retryAttachmentUpload(node.attrs.hash, auth.userId!, auth.dek!);
+							}
+						});
+					});
+				}
 			}
 		} else if (isNew && isNewNoteId) {
 			title = '';
@@ -208,7 +238,7 @@
 	}
 
 	let incomingUpdate = $state<ExternalUpdate | null>(null);
-	// Timestamp of the last time we saved — suppress external updates that arrive
+	// Timestamp of the last time we saved - suppress external updates that arrive
 	// within a short window after our own save to avoid false conflict banners.
 	let _lastSaveAt = 0;
 
@@ -319,13 +349,69 @@
 	let fontsizeBtnEl = $state<HTMLButtonElement | undefined>(undefined);
 	let fontsizePanelEl = $state<HTMLDivElement | undefined>(undefined);
 
+	// ── Highlight color ────────────────────────────────────────────
+	const LS_HIGHLIGHT_COLOR = 'bedroc_highlight_color';
+	const highlightPresets = [
+		{ label: 'Yellow', color: '#faf594' },
+		{ label: 'Green',  color: '#74f481' },
+		{ label: 'Blue',   color: '#a5f3fc' },
+		{ label: 'Red',    color: '#f98181' },
+		{ label: 'Purple', color: '#b197fc' },
+		{ label: 'Orange', color: '#fbbc88' },
+	];
+	function loadHighlightColor(): string {
+		if (typeof localStorage === 'undefined') return '#faf594';
+		return localStorage.getItem(LS_HIGHLIGHT_COLOR) ?? '#faf594';
+	}
+	let currentHighlightColor = $state(loadHighlightColor());
+	// Separate opacity (0-100) for the custom color picker. Stored alongside color in localStorage.
+	const LS_HIGHLIGHT_OPACITY = 'bedroc_highlight_opacity';
+	let customHlOpacity = $state(parseInt(typeof localStorage !== 'undefined' ? (localStorage.getItem(LS_HIGHLIGHT_OPACITY) ?? '100') : '100', 10));
+	let showHighlightPicker = $state(false);
+	let highlightBtnEl = $state<HTMLButtonElement | undefined>(undefined);
+	let highlightPanelEl = $state<HTMLDivElement | undefined>(undefined);
+
+	function customHlColor(): string {
+		// Extract the base hex from currentHighlightColor (strip any existing alpha)
+		const hex = currentHighlightColor.replace(/#([0-9a-f]{6})[0-9a-f]{0,2}/i, '#$1');
+		if (customHlOpacity >= 100) return hex;
+		const alpha = Math.round(customHlOpacity / 100 * 255).toString(16).padStart(2, '0');
+		return hex + alpha;
+	}
+
+	function applyHighlight() {
+		if (!editor) return;
+		if (editor.isActive('highlight')) {
+			editor.chain().focus().unsetHighlight().run();
+		} else {
+			(editor.chain().focus() as any).setHighlight({ color: currentHighlightColor }).run();
+		}
+		saved = false;
+		scheduleAutosave();
+	}
+	function setHighlightColor(color: string) {
+		currentHighlightColor = color;
+		localStorage.setItem(LS_HIGHLIGHT_COLOR, color);
+		showHighlightPicker = false;
+		// Apply the new color immediately if highlight is active
+		if (editor?.isActive('highlight')) {
+			(editor.chain().focus() as any).setHighlight({ color }).run();
+			saved = false;
+			scheduleAutosave();
+		}
+	}
+
+	$effect(() => {
+		if (showHighlightPicker) positionPanel(highlightBtnEl, highlightPanelEl);
+	});
+
 	// ── Custom Image extension ──────────────────────────────────────
 	// Block node with per-image resize + alignment (float-left, float-right, block).
 	//
 	// Alignment modes:
-	//   'none'  — block, full width of editor column, cursor before/after on own line
-	//   'left'  — float: left, text flows to the right of the image
-	//   'right' — float: right, text flows to the left of the image
+	//   'none'  - block, full width of editor column, cursor before/after on own line
+	//   'left'  - float: left, text flows to the right of the image
+	//   'right' - float: right, text flows to the left of the image
 	//
 	// Each image's NodeView renders its own controls (no shared Svelte state),
 	// so multiple images all work independently.
@@ -357,7 +443,7 @@
 
 		addNodeView() {
 			return ({ node, getPos }) => {
-				// Outer wrapper — always block-level.
+				// Outer wrapper - always block-level.
 				// float is applied to the wrapper so text can flow around it.
 				const wrapper = document.createElement('div');
 				wrapper.className = 'img-node-wrapper';
@@ -393,13 +479,13 @@
 					return btn;
 				}
 
-				// Block (no float) — image on its own line
+				// Block (no float) - image on its own line
 				const btnBlock = makeAlignBtn('none', 'Block (own line)',
 					'<rect x="1" y="1" width="12" height="3" rx="1" fill="currentColor"/><rect x="1" y="6" width="8" height="2" rx="1" fill="currentColor" opacity=".5"/><rect x="1" y="10" width="6" height="2" rx="1" fill="currentColor" opacity=".5"/>');
-				// Float left — text flows to the right
+				// Float left - text flows to the right
 				const btnLeft = makeAlignBtn('left', 'Float left (text wraps right)',
 					'<rect x="1" y="1" width="6" height="6" rx="1" fill="currentColor"/><path d="M9 2h4M9 5h4M1 9h12M1 12h10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity=".6"/>');
-				// Float right — text flows to the left
+				// Float right - text flows to the left
 				const btnRight = makeAlignBtn('right', 'Float right (text wraps left)',
 					'<rect x="7" y="1" width="6" height="6" rx="1" fill="currentColor"/><path d="M1 2h4M1 5h4M1 9h12M1 12h10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity=".6"/>');
 
@@ -448,7 +534,7 @@
 				function applyAttrs(attrs: Record<string, unknown>) {
 					img.src = (attrs.src as string) ?? '';
 					img.alt = (attrs.alt as string) ?? '';
-					// Width — apply to img only; wrapper always fits to image
+					// Width - apply to img only; wrapper always fits to image
 					if (attrs.width) {
 						img.style.width = attrs.width + 'px';
 						img.style.height = 'auto';
@@ -488,7 +574,7 @@
 					update(updatedNode) {
 						if (updatedNode.type.name !== 'image') return false;
 						const a = updatedNode.attrs;
-						// Only mutate the DOM when attrs actually changed — avoids browser
+						// Only mutate the DOM when attrs actually changed - avoids browser
 						// selection resets caused by DOM mutations during typing transactions.
 						if (a.src !== _lastAttrs.src || a.width !== _lastAttrs.width || a.align !== _lastAttrs.align || a.alt !== _lastAttrs.alt) {
 							_lastAttrs = { ...a };
@@ -501,7 +587,7 @@
 		},
 	});
 
-	// no-op — per-node NodeView handles everything
+	// no-op - per-node NodeView handles everything
 	function updateImageResize() {}
 
 		// ── File attachment ──────────────────────────────────────────
@@ -865,7 +951,66 @@
 		editor = new Editor({
 			element: editorEl,
 			extensions: [
-				StarterKit.configure({ link: false, underline: false }),
+				StarterKit.configure({ link: false, underline: false, codeBlock: false }),
+				CodeBlockLowlight.extend({
+					addNodeView() {
+						return ({ node, getPos, editor: e }) => {
+							const wrap = document.createElement('div');
+							wrap.className = 'code-block-wrap';
+
+							const header = document.createElement('div');
+							header.className = 'code-block-header';
+
+							const langSelect = document.createElement('select');
+							langSelect.className = 'code-block-lang';
+							const langs = ['plaintext','javascript','typescript','python','rust','go','java','c','cpp','csharp','php','ruby','swift','kotlin','bash','shell','sql','html','css','json','yaml','toml','markdown','diff','xml'];
+							for (const l of langs) {
+								const opt = document.createElement('option');
+								opt.value = l;
+								opt.textContent = l;
+								if (l === (node.attrs.language || 'plaintext')) opt.selected = true;
+								langSelect.appendChild(opt);
+							}
+							// Use getPos + setNodeMarkup to reliably persist the language attribute.
+							// updateAttributes() from the factory param can go stale after node moves;
+							// getPos() always returns the current position.
+							langSelect.addEventListener('change', () => {
+								if (typeof getPos !== 'function') return;
+								const pos = getPos();
+								if (typeof pos !== 'number') return;
+								const lang = langSelect.value;
+								e.chain().focus()
+									.setNodeSelection(pos)
+									.updateAttributes('codeBlock', { language: lang })
+									.run();
+								saved = false;
+								scheduleAutosave();
+							});
+
+							header.appendChild(langSelect);
+
+							const pre = document.createElement('pre');
+							const code = document.createElement('code');
+							pre.appendChild(code);
+
+							wrap.append(header, pre);
+
+							return {
+								dom: wrap,
+								contentDOM: code,
+								update(updatedNode) {
+									if (updatedNode.type.name !== 'codeBlock') return false;
+									// Only sync the select when the attribute actually changed
+									// (not on every keystroke). Prevents the select from jumping
+									// back to 'plaintext' while the user is typing inside the block.
+									const lang = updatedNode.attrs.language || 'plaintext';
+									if (langSelect.value !== lang) langSelect.value = lang;
+									return true;
+								},
+							};
+						};
+					},
+				}).configure({ lowlight: createLowlight(all), defaultLanguage: 'plaintext' }),
 				Underline,
 				TextStyle,
 				Color,
@@ -900,6 +1045,12 @@
 				scheduleAutosave();
 				updateFormatState();
 			},
+			onTransaction: () => {
+				// updateFormatState on every transaction so toolbar reflects mark
+				// toggles (bold/italic/underline etc.) immediately - onUpdate alone
+				// can lag by one frame when Svelte batches state writes.
+				updateFormatState();
+			},
 			onSelectionUpdate: () => {
 				updateFormatState();
 			},
@@ -909,6 +1060,94 @@
 			editorProps: {
 				attributes: {
 					spellcheck: 'true',
+				},
+				handleKeyDown(view, event) {
+					const isTab = event.key === 'Tab' && !event.altKey && !event.ctrlKey && !event.metaKey;
+					if (!isTab) return false;
+
+					const { state } = view;
+					const selFrom = state.selection.$from;
+					const inList = selFrom.node(selFrom.depth - 1)?.type.name === 'listItem'
+						|| selFrom.node(selFrom.depth - 1)?.type.name === 'taskItem';
+					const inTable = state.selection.$from.node(1)?.type.name === 'table';
+					if (inList || inTable) return false; // let TipTap handle it
+
+					event.preventDefault();
+					const { from, to } = state.selection;
+
+					if (from === to) {
+						// Cursor only: Tab inserts 4 spaces; Shift+Tab removes up to 4 leading spaces
+						if (event.shiftKey) {
+							// nodeStart = start of this textblock's content
+							const nodeStart = state.doc.resolve(from).start();
+							// For code blocks, lines are separated by newlines - find the last newline before cursor
+							const textToFrom = state.doc.textBetween(nodeStart, from);
+							const lastNl = textToFrom.lastIndexOf('\n');
+							const lineStart = lastNl >= 0 ? nodeStart + lastNl + 1 : nodeStart;
+							const lineText = state.doc.textBetween(lineStart, from);
+							const spaces = lineText.match(/^([  ]{1,4})/)?.[1] ?? '';
+							if (spaces.length > 0) {
+								view.dispatch(state.tr.delete(lineStart, lineStart + spaces.length));
+							}
+						} else {
+							// Use regular spaces in code blocks (pre/code preserves them);
+							// use NBSP elsewhere so indentation survives HTML round-trip.
+							const inCode = state.selection.$from.node(-1)?.type.name === 'codeBlock'
+								|| state.selection.$from.parent.type.name === 'codeBlock';
+							view.dispatch(state.tr.insertText(inCode ? '    ' : '    '));
+						}
+						return true;
+					}
+
+					// Range selection: indent/deindent every line overlapping [from, to].
+					// Code blocks use newlines within a single textblock node;
+					// regular paragraphs are separate textblock nodes.
+					// Both cases are handled by scanning each textblock for newline-separated lines.
+					type LineInfo = { start: number; leadingSpaces: number };
+					const lines: LineInfo[] = [];
+					state.doc.nodesBetween(from, to, (node, pos) => {
+						if (!node.isTextblock) return;
+						const nodeContentStart = pos + 1;
+						const nodeContentEnd   = pos + node.nodeSize - 1;
+						// Get full text of this node to find newline positions
+						const nodeText = state.doc.textBetween(nodeContentStart, nodeContentEnd, '\n');
+						// Walk each newline-separated line within the node
+						let lineOffset = 0;
+						for (const lineText of nodeText.split('\n')) {
+							const lineDocStart = nodeContentStart + lineOffset;
+							// Only process lines that overlap the selection [from, to]
+							const lineDocEnd = lineDocStart + lineText.length;
+							if (lineDocEnd >= from && lineDocStart <= to) {
+								const sample = lineText.slice(0, 4);
+								const spaces = sample.match(/^([  ]{1,4})/)?.[1]?.length ?? 0;
+								lines.push({ start: lineDocStart, leadingSpaces: spaces });
+							}
+							lineOffset += lineText.length + 1; // +1 for the newline char
+						}
+					});
+
+					let tr = state.tr;
+					let offset = 0;
+					// Indentation: regular spaces in code blocks (pre preserves them),
+					// non-breaking spaces elsewhere so they survive HTML round-trip.
+					const isCodeBlock = state.selection.$from.node(-1)?.type.name === 'codeBlock'
+						|| state.selection.$from.parent.type.name === 'codeBlock';
+					const INDENT = isCodeBlock ? '    ' : '    ';
+					for (const line of lines) {
+						const pos = line.start + offset;
+						if (event.shiftKey) {
+							if (line.leadingSpaces > 0) {
+								tr.delete(pos, pos + line.leadingSpaces);
+								offset -= line.leadingSpaces;
+							}
+						} else {
+							tr.insertText(INDENT, pos);
+							offset += 4;
+						}
+					}
+
+					view.dispatch(tr);
+					return true;
 				},
 			},
 		});
@@ -991,8 +1230,15 @@
 	}
 </script>
 
+<svelte:window onkeydown={(e) => {
+	if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+		e.preventDefault();
+		handleSave();
+	}
+}} />
+
 <svelte:head>
-	<title>{title || 'New note'} — Bedroc</title>
+	<title>{title || 'New note'} - Bedroc</title>
 </svelte:head>
 
 <div class="editor-page">
@@ -1066,7 +1312,7 @@
 				<rect x="3" y="6" width="8" height="7" rx="1.2" stroke="currentColor" stroke-width="1.3"/>
 				<path d="M5 6V4.5a2 2 0 114 0V6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
 			</svg>
-			<span>Vault locked — viewing only. Unlock in the main window to edit and sync.</span>
+			<span>Vault locked - viewing only. Unlock in the main window to edit and sync.</span>
 		</div>
 	{/if}
 
@@ -1280,7 +1526,7 @@
 
 		<div class="fmt-divider"></div>
 
-		<!-- Font size — custom pixel picker -->
+		<!-- Font size - custom pixel picker -->
 		<div class="fontsize-wrap">
 			<button
 				class="fmt-btn fontsize-btn"
@@ -1346,12 +1592,23 @@
 
 			{#if showColorPicker}
 				<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-				<div class="color-backdrop" onclick={() => (showColorPicker = false)}></div>
-				<div class="color-panel" bind:this={colorPanelEl} role="dialog" aria-label="Text color picker">
+				<div class="color-backdrop" onpointerdown={() => (showColorPicker = false)}></div>
+				<div class="color-panel" bind:this={colorPanelEl} role="dialog" aria-label="Text color picker"
+					onpointerdown={(e) => e.stopPropagation()}
+					onclick={(e) => e.stopPropagation()}>
 					<div class="color-swatches">
+						<!-- Default: removes color mark, text uses theme default -->
+						<button
+							class="color-swatch color-swatch-default"
+							class:active={colorIsDefault}
+							onmousedown={(e) => { e.preventDefault(); unsetColor(); showColorPicker = false; }}
+							aria-label="Default (remove color)"
+							title="Default (remove color)"
+						></button>
 						{#each textColors as c}
 							<button
 								class="color-swatch"
+								class:active={!colorIsDefault && customColor === c}
 								style="background: {c}"
 								onmousedown={(e) => { e.preventDefault(); applyColor(c); }}
 								aria-label="Color {c}"
@@ -1369,15 +1626,75 @@
 
 		<div class="fmt-divider"></div>
 
-		<!-- Highlight -->
-		<button class="fmt-btn" class:active={isHighlight}
-			onmousedown={(e) => { e.preventDefault(); editor?.chain().focus().toggleHighlight().run(); }} title="Highlight" aria-label="Highlight">
-			<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-				<path d="M2 10l3-3 4-4 2 2-4 4-3 3-2-2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
-				<path d="M8 4l2 2" stroke="currentColor" stroke-width="1.3"/>
-				<path d="M2 12h3" stroke={isHighlight ? 'var(--accent)' : 'currentColor'} stroke-width="2" stroke-linecap="round"/>
-			</svg>
-		</button>
+		<!-- Highlight (split button: icon toggles, arrow opens color picker) -->
+		<div class="highlight-wrap">
+			<button class="fmt-btn highlight-apply-btn" class:active={isHighlight}
+				onmousedown={(e) => { e.preventDefault(); applyHighlight(); }}
+				title="Highlight (current color)" aria-label="Highlight">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+					<path d="M2 10l3-3 4-4 2 2-4 4-3 3-2-2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+					<path d="M8 4l2 2" stroke="currentColor" stroke-width="1.3"/>
+					<path d="M2 12h3" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:{currentHighlightColor}"/>
+				</svg>
+			</button>
+			<button class="fmt-btn highlight-arrow-btn"
+				bind:this={highlightBtnEl}
+				onmousedown={(e) => { e.preventDefault(); showHighlightPicker = !showHighlightPicker; showColorPicker = false; showFontSizePicker = false; }}
+				title="Highlight color" aria-label="Highlight color" aria-expanded={showHighlightPicker}>
+				<svg width="7" height="5" viewBox="0 0 7 5" fill="none" aria-hidden="true">
+					<path d="M1 1l2.5 3L6 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</button>
+			{#if showHighlightPicker}
+				<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+				<div class="color-backdrop" onpointerdown={() => (showHighlightPicker = false)}></div>
+				<div class="color-panel highlight-color-panel" bind:this={highlightPanelEl} role="dialog" aria-label="Highlight color"
+					onpointerdown={(e) => e.stopPropagation()}
+					onclick={(e) => e.stopPropagation()}>
+					<div class="color-swatches">
+						{#each highlightPresets as p}
+							<button
+								class="color-swatch"
+								class:active={currentHighlightColor === p.color}
+								style="background: {p.color}"
+								onmousedown={(e) => { e.preventDefault(); setHighlightColor(p.color); }}
+								aria-label={p.label}
+								title={p.label}
+							></button>
+						{/each}
+					</div>
+					<div class="color-custom-row">
+						<input type="color" class="color-input-native" value={currentHighlightColor.slice(0, 7)}
+							onchange={(e) => {
+								const base = (e.currentTarget as HTMLInputElement).value;
+								const alpha = customHlOpacity >= 100 ? '' : Math.round(customHlOpacity / 100 * 255).toString(16).padStart(2, '0');
+								setHighlightColor(base + alpha);
+							}} title="Custom highlight color" />
+						<span class="color-custom-label">Custom</span>
+					</div>
+					<div class="color-custom-row">
+						<input type="range" class="color-opacity-slider" min="10" max="100" step="5"
+							value={customHlOpacity}
+							oninput={(e) => {
+								customHlOpacity = parseInt((e.currentTarget as HTMLInputElement).value, 10);
+								localStorage.setItem(LS_HIGHLIGHT_OPACITY, String(customHlOpacity));
+								const base = currentHighlightColor.slice(0, 7);
+								const alpha = customHlOpacity >= 100 ? '' : Math.round(customHlOpacity / 100 * 255).toString(16).padStart(2, '0');
+								const color = base + alpha;
+								// Inline update - do NOT call setHighlightColor() here, it closes the picker
+								currentHighlightColor = color;
+								localStorage.setItem(LS_HIGHLIGHT_COLOR, color);
+								if (editor?.isActive('highlight')) {
+									(editor.chain().focus() as any).setHighlight({ color }).run();
+									saved = false;
+									scheduleAutosave();
+								}
+							}} title="Opacity" />
+						<span class="color-custom-label">{customHlOpacity}%</span>
+					</div>
+				</div>
+			{/if}
+		</div>
 
 		<!-- Inline code -->
 		<button class="fmt-btn" class:active={isCode}
@@ -1836,7 +2153,7 @@
 		<div class="modal-field">
 			<label class="field-label" for="folder-parent-e">Parent folder</label>
 			<select id="folder-parent-e" bind:value={folderParentId}>
-				<option value={null}>— Root (no parent) —</option>
+				<option value={null}>- Root (no parent) -</option>
 				{#each allFolders.filter(f => f.id !== editingFolder?.id) as f (f.id)}
 					<option value={f.id}>{f.name}</option>
 				{/each}
@@ -1891,7 +2208,7 @@
 						class="preview-pdf"
 						aria-label={previewState.fileName}
 					>
-						<p class="preview-error">PDF cannot display inline — use the Download button.</p>
+						<p class="preview-error">PDF cannot display inline - use the Download button.</p>
 					</object>
 				{:else}
 					<!-- previewContent is already decoded text (set in openPreview) -->
@@ -2326,7 +2643,7 @@
 	/* ── Formatting toolbar ───────────────────────────────────── */
 	/* The toolbar is a flex-shrink:0 sibling above .editor-scroll-area.
 	   Since .editor-page has overflow:hidden, the only thing that scrolls
-	   is .editor-scroll-area — so the format-bar is always visible. */
+	   is .editor-scroll-area - so the format-bar is always visible. */
 	.format-bar {
 		display: flex;
 		align-items: center;
@@ -2443,7 +2760,7 @@
 		border: 1px solid rgba(255,255,255,0.2);
 		display: inline-block;
 	}
-	/* When cursor is on plain (uncolored) text — show a slash to indicate "no color" */
+	/* When cursor is on plain (uncolored) text - show a slash to indicate "no color" */
 	.color-preview.color-preview-default {
 		background: transparent;
 		border: 1px solid var(--text-muted);
@@ -2494,6 +2811,44 @@
 	}
 
 	.color-swatch:hover { transform: scale(1.2); border-color: var(--text); }
+	.color-swatch.active { border-color: var(--text); }
+
+	/* Default color swatch - slash-circle to indicate "no color" */
+	.color-swatch-default {
+		background: transparent;
+		border-color: var(--border);
+		position: relative;
+		overflow: hidden;
+	}
+	.color-swatch-default::after {
+		content: '';
+		display: block;
+		position: absolute;
+		inset: 0;
+		background: linear-gradient(
+			to top right,
+			transparent calc(50% - 1px),
+			var(--danger) calc(50% - 1px),
+			var(--danger) calc(50% + 1px),
+			transparent calc(50% + 1px)
+		);
+	}
+	.color-swatch-default.active { border-color: var(--text); }
+
+	/* ── Highlight split button ───────────────────────────────────── */
+	.highlight-wrap {
+		position: relative;
+		display: flex;
+		align-items: center;
+	}
+	.highlight-apply-btn { border-radius: var(--radius-sm) 0 0 var(--radius-sm) !important; }
+	.highlight-arrow-btn {
+		padding: 0 4px !important;
+		min-width: 16px !important;
+		border-radius: 0 var(--radius-sm) var(--radius-sm) 0 !important;
+		border-left: 1px solid var(--border) !important;
+	}
+	.highlight-color-panel { min-width: 180px; }
 
 	.color-custom-row { display: flex; align-items: center; gap: 8px; }
 
@@ -2509,7 +2864,15 @@
 		flex-shrink: 0;
 	}
 
-	.color-custom-label { font-size: 11px; color: var(--text-muted); }
+	.color-custom-label { font-size: 11px; color: var(--text-muted); min-width: 28px; text-align: right; }
+
+	.color-opacity-slider {
+		flex: 1;
+		min-width: 0;
+		height: 4px;
+		cursor: pointer;
+		accent-color: var(--accent);
+	}
 
 	/* ── Editor scroll area + body wrap ─────────────────────── */
 	/* .editor-scroll-area is the only element that scrolls.
@@ -2569,12 +2932,36 @@
 		font-size: 0.88em;
 		color: var(--text);
 	}
-	.body-editor-wrap :global(.ProseMirror pre) {
-		background: var(--bg-hover);
+	.body-editor-wrap :global(.code-block-wrap) {
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
-		padding: 12px 14px;
 		margin: 0.5em 0;
+		overflow: hidden;
+	}
+	.body-editor-wrap :global(.code-block-header) {
+		display: flex;
+		align-items: center;
+		padding: 4px 8px;
+		background: color-mix(in srgb, var(--border) 60%, var(--bg-elevated));
+		border-bottom: 1px solid var(--border);
+	}
+	.body-editor-wrap :global(.code-block-lang) {
+		font-size: 11px;
+		color: var(--text-muted);
+		background: transparent;
+		border: none;
+		outline: none;
+		cursor: pointer;
+		padding: 0 2px;
+	}
+	.body-editor-wrap :global(.code-block-lang option) {
+		background: var(--bg-elevated);
+		color: var(--text);
+	}
+	.body-editor-wrap :global(.ProseMirror pre) {
+		background: var(--bg-hover);
+		padding: 12px 14px;
+		margin: 0;
 		overflow-x: auto;
 	}
 	.body-editor-wrap :global(.ProseMirror pre code) {
@@ -2582,6 +2969,37 @@
 		padding: 0;
 		font-size: 0.875em;
 	}
+
+	/* ── Syntax highlighting (lowlight / highlight.js token classes) ── */
+	.body-editor-wrap :global(.hljs-comment),
+	.body-editor-wrap :global(.hljs-quote)           { color: #6b7280; font-style: italic; }
+	.body-editor-wrap :global(.hljs-keyword),
+	.body-editor-wrap :global(.hljs-selector-tag),
+	.body-editor-wrap :global(.hljs-built_in)        { color: #c084fc; }
+	.body-editor-wrap :global(.hljs-string),
+	.body-editor-wrap :global(.hljs-attr),
+	.body-editor-wrap :global(.hljs-addition)        { color: #4ade80; }
+	.body-editor-wrap :global(.hljs-number),
+	.body-editor-wrap :global(.hljs-literal)         { color: #fb923c; }
+	.body-editor-wrap :global(.hljs-function),
+	.body-editor-wrap :global(.hljs-title)           { color: #60a5fa; }
+	.body-editor-wrap :global(.hljs-variable),
+	.body-editor-wrap :global(.hljs-name)            { color: #f87171; }
+	.body-editor-wrap :global(.hljs-type),
+	.body-editor-wrap :global(.hljs-class .hljs-title) { color: #facc15; }
+	.body-editor-wrap :global(.hljs-meta),
+	.body-editor-wrap :global(.hljs-doctag)          { color: #38bdf8; }
+	.body-editor-wrap :global(.hljs-deletion)        { color: #f87171; }
+	.body-editor-wrap :global(.hljs-section)         { color: #6b8afd; font-weight: 600; }
+	.body-editor-wrap :global(.hljs-subst)           { color: var(--text); }
+	/* light mode adjustments */
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-comment) { color: #9ca3af; }
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-keyword) { color: #7c3aed; }
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-string)  { color: #16a34a; }
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-number)  { color: #ea580c; }
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-function){ color: #2563eb; }
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-variable){ color: #dc2626; }
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-type)    { color: #b45309; }
 	.body-editor-wrap :global(.ProseMirror blockquote) {
 		border-left: 3px solid var(--border);
 		padding-left: 1em;
@@ -2598,7 +3016,7 @@
 	.body-editor-wrap :global(.ProseMirror table) {
 		border-collapse: collapse;
 		margin: 0.75em 0;
-		/* Do NOT set table-layout:fixed or overflow:hidden —
+		/* Do NOT set table-layout:fixed or overflow:hidden -
 		   those break ProseMirror's column-resize-handle drag */
 	}
 	.body-editor-wrap :global(.ProseMirror td),
@@ -2633,7 +3051,7 @@
 		z-index: 20;
 	}
 
-	/* Gapcursor — blinking cursor that appears before/after block nodes
+	/* Gapcursor - blinking cursor that appears before/after block nodes
 	   (tables, images) that cannot hold a real text cursor inside.
 	   This is the canonical ProseMirror gapcursor CSS. Without it the
 	   cursor exists but is invisible, so clicks appear to do nothing. */
@@ -2661,12 +3079,12 @@
 	   :after positions left=0 by default (cursor before the block).
 	   When cursor is after the block, ProseMirror puts the gapcursor after it. */
 
-	/* Images — NodeView wrapper always shrink-wraps the image.
+	/* Images - NodeView wrapper always shrink-wraps the image.
 	   JS sets display/float per alignment mode; CSS just ensures
 	   the wrapper never grows beyond the image itself. */
 	.body-editor-wrap :global(.img-node-wrapper) {
 		position: relative;
-		width: fit-content;   /* shrink-wrap — never stretches full editor width */
+		width: fit-content;   /* shrink-wrap - never stretches full editor width */
 		max-width: 100%;
 		line-height: 0;       /* prevents phantom gap below image */
 		user-select: none;
@@ -2684,7 +3102,7 @@
 		cursor: default;
 	}
 
-	/* Alignment toolbar — visible on hover or selection */
+	/* Alignment toolbar - visible on hover or selection */
 	.body-editor-wrap :global(.img-align-toolbar) {
 		display: none;
 		position: absolute;
@@ -2786,9 +3204,13 @@
 	}
 
 	/* Highlight */
+	/* The Highlight extension now stores color as --hl-color CSS custom property.
+	   color-mix makes any highlight semi-transparent so text remains readable
+	   on both dark and light themes. The 45% blend gives a visible tint without
+	   washing out text. */
 	.body-editor-wrap :global(.ProseMirror mark) {
-		background: color-mix(in srgb, #f5e642 60%, transparent);
-		color: inherit;
+		background: color-mix(in srgb, var(--hl-color, #faf594) 45%, transparent);
+		color: var(--text);
 		border-radius: 2px;
 		padding: 0 1px;
 	}
@@ -3015,7 +3437,7 @@
 
 	.topic-separator { height: 1px; background: var(--border); margin: 6px 4px; }
 
-	/* Topic row — highlight border when note belongs to this topic */
+	/* Topic row - highlight border when note belongs to this topic */
 	.topic-row {
 		display: flex;
 		align-items: center;

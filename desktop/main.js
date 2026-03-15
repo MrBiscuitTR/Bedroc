@@ -14,7 +14,7 @@
  * to __dirname in development (npm start from desktop/).
  */
 
-const { app, BrowserWindow, shell, Menu, nativeImage, session } = require('electron');
+const { app, BrowserWindow, shell, Menu, MenuItem, nativeImage, session, clipboard, ipcMain } = require('electron');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
@@ -75,6 +75,20 @@ function serveFile(res, filePath, isSpaFallback = false) {
       headers['Cache-Control'] = 'public, max-age=31536000, immutable';
     } else {
       headers['Cache-Control'] = 'no-cache';
+    }
+    // CSP for HTML responses — satisfies Electron's security warning.
+    // connect-src * is required: users point the app at arbitrary backend URLs.
+    // unsafe-inline is required for SvelteKit's hydration scripts and Svelte styles.
+    if (ext === '.html') {
+      headers['Content-Security-Policy'] =
+        "default-src 'self'; " +
+        "script-src 'self' 'unsafe-inline'; " +
+        "style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data: blob: https:; " +
+        "font-src 'self' data:; " +
+        "connect-src *; " +
+        "worker-src 'self' blob:; " +
+        "frame-src 'none';";
     }
     res.writeHead(200, headers);
     res.end(data);
@@ -163,6 +177,53 @@ function createWindow(port) {
   });
 
   // Open external links in the default browser, not a new Electron window
+  // Right-click context menu with copy/cut/paste/paste-without-formatting
+  mainWindow.webContents.on('context-menu', (event, params) => {
+    const menu = new Menu();
+
+    if (params.selectionText) {
+      menu.append(new MenuItem({
+        label: 'Cut',
+        enabled: params.isEditable,
+        click: () => mainWindow.webContents.cut(),
+      }));
+      menu.append(new MenuItem({
+        label: 'Copy',
+        click: () => mainWindow.webContents.copy(),
+      }));
+    }
+
+    menu.append(new MenuItem({
+      label: 'Paste',
+      enabled: params.isEditable,
+      click: () => mainWindow.webContents.paste(),
+    }));
+
+    menu.append(new MenuItem({
+      label: 'Paste without formatting',
+      enabled: params.isEditable,
+      click: () => mainWindow.webContents.pasteAndMatchStyle(),
+    }));
+
+    if (params.selectionText || params.isEditable) {
+      menu.append(new MenuItem({ type: 'separator' }));
+      menu.append(new MenuItem({
+        label: 'Select All',
+        enabled: params.isEditable,
+        click: () => mainWindow.webContents.selectAll(),
+      }));
+    }
+
+    if (menu.items.length > 0) menu.popup({ window: mainWindow });
+  });
+
+  // Fix: SvelteKit SPA navigation can leave the renderer blank in dev mode.
+  // did-navigate-in-page fires on every pushState/replaceState (client-side route change).
+  // invalidate() forces Chromium to composite and repaint the frame.
+  mainWindow.webContents.on('did-navigate-in-page', () => {
+    mainWindow.webContents.invalidate();
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (!url.startsWith(`http://localhost:${port}`)) {
       shell.openExternal(url);

@@ -275,8 +275,8 @@ export async function uploadFileAttachment(
 
 /**
  * Re-attempt server upload for a known attachment hash (fire-and-forget).
- * Called on every save to ensure file attachments reach the server even if the
- * original upload silently failed. Server ignores duplicates (ON CONFLICT DO NOTHING).
+ * Called on every save and on note load to ensure attachments reach the server
+ * even if the original upload silently failed. Server ignores duplicates (ON CONFLICT DO NOTHING).
  */
 export function retryAttachmentUpload(hash: string, _userId: string, _dek: CryptoKey): void {
   getAttachment(hash).then((rec) => {

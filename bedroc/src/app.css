@@ -44,26 +44,21 @@
 	padding: 0;
 }
 
-html, body {
-	/* Prevent iOS font scaling in landscape */
+html {
 	-webkit-text-size-adjust: 100%;
 	text-size-adjust: 100%;
+	height: 100%;
+	overflow: hidden;
+}
+
+body {
+	/* -webkit-fill-available on iOS fills the full physical screen
+	   including the home-indicator region in standalone PWA mode,
+	   where percentage and viewport-unit heights stop at the safe area. */
+	height: 100%;
+	height: -webkit-fill-available;
 	overflow: hidden;
 	overscroll-behavior: none;
-}
-
-html {
-	/* On iOS standalone PWA with viewport-fit:cover, percentage heights
-	   resolve to the safe-area viewport (excluding home indicator).
-	   -webkit-fill-available stretches to the full physical screen. */
-	height: 100%;
-}
-
-body {
-	height: 100%;
-}
-
-body {
 	background-color: var(--bg);
 	color: var(--text);
 	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue',

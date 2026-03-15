@@ -2,7 +2,7 @@
 
 /* ─── Design tokens ───────────────────────────────────────────── */
 :root {
-	--bg:          #0f1117;
+	--bg:          #16181f; /*#0f1117*/
 	--bg-elevated: #16181f;
 	--bg-hover:    #1e2028;
 	--border:      #2a2d37;
@@ -24,7 +24,7 @@
 
 /* ─── Light mode overrides ────────────────────────────────────── */
 [data-theme="light"] {
-	--bg:          #f0f2f7;
+	--bg:          #ffffff; /*#f0f2f7*/
 	--bg-elevated: #ffffff;
 	--bg-hover:    #e8eaf0;
 	--border:      #d0d3de;
@@ -44,13 +44,11 @@
 	padding: 0;
 }
 
-html {
-	/* Prevent iOS font scaling in landscape */
+html, body {
 	-webkit-text-size-adjust: 100%;
 	text-size-adjust: 100%;
-	/* Full height — required for dvh units to work correctly */
 	height: 100%;
-	/* Prevent the html element itself from rubberbanding */
+	overflow: hidden;
 	overscroll-behavior: none;
 }
 
@@ -61,14 +59,6 @@ body {
 		Arial, sans-serif;
 	font-size: 14px;
 	line-height: 1.6;
-	height: 100%;
-	/* Lock body scroll — the app shell handles its own scrollable regions */
-	overflow: hidden;
-	overscroll-behavior: none;
-	/* Prevent iOS rubber-band on the body itself */
-	position: fixed;
-	width: 100%;
-	background-color: var(--bg-elevated);
 }
 
 /* ─── Typography ──────────────────────────────────────────────── */
@@ -83,8 +73,10 @@ a {
 	text-decoration: none;
 }
 
-a:hover {
-	text-decoration: underline;
+@media (hover: hover) {
+	a:hover {
+		text-decoration: underline;
+	}
 }
 
 /* ─── Form elements ───────────────────────────────────────────── */
@@ -139,8 +131,10 @@ button:disabled {
 	padding: 11px;
 }
 
-.btn-primary:hover:not(:disabled) {
-	background: var(--accent-dim);
+@media (hover: hover) {
+	.btn-primary:hover:not(:disabled) {
+		background: var(--accent-dim);
+	}
 }
 
 .btn-ghost {
@@ -149,9 +143,11 @@ button:disabled {
 	padding: 8px 12px;
 }
 
-.btn-ghost:hover:not(:disabled) {
-	background: var(--bg-hover);
-	color: var(--text);
+@media (hover: hover) {
+	.btn-ghost:hover:not(:disabled) {
+		background: var(--bg-hover);
+		color: var(--text);
+	}
 }
 
 .btn-danger {
@@ -160,8 +156,10 @@ button:disabled {
 	border: 1px solid var(--danger);
 }
 
-.btn-danger:hover:not(:disabled) {
-	background: color-mix(in srgb, var(--danger) 12%, transparent);
+@media (hover: hover) {
+	.btn-danger:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--danger) 12%, transparent);
+	}
 }
 
 .btn-icon {
@@ -175,9 +173,11 @@ button:disabled {
 	line-height: 1;
 }
 
-.btn-icon:hover:not(:disabled) {
-	background: var(--bg-hover);
-	color: var(--text);
+@media (hover: hover) {
+	.btn-icon:hover:not(:disabled) {
+		background: var(--bg-hover);
+		color: var(--text);
+	}
 }
 
 /* ─── Scrollbar ───────────────────────────────────────────────── */

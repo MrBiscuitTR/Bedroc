@@ -334,8 +334,6 @@
 <style>
 	/* ── Auth shell ───────────────────────────────────── */
 	.auth-shell {
-		/* Use 100% of the body (position:fixed covers full physical screen with
-		   viewport-fit:cover), not 100dvh (which excludes safe area insets). */
 		min-height: 100%;
 		display: flex;
 		align-items: center;
@@ -345,6 +343,7 @@
 		padding-left: 16px;
 		padding-right: 16px;
 		background: var(--bg);
+		overflow-y: auto;
 	}
 
 	/* ── App shell ────────────────────────────────────── */
@@ -472,9 +471,13 @@
 		z-index: 1;
 	}
 
-	.splitter:hover,
 	.splitter.dragging {
 		background: var(--accent);
+	}
+	@media (hover: hover) {
+		.splitter:hover {
+			background: var(--accent);
+		}
 	}
 
 	.splitter-handle {
@@ -523,7 +526,7 @@
 		flex-shrink: 0;
 	}
 
-	.split-close-btn:hover { color: var(--danger); }
+	@media (hover: hover) { .split-close-btn:hover { color: var(--danger); } }
 
 	.split-iframe {
 		flex: 1;
@@ -542,7 +545,8 @@
 		background: var(--bg-elevated);
 		border-top: 1px solid var(--border);
 		/* Safe area for home indicator — zero on non-notch devices */
-		padding-bottom: env(safe-area-inset-bottom, 0px);
+		/* padding-bottom: env(safe-area-inset-bottom, 0px); */
+		padding-bottom: max(env(safe-area-inset-bottom, 0px), 24px);
 		flex-shrink: 0;
 	}
 
@@ -563,10 +567,15 @@
 		-webkit-tap-highlight-color: transparent;
 	}
 
-	.bottom-nav-item:hover,
 	.bottom-nav-item.active {
 		color: var(--accent);
 		text-decoration: none;
+	}
+	@media (hover: hover) {
+		.bottom-nav-item:hover {
+			color: var(--accent);
+			text-decoration: none;
+		}
 	}
 
 	.bottom-nav-label {

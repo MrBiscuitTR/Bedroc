@@ -73,22 +73,21 @@
 					var navRect = nav ? nav.getBoundingClientRect() : null;
 					var mwrapRect = mwrap ? mwrap.getBoundingClientRect() : null;
 					var shellRect = shell ? shell.getBoundingClientRect() : null;
+					var navCS = nav ? getComputedStyle(nav) : null;
 					d.textContent =
-						'screen: ' + screen.width + 'x' + screen.height +
-						'  inner: ' + window.innerWidth + 'x' + window.innerHeight +
-						'\nhtml: ' + document.documentElement.clientHeight + '  body: ' + document.body.clientHeight +
-						'\nshell: ' + (shellRect ? 't=' + Math.round(shellRect.top) + ' b=' + Math.round(shellRect.bottom) + ' h=' + Math.round(shellRect.height) : 'none') +
-						'\nmwrap: ' + (mwrapRect ? 't=' + Math.round(mwrapRect.top) + ' b=' + Math.round(mwrapRect.bottom) + ' h=' + Math.round(mwrapRect.height) : 'none') +
-						'\nnav: ' + (navRect ? 't=' + Math.round(navRect.top) + ' b=' + Math.round(navRect.bottom) + ' h=' + Math.round(navRect.height) : 'none') +
+						'scr:' + screen.height + ' inner:' + window.innerHeight +
+						' html:' + document.documentElement.clientHeight +
+						' body:' + document.body.clientHeight +
+						'\nshell: ' + (shellRect ? 'b=' + Math.round(shellRect.bottom) + ' h=' + Math.round(shellRect.height) : 'NONE') +
+						'\nmwrap: ' + (mwrapRect ? 'b=' + Math.round(mwrapRect.bottom) + ' h=' + Math.round(mwrapRect.height) : 'NONE') +
+						'\nnav: ' + (navRect ? 'b=' + Math.round(navRect.bottom) + ' h=' + Math.round(navRect.height) + ' pb=' + (navCS ? navCS.paddingBottom : '?') : 'NONE') +
 						'\nsai: t=' + saiT + ' b=' + saiB +
-						'\ngap = inner(' + window.innerHeight + ') - nav.bot(' + (navRect ? Math.round(navRect.bottom) : '?') + ') = ' + (navRect ? Math.round(window.innerHeight - navRect.bottom) : '?') + 'px';
+						'\nGAP: ' + (navRect ? Math.round(window.innerHeight - navRect.bottom) : (shellRect ? Math.round(window.innerHeight - shellRect.bottom) : '?')) + 'px below last elem';
 				}
 				var s = document.createElement('style');
 				s.textContent = ':root{--_sai-t:env(safe-area-inset-top,0px);--_sai-b:env(safe-area-inset-bottom,0px)}';
 				document.head.appendChild(s);
-				setTimeout(upd, 500);
-				setTimeout(upd, 2000);
-				window.addEventListener('resize', upd);
+				setInterval(upd, 1000);
 			}
 		</script>
 	</body>

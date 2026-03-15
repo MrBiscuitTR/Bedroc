@@ -1,54 +1,54 @@
 # Bedroc — Public VPS Deployment Guide
 
-This guide covers deploying Bedroc on a public VPS (DigitalOcean, Hetzner, Linode, Vultr, etc.) where:
+This guide covers deploying the Bedroc **backend** on a public VPS (DigitalOcean, Hetzner, Linode, Vultr, etc.) so that it is reachable from the internet over HTTPS.
 
-- The server is reachable from the internet over ports 80 and 443
-- Other sites or services can share the same ports (using a reverse proxy)
-- Security is hardened for public exposure
-
-> **Privacy note:** Making your Bedroc server public means anyone who finds the URL can reach the registration page. All notes are end-to-end encrypted — the server cannot read them regardless. But if you want only yourself to use your server, consider adding HTTP basic auth in front of the registration endpoint, or simply use the WireGuard setup in [GUIDE.md](GUIDE.md) instead.
+The **frontend** is already hosted on Vercel at `https://bedroc.cagancalidag.com` — you do not need to self-host the frontend. Users point the app at your backend URL.
 
 ---
 
 ## Architecture
 
-```
+```text
 Internet
-    │  port 80/443
+    │  HTTPS port 443
     ▼
 ┌──────────────────────────────────────────────────────┐
-│  Caddy (reverse proxy, TLS, automatic certs)         │
-│  Listens on 0.0.0.0:80 and 0.0.0.0:443             │
-│                                                      │
-│  api.yourdomain.com  ──▶  Bedroc stack (port 3000)  │
-│  other.yourdomain.com ──▶  other service             │
+│  Caddy (on the host — handles TLS + reverse proxy)   │
+│  api.yourdomain.com  ──▶  127.0.0.1:3000             │
 └──────────────────────────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────────────────────────┐
 │  Docker network (internal only)                      │
 │  ┌──────────┐  ┌───────┐  ┌──────────┐              │
-│  │ postgres │  │ redis │  │  server  │ port 3000     │
+│  │ postgres │  │ redis │  │  server  │ :3000         │
 │  └──────────┘  └───────┘  └──────────┘              │
 └─────────────────────────────────────────────────────┘
 ```
 
-We use **Caddy** as the public reverse proxy because it:
-- Automatically obtains and renews Let's Encrypt certificates
-- Has a simple, readable config format
+**Caddy** runs on the host (not in Docker). It:
+- Automatically obtains and renews Let's Encrypt TLS certificates
+- Proxies HTTPS traffic to the Fastify backend on `127.0.0.1:3000`
 - Handles HTTP→HTTPS redirect automatically
-- Can serve multiple sites on the same ports with zero extra config
 
-The Bedroc Docker stack runs **without** its nginx container — Caddy takes over TLS termination and proxies directly to the Fastify server on an internal port.
+The Bedroc Docker stack is **API-only** — no nginx, no frontend container. The frontend on Vercel talks to your backend via the domain you configure.
 
 ---
 
 ## Prerequisites
 
 - A VPS running Ubuntu 22.04 LTS (or similar Debian-based Linux)
-- A domain name with an A record pointing to your VPS IP
-- Ports 80 and 443 open in your firewall / cloud control panel
-- Docker and Docker Compose installed (see [GUIDE.md](GUIDE.md) → Part 1)
+- A domain name — add an **A record** pointing to your VPS's public IP (e.g. `api.yourdomain.com` → `203.0.113.42`)
+- Ports 80 and 443 open in your cloud firewall / control panel
+- Docker and Docker Compose v2 installed
+
+### Install Docker (if not already installed)
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+newgrp docker
+```
 
 ---
 
@@ -64,18 +64,11 @@ sudo apt-get install -y ufw fail2ban
 ### Configure the firewall (UFW)
 
 ```bash
-# Default: deny incoming, allow outgoing
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
-
-# SSH (adjust port if you use a non-standard SSH port)
-sudo ufw allow 22/tcp
-
-# Web traffic
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-
-# Enable
+sudo ufw allow 22/tcp    # SSH
+sudo ufw allow 80/tcp    # HTTP (Caddy ACME challenge + redirect)
+sudo ufw allow 443/tcp   # HTTPS
 sudo ufw enable
 sudo ufw status
 ```
@@ -84,26 +77,24 @@ sudo ufw status
 
 Edit `/etc/ssh/sshd_config`:
 
-```
+```text
 PermitRootLogin no
 PasswordAuthentication no
 PubkeyAuthentication yes
-AuthorizedKeysFile .ssh/authorized_keys
 MaxAuthTries 3
 ```
 
 Restart SSH: `sudo systemctl restart sshd`
 
-> Only do this after confirming your SSH key login works. Locking yourself out requires console access to the VPS.
+> Only do this after confirming your SSH key login works. Locking yourself out requires VPS console access.
 
-### Set up fail2ban (block brute-force)
+### Enable fail2ban
 
 ```bash
-sudo systemctl enable fail2ban
-sudo systemctl start fail2ban
+sudo systemctl enable --now fail2ban
 ```
 
-Default config blocks IPs that fail SSH authentication too many times. For extra protection, add a jail for nginx/Caddy logs as well.
+Default config blocks IPs that fail SSH auth too many times. This also applies to repeated failed login attempts.
 
 ---
 
@@ -111,15 +102,17 @@ Default config blocks IPs that fail SSH authentication too many times. For extra
 
 ```bash
 sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+  | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+  | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 sudo apt-get update
 sudo apt-get install -y caddy
 ```
 
 ---
 
-## Step 3 — Configure the Bedroc Docker stack
+## Step 3 — Clone the repo and configure the stack
 
 ### Get the code
 
@@ -128,170 +121,90 @@ git clone https://github.com/MrBiscuitTR/Bedroc.git
 cd Bedroc
 ```
 
-### Create a modified docker-compose for public deployment
+### Create the environment file
 
-Create `docker-compose.public.yml` in the repo root:
-
-```yaml
-# docker-compose.public.yml
-# Public VPS variant: no nginx container, server exposed on localhost:3000
-# Caddy (on the host) handles TLS and proxying.
-
-services:
-
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: bedroc
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      DATABASE_URL: ${DATABASE_URL}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./docker/postgres/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
-    networks:
-      - internal
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d bedroc"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: redis-server --save 60 1 --loglevel warning
-    volumes:
-      - redis_data:/data
-    networks:
-      - internal
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-
-  server:
-    build:
-      context: ./server
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    environment:
-      HOST: 127.0.0.1   # Bind to localhost only — Caddy proxies from the host
-      PORT: 3000
-      NODE_ENV: production
-      DATABASE_URL: ${DATABASE_URL}
-      POSTGRES_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/bedroc
-      REDIS_URL: ${REDIS_URL}
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
-      JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
-      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-7d}
-      CORS_ORIGIN: ${CORS_ORIGIN}
-    ports:
-      # Expose server on localhost only — NOT on 0.0.0.0
-      - "127.0.0.1:3000:3000"
-    networks:
-      - internal
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  bedroc:
-    build:
-      context: ./bedroc
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    ports:
-      # Frontend on localhost:8080 — Caddy proxies to it
-      - "127.0.0.1:8080:8080"
-    networks:
-      - internal
-
-networks:
-  internal:
-    driver: bridge
-
-volumes:
-  postgres_data:
-  redis_data:
-```
-
-### Create the .env file
+Create `.env.public` (separate from `.env` so you can run both stacks side-by-side if needed):
 
 ```bash
-cp .env.example .env
+cp .env.example .env.public
 ```
 
-Fill in `.env`:
+Edit `.env.public` and fill in every value:
 
 ```env
-POSTGRES_PASSWORD=<run: openssl rand -hex 32>
+# PostgreSQL
+POSTGRES_PASSWORD=<openssl rand -hex 32>
 DATABASE_URL=postgres://bedroc_app:<same as POSTGRES_PASSWORD>@postgres:5432/bedroc
+
+# Redis
 REDIS_URL=redis://redis:6379
-JWT_ACCESS_SECRET=<run: openssl rand -hex 32>
-JWT_REFRESH_SECRET=<run: openssl rand -hex 32>
+
+# JWT — generate two different secrets
+JWT_ACCESS_SECRET=<openssl rand -hex 32>
+JWT_REFRESH_SECRET=<openssl rand -hex 32>
 JWT_ACCESS_EXPIRY=15m
-JWT_REFRESH_EXPIRY=7d
-CORS_ORIGIN=
+JWT_REFRESH_EXPIRY=30d
+
+# CORS — set to your frontend origin for strict mode, or leave empty to allow any
+# Recommended for a public server: allow the official Bedroc frontend
+CORS_ORIGIN=https://bedroc.cagancalidag.com
+
+# Access log — set by docker-compose.public.yml automatically; leave as-is
+ENABLE_ACCESS_LOG=true
 ```
+
+> Generate secrets with: `openssl rand -hex 32`
+> Never commit `.env.public` to git — it is in `.gitignore`.
 
 ### Start the stack
 
 ```bash
-docker compose -f docker-compose.public.yml up -d
+docker compose -f docker-compose.public.yml --env-file .env.public up -d
 ```
 
-Verify: `docker compose -f docker-compose.public.yml ps` — all services should be healthy/running.
+Verify all services are healthy:
+
+```bash
+docker compose -f docker-compose.public.yml --env-file .env.public ps
+```
+
+All three services (`postgres`, `redis`, `server`) should show `healthy` or `running`.
 
 ---
 
 ## Step 4 — Configure Caddy
 
-Edit `/etc/caddy/Caddyfile`:
+Edit `/etc/caddy/Caddyfile` (replace `api.yourdomain.com` with your actual domain):
 
 ```caddy
 # /etc/caddy/Caddyfile
 
-# Bedroc API (Fastify backend)
 api.yourdomain.com {
-    # Proxy API requests to the Fastify server
-    reverse_proxy /api/* 127.0.0.1:3000
-    reverse_proxy /ws    127.0.0.1:3000
-    reverse_proxy /health 127.0.0.1:3000
-
-    # Serve the SvelteKit frontend for all other paths
-    reverse_proxy 127.0.0.1:8080
+    # Proxy all requests to the Fastify backend
+    reverse_proxy 127.0.0.1:3000
 
     # Security headers
     header {
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-        X-Content-Type-Options "nosniff"
-        X-Frame-Options "SAMEORIGIN"
-        Referrer-Policy "strict-origin-when-cross-origin"
-        Permissions-Policy "camera=(), microphone=(), geolocation=()"
-        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https: wss:; font-src 'self'; object-src 'none'; frame-ancestors 'self';"
+        X-Content-Type-Options    "nosniff"
+        X-Frame-Options           "DENY"
+        Referrer-Policy           "strict-origin-when-cross-origin"
+        Permissions-Policy        "camera=(), microphone=(), geolocation=()"
         -Server
     }
 
-    # TLS: automatic Let's Encrypt (requires DNS A record pointing here)
+    # TLS: automatic Let's Encrypt (requires DNS A record pointing to this VPS)
     tls {
         protocols tls1.2 tls1.3
     }
+
+    # Log access to Caddy's structured journal
+    log {
+        output stderr
+        level  WARN
+    }
 }
-
-# Other site on the same server (example)
-# other.yourdomain.com {
-#     root * /var/www/other
-#     file_server
-# }
 ```
-
-> **Replace `api.yourdomain.com`** with your actual domain. Make sure the DNS A record for that domain points to your VPS IP.
 
 Reload Caddy:
 
@@ -300,20 +213,76 @@ sudo systemctl reload caddy
 ```
 
 Check that the certificate was issued:
+
 ```bash
 sudo journalctl -u caddy -f
+# You should see: certificate obtained successfully
+```
+
+Test the API:
+
+```bash
+curl https://api.yourdomain.com/health
+# → {"ok":true}
 ```
 
 ---
 
 ## Step 5 — Connect from the app
 
-1. Open `https://bedroc.cagancalidag.com` (or any Bedroc frontend)
-2. Tap **Server: api.bedroc.app ▾** to expand the server field
+1. Open `https://bedroc.cagancalidag.com`
+2. Tap **Server: api.bedroc.app ▾** to expand the server URL field
 3. Enter `https://api.yourdomain.com`
 4. Register and start using Bedroc
 
 The server URL is saved — you won't need to enter it again on that device.
+
+---
+
+## Access logs
+
+When `ENABLE_ACCESS_LOG=true` (set automatically by `docker-compose.public.yml`), every successful login and registration is appended to `./logs/access.log` on the host:
+
+```text
+[2025-06-14T18:42:01.234Z] login    alice                    203.0.113.42
+[2025-06-14T18:42:05.991Z] register bob                     198.51.100.7
+[2025-06-15T09:11:22.018Z] login    alice                    203.0.113.42
+```
+
+Fields: `[timestamp]  event  username  ip-address`
+
+- Events: `login` (successful password auth) or `register` (new account)
+- IPs come from the `X-Forwarded-For` header set by Caddy, falling back to the direct connection IP
+- One file, append-only — rotate with `logrotate` if needed (see below)
+
+### Read the log
+
+```bash
+tail -f logs/access.log                        # live
+grep alice logs/access.log                     # all events for a user
+awk '{print $4}' logs/access.log | sort | uniq -c | sort -rn   # IP frequency
+```
+
+### Log rotation with logrotate
+
+Create `/etc/logrotate.d/bedroc`:
+
+```text
+/path/to/Bedroc/logs/access.log {
+    daily
+    rotate 30
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+```
+
+Replace `/path/to/Bedroc` with the actual path. `copytruncate` truncates the file in-place without needing to signal the Node process.
+
+### Privacy note
+
+The log records **usernames and IP addresses** of authentication events only. Notes are end-to-end encrypted — neither the log nor the server can read note contents. If you run a public server, inform users that login IPs are logged per your privacy policy.
 
 ---
 
@@ -322,8 +291,8 @@ The server URL is saved — you won't need to enter it again on that device.
 ```bash
 cd /path/to/Bedroc
 git pull
-docker compose -f docker-compose.public.yml build --no-cache server bedroc
-docker compose -f docker-compose.public.yml up -d
+docker compose -f docker-compose.public.yml --env-file .env.public build --no-cache server
+docker compose -f docker-compose.public.yml --env-file .env.public up -d
 ```
 
 ---
@@ -332,13 +301,13 @@ docker compose -f docker-compose.public.yml up -d
 
 The default maximum file size for uploaded attachments (images, PDFs, etc.) is **15 MB per file**. To change it, edit two places in `server/src/routes/attachments.ts`:
 
-**1. HTTP body limit** (line with `bodyLimit`):
+**1. HTTP body limit:**
 
 ```typescript
 bodyLimit: 20 * 1024 * 1024,   // change 20 to your desired MB ceiling
 ```
 
-**2. Zod validation schema** (two constants near the top of the file):
+**2. Zod validation schema:**
 
 ```typescript
 const MAX_ENCRYPTED_DATA_LENGTH = 19_000_000;  // ≈ sizeBytes * 1.37 + overhead
@@ -355,8 +324,8 @@ The relationship between these numbers:
 After editing, rebuild and restart the server container:
 
 ```bash
-docker compose -f docker-compose.public.yml build --no-cache server
-docker compose -f docker-compose.public.yml up -d server
+docker compose -f docker-compose.public.yml --env-file .env.public build --no-cache server
+docker compose -f docker-compose.public.yml --env-file .env.public up -d server
 ```
 
 ---
@@ -364,6 +333,7 @@ docker compose -f docker-compose.public.yml up -d server
 ## Security hardening checklist
 
 ### Server-level
+
 - [ ] SSH root login disabled (`PermitRootLogin no`)
 - [ ] SSH password auth disabled (`PasswordAuthentication no`)
 - [ ] UFW enabled with only ports 22, 80, 443 open
@@ -371,35 +341,35 @@ docker compose -f docker-compose.public.yml up -d server
 - [ ] OS kept up to date (`apt-get upgrade` regularly or unattended-upgrades)
 
 ### Docker
-- [ ] Docker daemon NOT exposed on a TCP socket (use Unix socket `/var/run/docker.sock` only)
-- [ ] Server binds to `127.0.0.1:3000`, NOT `0.0.0.0:3000` — only Caddy can reach it
+
+- [ ] Docker daemon NOT exposed on a TCP socket (use Unix socket only)
+- [ ] Server port bound to `127.0.0.1:3000` — not `0.0.0.0:3000`
 - [ ] postgres and redis NOT exposed on any host port (internal network only)
+- [ ] `.env.public` not committed to git
 
 ### Application
-- [ ] All secrets in `.env` are randomly generated (never the `CHANGE_THIS_*` placeholders)
-- [ ] `.env` is not committed to git
-- [ ] `CORS_ORIGIN` is either empty (open) or set to your specific frontend URL
+
+- [ ] All secrets generated with `openssl rand -hex 32` (never the `CHANGE_THIS_*` placeholders)
+- [ ] `CORS_ORIGIN` set to your specific frontend URL (not `*`) for maximum strictness
+- [ ] `JWT_REFRESH_EXPIRY` set to a reasonable window (default `30d`)
 
 ### TLS (Caddy handles this automatically)
+
 - [ ] Let's Encrypt certificate issued (`sudo caddy list-certificates`)
 - [ ] TLS 1.2/1.3 only (Caddy default)
 - [ ] HSTS header set with `preload` directive
-- [ ] Certificate auto-renews (Caddy does this automatically every 60 days)
+- [ ] Certificate auto-renews (Caddy does this automatically)
 
 ---
 
 ## Sharing port 443 with other sites
 
-Caddy supports multiple sites in a single `Caddyfile`. Each `domain.com { }` block gets its own automatic certificate. Just add more blocks:
+Caddy supports multiple sites in a single `Caddyfile`. Each block gets its own automatic certificate:
 
 ```caddy
 api.yourdomain.com {
-    # Bedroc backend (as above)
-}
-
-notes.yourdomain.com {
-    # Bedroc frontend served directly
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy 127.0.0.1:3000
+    # ... headers as above
 }
 
 blog.yourdomain.com {
@@ -412,13 +382,11 @@ another-app.yourdomain.com {
 }
 ```
 
-Caddy automatically handles ACME challenges, certificate issuance, and renewal for each domain. No port conflict — all share 80/443.
-
 ---
 
 ## Backups
 
-Same as the WireGuard setup — see [MANAGEMENT-GUIDE.md](MANAGEMENT-GUIDE.md) for backup commands. Use `docker compose -f docker-compose.public.yml exec postgres ...` instead of `docker compose exec postgres ...`.
+Same as the WireGuard setup — see [MANAGEMENT-GUIDE.md](MANAGEMENT-GUIDE.md) for backup commands. Use `-f docker-compose.public.yml --env-file .env.public` instead of the default compose invocation.
 
 ---
 
@@ -426,20 +394,22 @@ Same as the WireGuard setup — see [MANAGEMENT-GUIDE.md](MANAGEMENT-GUIDE.md) f
 
 ### Certificate not issuing
 
-- Make sure the DNS A record points to your VPS IP (`dig api.yourdomain.com`)
-- Make sure ports 80 and 443 are open in your firewall
+- Confirm the DNS A record points to your VPS IP: `dig +short api.yourdomain.com`
+- Confirm ports 80 and 443 are open: `sudo ufw status`
 - Check Caddy logs: `sudo journalctl -u caddy -f`
 
 ### "Cannot reach server" from the app
 
-- Confirm the server is running: `docker compose -f docker-compose.public.yml ps`
+- Confirm the stack is running: `docker compose -f docker-compose.public.yml --env-file .env.public ps`
 - Test the API directly: `curl https://api.yourdomain.com/health`
 - Check Caddy is running: `sudo systemctl status caddy`
 
-### App shows "Unreachable" but curl works
+### CORS errors in the browser
 
-The browser may have cached an old certificate warning. Clear site data or try an incognito window.
+- Confirm `CORS_ORIGIN` in `.env.public` matches exactly the frontend URL (including `https://`, no trailing slash)
+- For local dev testing, add `http://localhost:5173` to `CORS_ORIGIN` as a comma-separated second value
 
-### Multiple docker-compose files
+### Server container keeps restarting
 
-If you already use the WireGuard setup and want to add public access, keep both compose files. Run the public stack with `-f docker-compose.public.yml`. They use separate containers and ports, so they don't conflict.
+- Check logs: `docker compose -f docker-compose.public.yml --env-file .env.public logs server`
+- Common causes: missing or wrong `DATABASE_URL`/`JWT_*` secrets in `.env.public`

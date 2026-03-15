@@ -1230,6 +1230,13 @@
 	}
 </script>
 
+<svelte:window onkeydown={(e) => {
+	if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+		e.preventDefault();
+		handleSave();
+	}
+}} />
+
 <svelte:head>
 	<title>{title || 'New note'} - Bedroc</title>
 </svelte:head>

@@ -1483,7 +1483,7 @@
 	.notes-header {
 		display: flex;
 		align-items: center;
-		padding: 18px 20px 0;
+		padding: max(env(safe-area-inset-top, 0px), 18px) 20px 0;
 	}
 
 	@media (max-width: 767px) {

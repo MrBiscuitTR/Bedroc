@@ -48,9 +48,19 @@ html, body {
 	/* Prevent iOS font scaling in landscape */
 	-webkit-text-size-adjust: 100%;
 	text-size-adjust: 100%;
-	height: 100%;
 	overflow: hidden;
 	overscroll-behavior: none;
+}
+
+html {
+	/* On iOS standalone PWA with viewport-fit:cover, percentage heights
+	   resolve to the safe-area viewport (excluding home indicator).
+	   -webkit-fill-available stretches to the full physical screen. */
+	height: 100%;
+}
+
+body {
+	height: 100%;
 }
 
 body {

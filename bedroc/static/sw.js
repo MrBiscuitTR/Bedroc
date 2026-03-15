@@ -25,8 +25,8 @@
  *     by the online event in the main thread instead.
  */
 
-const CACHE_NAME = 'bedroc-v5';
-const SHELL_CACHE = 'bedroc-shell-v5';
+const CACHE_NAME = 'bedroc-v6';
+const SHELL_CACHE = 'bedroc-shell-v6';
 
 // Files to pre-cache on install. SvelteKit hashes JS/CSS filenames so we
 // can't hardcode them — instead we cache the shell on first navigation fetch.

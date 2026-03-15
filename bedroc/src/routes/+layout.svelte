@@ -334,9 +334,10 @@
 <style>
 	/* ── Auth shell ───────────────────────────────────── */
 	.auth-shell {
-		/* Use 100% of the body (position:fixed covers full physical screen with
-		   viewport-fit:cover), not 100dvh (which excludes safe area insets). */
-		min-height: 100%;
+		/* position:fixed + inset:0 covers the full physical screen on iOS
+		   standalone PWA (viewport-fit:cover), closing the safe-area gap. */
+		position: fixed;
+		inset: 0;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -345,12 +346,17 @@
 		padding-left: 16px;
 		padding-right: 16px;
 		background: var(--bg);
+		overflow-y: auto;
 	}
 
 	/* ── App shell ────────────────────────────────────── */
 	.app-shell {
 		display: flex;
-		height: 100%;
+		/* position:fixed + inset:0 covers the full physical screen on iOS
+		   standalone PWA (viewport-fit:cover), including the home-indicator
+		   region that percentage heights don't reach. */
+		position: fixed;
+		inset: 0;
 		overflow: hidden;
 		overscroll-behavior: none;
 	}

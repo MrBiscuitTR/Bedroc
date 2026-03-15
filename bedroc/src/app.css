@@ -22,6 +22,21 @@
 	--radius-lg:   12px;
 }
 
+/* ─── Light mode overrides ────────────────────────────────────── */
+[data-theme="light"] {
+	--bg:          #f0f2f7;
+	--bg-elevated: #ffffff;
+	--bg-hover:    #e8eaf0;
+	--border:      #d0d3de;
+	--text:        #1a1c26;
+	--text-muted:  #565970;
+	--text-faint:  #9194a8;
+	--accent:      #4a6cf7;
+	--accent-dim:  #3456d6;
+	--danger:      #cc3a3a;
+	--success:     #2e8a63;
+}
+
 /* ─── Reset & base ────────────────────────────────────────────── */
 *, *::before, *::after {
 	box-sizing: border-box;
@@ -53,6 +68,10 @@ body {
 	/* Prevent iOS rubber-band on the body itself */
 	position: fixed;
 	width: 100%;
+	/* Fill the bottom safe area with the nav/sidebar colour so no dark gap
+	   appears below the bottom nav in PWA standalone mode on iOS. */
+	padding-bottom: env(safe-area-inset-bottom, 0px);
+	background-color: var(--bg-elevated);
 }
 
 /* ─── Typography ──────────────────────────────────────────────── */

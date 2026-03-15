@@ -256,22 +256,57 @@ No two notes in the same topic (or both uncategorised) may share the same title.
 
 **Mobile:** A drawer-toggle button (☰) replaces the "Edit note" text in the toolbar. Tapping it opens the notes side drawer (see below). The global mobile header is hidden on this route — the editor's own toolbar takes that role, matching `--nav-h` exactly.
 
-**Toolbar:**
+**Editor library:** [TipTap](https://tiptap.dev/) (ProseMirror wrapper), MIT-licensed, fully bundled (no CDN), zero telemetry. The editor is instantiated in `onMount` with a plain `let editor: Editor | null = null` — **not** `$state` — because Svelte's reactive proxy breaks ProseMirror's internal state. A separate `editorReady = $state(false)` boolean is set to `true` after `new Editor(...)` returns, so `$effect` blocks that interact with the editor wait for it.
+
+**Extensions loaded:**
+
+| Extension | Package | Purpose |
+| --- | --- | --- |
+| StarterKit | `@tiptap/starter-kit` | Bold, italic, strike, code, blockquote, headings, lists, history, hard break, horizontal rule |
+| Underline | `@tiptap/extension-underline` | `<u>` underline |
+| TextStyle | `@tiptap/extension-text-style` | Base mark for inline CSS (required by Color + FontSize) |
+| Color | `@tiptap/extension-text-style` | `color` CSS property on TextStyle mark |
+| FontSize | `@tiptap/extension-text-style` | `font-size` CSS property on TextStyle mark; stored WITH unit (e.g. `"16px"`) |
+| TextAlign | `@tiptap/extension-text-align` | Left / center / right / justify on headings and paragraphs |
+| Subscript | `@tiptap/extension-subscript` | `<sub>` |
+| Superscript | `@tiptap/extension-superscript` | `<sup>` |
+| Highlight | `@tiptap/extension-highlight` | Multi-color `<mark>` highlight |
+| Typography | `@tiptap/extension-typography` | Smart quotes, em-dashes, ellipsis substitution on typing |
+| TaskList | `@tiptap/extension-task-list` | `<ul data-type="taskList">` |
+| TaskItem | `@tiptap/extension-task-item` | Individual task items with nested support |
+| CharacterCount | `@tiptap/extension-character-count` | Character + word count via `editor.storage.characterCount` |
+| Link | `@tiptap/extension-link` | `<a>` with `openOnClick: false`; `rel="noopener noreferrer"` |
+| Table | `@tiptap/extension-table` | Resizable table (named export, no default export) |
+| TableRow | `@tiptap/extension-table` | Table rows (named export from same package) |
+| TableHeader | `@tiptap/extension-table` | `<th>` cells |
+| TableCell | `@tiptap/extension-table` | `<td>` cells |
+| Image | `@tiptap/extension-image` | Inline images; `allowBase64: true` for device upload |
+| Placeholder | `@tiptap/extension-placeholder` | "Start writing…" placeholder via CSS `::before` |
+
+**Toolbar (scrollable horizontally on narrow viewports):**
 
 - Back/drawer-toggle button (left), blue dot indicator for unsaved changes, Save button (disabled when clean), delete button with inline confirm step (right).
 - Title input: borderless, 20px, fills the full width.
-- Formatting toolbar (scrollable horizontally on narrow viewports):
-  - Undo / Redo
-  - Bold, Italic, Underline, Strikethrough — toggle buttons with active highlight (via `document.queryCommandState`). State updates immediately on click, on cursor move, and on touch end — no need to type first.
-  - Bullet list, Numbered list — toggle buttons
-  - Font size select (Small 12px / Normal 15px / Large 20px / Heading 26px) — implemented via `execCommand('fontSize', '7')` then replacing the generated `<font>` tag with a styled `<span>`. The select shows the current cursor's size (detected by walking up the DOM from the selection) and updates on every cursor movement.
-  - Text color: 8 preset swatches + native color input, shown in a floating panel
+- **Text style row:** Undo / Redo | Bold, Italic, Underline, Strikethrough | Subscript, Superscript | Inline Code
+- **Block row:** Heading dropdown (Paragraph / H1 / H2 / H3 / H4) | Bullet list, Ordered list, Task list | Blockquote, Code block
+- **Format row:** Text align (left / center / right / justify) | Highlight color swatch + panel | Font color swatch + panel | Font size dropdown
+- **Insert row:** Link button (opens inline URL dialog; clicking again on a link removes it) | Image button (opens file picker; uploaded as base64 data URI, no server upload) | Table insert button (inserts 3×3 table)
+- **Table context row** (only visible when cursor is inside a table): Add row above / below, Delete row, Add column left / right, Delete column, Delete table
 
-**Body:** `contenteditable` div, renders HTML from `execCommand`. Fills remaining height. Scrollable with `overscroll-behavior: contain`.
+All toolbar buttons use `onmousedown` with `e.preventDefault()` to prevent the editor losing focus/selection.
+
+**Format state tracking:** `updateFormatState()` is called on every `onUpdate`, `onSelectionUpdate`, and `onFocus` event. It reads active marks/nodes via `editor.isActive(...)` and `editor.getAttributes('textStyle')`:
+
+- Color: `tsAttrs.color ?? ''`
+- Font size: `(tsAttrs.fontSize ?? '').replace('px', '')` — strips the unit stored by FontSize extension to show a plain number in the dropdown
+
+**Body:** TipTap mounts into `<div class="body-editor-wrap" bind:this={editorEl}>`. ProseMirror creates a `<div class="ProseMirror">` inside it. All editor CSS uses `:global(.ProseMirror)` selectors.
 
 **Autosave:** After `autosave.interval` ms of inactivity (from store, default 1000ms, 0 = off). New notes get a UUID and navigate to `/note/<uuid>` on first save.
 
 **`id === 'new'`** creates a new note on first save; navigates to its UUID with `replaceState`. Navigating back from a new unsaved note discards it.
+
+**Cursor preservation on save:** `editor.state.selection.anchor` (integer ProseMirror position) is captured before save; restored after with `editor.commands.setTextSelection(pos)` inside `requestAnimationFrame`. Same pattern used in `applyExternalUpdate` for real-time sync.
 
 **Notes side drawer (mobile):**
 
@@ -281,9 +316,14 @@ No two notes in the same topic (or both uncategorised) may share the same title.
 - Active note is highlighted in the drawer.
 - On desktop, this drawer is hidden; back navigation + the notes list page serve the same purpose.
 
-All save/delete/load logic is a placeholder — wired in Phase 2.
+**Note storage format:** TipTap outputs semantic HTML. The decrypted `body` field is a string like:
 
-PLACEHOLDER: `document.execCommand` is deprecated. Will be replaced by ProseMirror in Phase 6.
+```html
+<h2>Heading</h2>
+<p>Hello <span style="font-size:24px;color:#6b8afd;">world</span></p>
+<ul data-type="taskList"><li data-checked="true"><p>Done</p></li></ul>
+<table><tbody><tr><th><p>Cell</p></th></tr></tbody></table>
+```
 
 ### `/settings` — Settings ([settings/+page.svelte](../bedroc/src/routes/settings/+page.svelte))
 

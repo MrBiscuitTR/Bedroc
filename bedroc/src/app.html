@@ -46,6 +46,13 @@
 		<link rel="icon" type="image/png" sizes="256x256" href="/icons/appicon-256.png" />
 		<link rel="icon" type="image/png" sizes="512x512" href="/icons/appicon-512.png" />
 		%sveltekit.head%
+		<!-- Apply saved theme before first paint to avoid flash -->
+		<script>
+			try {
+				var t = localStorage.getItem('bedroc_theme');
+				if (t) document.documentElement.setAttribute('data-theme', t);
+			} catch(e) {}
+		</script>
 	</head>
 	<body data-sveltekit-preload-data="hover">
 		<div style="display: contents">%sveltekit.body%</div>

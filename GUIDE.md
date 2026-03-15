@@ -646,6 +646,17 @@ Then connect to `https://10.66.66.1:8443` instead.
 
 ---
 
+## Images and file attachments
+
+Bedroc supports embedding images and file attachments (PDF, code files, zip, etc.) directly in notes.
+
+- **How it works:** When you upload an image or attach a file, it is encrypted on your device with your DEK (the same key that encrypts your notes) before being stored anywhere. The server receives and stores only AES-256-GCM ciphertext — never plaintext.
+- **Cross-device sync:** Attachments are uploaded to the server once (identified by content hash). When you open the same note on another device, the attachment is fetched from the server, cached locally, and decrypted — so every device can view it.
+- **Bandwidth-efficient:** Regular autosaves only transmit a tiny `attachment:<hash>` placeholder in the note body. The actual binary blob is only uploaded once, and only downloaded once per new device.
+- **File previews:** Click the file icon or name on an attached file card to preview it directly in the app — no download required. PDFs open in an inline viewer. Text, code, CSV, and JSON files show in a scrollable preview pane with selectable text.
+- **Storage:** Attachment data is stored in the `attachments` table in the same PostgreSQL database as your notes. There is no separate object storage required.
+- **Deletion:** Removing a file card from a note removes it from the editor, but the encrypted blob persists on the server until you delete your account (which cascades all data). A future release will support explicit attachment pruning.
+
 ## Security notes
 
 - Your notes are **end-to-end encrypted** — the server stores only ciphertext. The server operator (you) cannot read notes.

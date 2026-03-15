@@ -24,7 +24,14 @@
 
 /** Encode a Uint8Array to a base64 string. */
 export function toBase64(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes));
+  // Chunked to avoid "Maximum call stack size exceeded" on large inputs
+  // (spread-calling String.fromCharCode with a huge array overflows the stack).
+  let binary = '';
+  const CHUNK = 8192;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
 }
 
 /** Decode a base64 string to a Uint8Array. */

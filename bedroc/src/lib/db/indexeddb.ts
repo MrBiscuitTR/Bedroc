@@ -89,6 +89,21 @@ export interface KeyMaterialRecord {
 }
 
 /**
+ * A locally-stored image attachment. The `data` field holds the raw data URI
+ * (e.g. `data:image/png;base64,...`). Keyed by a SHA-256 content hash so the
+ * same image uploaded twice only stores one record. The note body replaces
+ * the data URI with `attachment:<hash>` before encryption/sync, then
+ * rehydrates it on load — keeping large base64 blobs out of the sync payload.
+ */
+export interface AttachmentRecord {
+  hash: string;   // hex SHA-256 of the data URI content (keyPath)
+  userId: string;
+  dataUri: string; // full data:mime;base64,... string
+  mimeType: string;
+  createdAt: number;
+}
+
+/**
  * A conflict record created when syncFromServer() finds that the server has
  * a newer version of a note that was also edited locally (unsynced).
  *
@@ -115,7 +130,7 @@ export interface ConflictRecord {
 
 let db: IDBDatabase | null = null;
 const DB_NAME = 'bedroc';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 /** Open (or return cached) IndexedDB instance. */
 export function openDb(): Promise<IDBDatabase> {
@@ -159,6 +174,13 @@ export function openDb(): Promise<IDBDatabase> {
         const conflicts = d.createObjectStore('conflicts', { keyPath: 'noteId' });
         conflicts.createIndex('by_user', 'userId');
         conflicts.createIndex('by_detected', 'detectedAt');
+      }
+
+      if (oldVersion < 3) {
+        // attachments — local image blobs, keyed by SHA-256 content hash
+        // body stores `attachment:<hash>` placeholder instead of the data URI
+        const attachments = d.createObjectStore('attachments', { keyPath: 'hash' });
+        attachments.createIndex('by_user', 'userId');
       }
     };
 
@@ -350,13 +372,35 @@ export async function deleteConflict(noteId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+/** Store an attachment if it doesn't already exist (content-addressed). */
+export async function saveAttachment(record: AttachmentRecord): Promise<void> {
+  const store = await getStore('attachments', 'readwrite');
+  // put is idempotent — same hash = same record, safe to overwrite
+  await idbRequest(store.put(record));
+}
+
+export async function getAttachment(hash: string): Promise<AttachmentRecord | undefined> {
+  const store = await getStore('attachments', 'readonly');
+  return idbRequest(store.get(hash));
+}
+
+export async function getAttachmentsByUser(userId: string): Promise<AttachmentRecord[]> {
+  const store = await getStore('attachments', 'readonly');
+  const idx = store.index('by_user');
+  return idbRequest<AttachmentRecord[]>(idx.getAll(userId));
+}
+
+// ---------------------------------------------------------------------------
 // Full wipe (logout / account delete)
 // ---------------------------------------------------------------------------
 
 /** Clear all data for a user from every object store. */
 export async function wipeLocalData(userId: string): Promise<void> {
   const d = await openDb();
-  const tx = d.transaction(['notes', 'topics', 'folders', 'syncQueue', 'keyMaterial', 'conflicts'], 'readwrite');
+  const tx = d.transaction(['notes', 'topics', 'folders', 'syncQueue', 'keyMaterial', 'conflicts', 'attachments'], 'readwrite');
 
   // Delete notes
   const noteIdx = tx.objectStore('notes').index('by_user');
@@ -386,6 +430,18 @@ export async function wipeLocalData(userId: string): Promise<void> {
   const folderIdx = tx.objectStore('folders').index('by_user');
   await new Promise<void>((resolve, reject) => {
     const req = folderIdx.openCursor(userId);
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor) { cursor.delete(); cursor.continue(); }
+      else resolve();
+    };
+    req.onerror = () => reject(req.error);
+  });
+
+  // Delete attachments by user
+  const attachIdx = tx.objectStore('attachments').index('by_user');
+  await new Promise<void>((resolve, reject) => {
+    const req = attachIdx.openCursor(userId);
     req.onsuccess = () => {
       const cursor = req.result;
       if (cursor) { cursor.delete(); cursor.continue(); }

@@ -26,6 +26,7 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { auth, apiFetch, reportSyncResult } from './auth.svelte.js';
 import { encryptNote, decryptNote } from '$lib/crypto/encrypt.js';
+import { extractAttachments, rehydrateAttachments } from '$lib/attachments.js';
 import {
   saveNote as idbSaveNote,
   getNoteById as idbGetNoteById,
@@ -385,9 +386,10 @@ export async function syncFromServer(): Promise<void> {
 
       if (hasLocalUnsyncedEdits && serverIsNewer) {
         // --- CONFLICT ---
-        const { title: serverTitle, body: serverBody } = await decryptNote(
+        const { title: serverTitle, body: serverBodyRaw } = await decryptNote(
           sn.encrypted_title, sn.encrypted_body, dek
         );
+        const serverBody = await rehydrateAttachments(serverBodyRaw, userId, dek);
 
         const conflict: ConflictRecord = {
           noteId: sn.id,
@@ -409,7 +411,9 @@ export async function syncFromServer(): Promise<void> {
       }
 
       // --- Fast-forward (no conflict) ---
-      const { title, body } = await decryptNote(sn.encrypted_title, sn.encrypted_body, dek);
+      const { title, body: rawBody } = await decryptNote(sn.encrypted_title, sn.encrypted_body, dek);
+      // Restore attachment placeholders → data URIs before storing locally
+      const body = await rehydrateAttachments(rawBody, userId, dek);
 
       const local: NoteLocal = {
         id: sn.id,
@@ -519,8 +523,9 @@ export async function resolveConflict(
   conflictsMap.delete(noteId);
   await deleteConflict(noteId);
 
-  // Push the resolved version to the server
-  const { encryptedTitle, encryptedBody } = await encryptNote(title, body, dek);
+  // Push the resolved version to the server (extract attachments before encrypting)
+  const syncBody = await extractAttachments(body, userId, dek);
+  const { encryptedTitle, encryptedBody } = await encryptNote(title, syncBody, dek);
   await queueNoteUpsert(noteId, userId, local.topicId, encryptedTitle, encryptedBody, local.customOrder, now, local.version);
   await tryServerUpsertNote(noteId, userId, local.topicId, encryptedTitle, encryptedBody, local.customOrder, now, local.version);
 }
@@ -724,7 +729,10 @@ export async function saveNote(note: Note): Promise<void> {
 
   // Encrypt and sync to server — requires DEK (skip if locked/offline-unlocked without key)
   if (!dek) return;
-  const { encryptedTitle, encryptedBody } = await encryptNote(note.title, note.body, dek);
+  // Extract image attachments from body before encrypting — replaces data: URIs with
+  // `attachment:<hash>` placeholders so large blobs are not re-uploaded every save.
+  const syncBody = await extractAttachments(note.body, userId, dek);
+  const { encryptedTitle, encryptedBody } = await encryptNote(note.title, syncBody, dek);
   await queueNoteUpsert(note.id, userId, note.topicId, encryptedTitle, encryptedBody, note.customOrder, now, version);
   await tryServerUpsertNote(note.id, userId, note.topicId, encryptedTitle, encryptedBody, note.customOrder, now, version);
 }
@@ -763,7 +771,8 @@ export async function reorderNote(id: string, afterId: string | null): Promise<v
       notesMap.set(n.id, updated);
       const dek = auth.dek!;
       const userId = auth.userId!;
-      const { encryptedTitle, encryptedBody } = await encryptNote(n.title, n.body, dek);
+      const syncBody = await extractAttachments(n.body, userId, dek);
+      const { encryptedTitle, encryptedBody } = await encryptNote(n.title, syncBody, dek);
       const existing = await idbGetNoteById(n.id);
       const serverUpdatedAt = existing?.serverUpdatedAt ?? 0;
       const version = existing?.version ?? 1;

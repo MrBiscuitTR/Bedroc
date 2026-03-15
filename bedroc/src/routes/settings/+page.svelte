@@ -1,8 +1,24 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { autosave, syncIntervalStore, liveSyncStore, notesMap, topicsMap, inactivityLockStore } from '$lib/stores/notes.svelte';
-	import { auth, logout, apiFetch, changePassword } from '$lib/stores/auth.svelte.js';
+	import { autosave, syncIntervalStore, liveSyncStore, notesMap, topicsMap, foldersMap, inactivityLockStore, getTopics, getFolders, toggleFolderCollapsed, type Topic, type Folder } from '$lib/stores/notes.svelte';
+	import { auth, logout, apiFetch, changePassword, serverStatus } from '$lib/stores/auth.svelte.js';
 	import { clearStore } from '$lib/stores/notes.svelte.js';
+	import { theme, toggleTheme } from '$lib/stores/theme.svelte.js';
+
+	// ── Topics panel (sidebar) ────────────────────────────────────
+	let allTopics  = $derived((topicsMap.size, getTopics()));
+	let allFolders = $derived((foldersMap.size, getFolders()));
+	let allNotes   = $derived(notesMap.size);
+
+	function topicsInFolder(folderId: string | null): Topic[] {
+		return allTopics.filter(t => t.folderId === folderId).sort((a, b) => a.order - b.order);
+	}
+	function childFolders(parentId: string | null): Folder[] {
+		return allFolders.filter(f => f.parentId === parentId).sort((a, b) => a.order - b.order);
+	}
+	function noteCountForTopic(topicId: string): number {
+		return [...notesMap.values()].filter(n => n.topicId === topicId).length;
+	}
 
 	let confirmLogout = $state(false);
 	let confirmDelete = $state(false);
@@ -182,6 +198,66 @@
 	<title>Settings — Bedroc</title>
 </svelte:head>
 
+<div class="settings-layout">
+
+<!-- ── Left panel: folders + topics (desktop only) ──────────── -->
+<aside class="topics-panel" role="navigation" aria-label="Topics and folders">
+	<!-- Logo row -->
+	<div class="panel-logo">
+		<img src="/icons/appicon-96.png" alt="Bedroc" class="panel-logo-icon" width="24" height="24" />
+		<span class="panel-logo-text">Bedroc</span>
+	</div>
+
+	<div class="topics-header">
+		<span class="label">Topics</span>
+	</div>
+
+	<!-- Pinned -->
+	<div class="topic-list-pinned">
+		<a href="/" class="topic-item topic-item-all">
+			<span class="topic-dot" style="background: var(--text-faint)"></span>
+			<span class="topic-name">All notes</span>
+			<span class="topic-count">{allNotes}</span>
+		</a>
+		<a href="/?topic=null" class="topic-item">
+			<span class="topic-dot topic-dot-uncategorised"></span>
+			<span class="topic-name">Uncategorised</span>
+			<span class="topic-count">{[...notesMap.values()].filter(n => !n.topicId).length}</span>
+		</a>
+		{#if allTopics.length > 0 || allFolders.length > 0}
+			<div class="topic-separator"></div>
+		{/if}
+	</div>
+
+	<!-- Scrollable topics/folders -->
+	<nav class="topic-list">
+		{#each childFolders(null) as folder (folder.id)}
+			{@render settingsFolderRow(folder, 0)}
+		{/each}
+		{#each topicsInFolder(null) as topic (topic.id)}
+			{@render settingsTopicRow(topic, 0)}
+		{/each}
+	</nav>
+
+	<!-- Footer: user + settings (active) + status dot -->
+	<div class="panel-footer">
+		<button class="btn-ghost panel-user" onclick={() => {}}>
+			<span class="panel-user-avatar" aria-hidden="true">{(auth.username ?? 'A')[0].toUpperCase()}</span>
+			<span class="panel-user-name">{auth.username ?? 'Account'}</span>
+		</button>
+		<a href="/settings" class="panel-settings-btn panel-settings-active" aria-label="Settings" aria-current="page">
+			<svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+				<circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+				<path d="M8 1v2M8 13v2M1 8h2M13 8h2M2.93 2.93l1.41 1.41M11.66 11.66l1.41 1.41M2.93 13.07l1.41-1.41M11.66 4.34l1.41-1.41" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+			</svg>
+		</a>
+		{#if serverStatus.value !== 'unknown'}
+			<span class="panel-srv-dot panel-srv-dot-{serverStatus.value}" title={serverStatus.value === 'online' ? 'Server online' : serverStatus.value === 'offline' ? 'Server unreachable' : 'Checking…'}></span>
+		{/if}
+	</div>
+</aside>
+
+<!-- ── Settings content ──────────────────────────────────────── -->
 <div class="page">
 	<h2 class="page-title">Settings</h2>
 
@@ -201,6 +277,29 @@
 					<span class="row-label">Server</span>
 					<span class="row-value muted">{auth.serverUrl}</span>
 				</div>
+			</div>
+		</div>
+	</section>
+
+	<!-- Appearance -->
+	<section class="section">
+		<h3 class="section-title">Appearance</h3>
+		<div class="card">
+			<div class="row">
+				<div class="row-info">
+					<span class="row-label">Theme</span>
+					<span class="row-sub">{theme.isLight ? 'Light' : 'Dark'}</span>
+				</div>
+				<button
+					class="toggle"
+					class:on={theme.isLight}
+					onclick={toggleTheme}
+					role="switch"
+					aria-checked={theme.isLight}
+					aria-label="Light mode"
+				>
+					<span class="toggle-thumb"></span>
+				</button>
 			</div>
 		</div>
 	</section>
@@ -409,7 +508,7 @@
 								{/if}
 							</span>
 							<span class="row-sub session-expiry">
-								Expires {new Date(session.expires_at).toLocaleDateString()}
+								Expires {new Date(session.expires_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
 							</span>
 						</div>
 						{#if session.id !== currentSessionId}
@@ -470,10 +569,221 @@
 	</section>
 
 	<p class="version">Bedroc v0.1.0 — open source, E2EE</p>
-</div>
+</div><!-- end .page -->
+</div><!-- end .settings-layout -->
+
+<!-- ── Folder snippet ───────────────────────────────────────── -->
+{#snippet settingsFolderRow(folder: Folder, depth: number)}
+	<div class="folder-row">
+		<div class="folder-item" style="padding-left: {10 + depth * 14}px">
+			<button
+				class="folder-chevron"
+				class:collapsed={folder.collapsed}
+				onclick={() => toggleFolderCollapsed(folder.id)}
+				aria-label={folder.collapsed ? 'Expand folder' : 'Collapse folder'}
+			>
+				<svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+					<path d="M2 3.5L5 6.5 8 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</button>
+			<svg class="folder-icon" width="13" height="12" viewBox="0 0 13 12" fill="none">
+				<path d="M1 3a1 1 0 0 1 1-1h2.5l1 1H11a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3z" stroke="currentColor" stroke-width="1.2"/>
+			</svg>
+			<span class="folder-name">{folder.name}</span>
+		</div>
+		{#if !folder.collapsed}
+			{#each childFolders(folder.id) as child (child.id)}
+				{@render settingsFolderRow(child, depth + 1)}
+			{/each}
+			{#each topicsInFolder(folder.id) as topic (topic.id)}
+				{@render settingsTopicRow(topic, depth + 1)}
+			{/each}
+		{/if}
+	</div>
+{/snippet}
+
+{#snippet settingsTopicRow(topic: Topic, depth: number)}
+	<div class="topic-row">
+		<a
+			href="/?topic={topic.id}"
+			class="topic-item"
+			style="padding-left: {14 + depth * 14}px"
+		>
+			<span class="topic-dot" style="background: {topic.color}"></span>
+			<span class="topic-name">{topic.name}</span>
+			<span class="topic-count">{noteCountForTopic(topic.id)}</span>
+		</a>
+	</div>
+{/snippet}
 
 <style>
+	/* ── Two-column layout ────────────────────────────── */
+	.settings-layout {
+		display: flex;
+		height: 100%;
+		overflow: hidden;
+	}
+
+	/* ── Topics panel (matches +page.svelte styles exactly) ── */
+	.topics-panel {
+		width: var(--sidebar-w);
+		flex-shrink: 0;
+		border-right: 1px solid var(--border);
+		display: none; /* hidden on mobile */
+		flex-direction: column;
+		overflow: hidden;
+		background: var(--bg-elevated);
+	}
+
+	@media (min-width: 900px) {
+		.topics-panel { display: flex; }
+	}
+
+	.panel-logo {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: max(env(safe-area-inset-top, 0px), 8px) 14px;
+		min-height: var(--nav-h);
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+	.panel-logo-icon { width: 24px; height: 24px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
+	.panel-logo-text { font-size: 14px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; }
+
+	.topics-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 10px 12px 4px;
+		flex-shrink: 0;
+	}
+
+	.topic-list-pinned {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		padding: 0 8px;
+		flex-shrink: 0;
+	}
+
+	.topic-list {
+		flex: 1;
+		overflow-y: auto;
+		padding: 0 8px;
+	}
+
+	.topic-separator {
+		height: 1px;
+		background: var(--border);
+		margin: 4px 0;
+	}
+
+	.topic-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 10px;
+		border-radius: var(--radius-sm);
+		font-size: 13px;
+		color: var(--text-muted);
+		cursor: pointer;
+		background: none;
+		border: none;
+		width: 100%;
+		text-align: left;
+		text-decoration: none;
+		transition: background 0.1s ease, color 0.1s ease;
+	}
+	.topic-item:hover { background: var(--bg-hover); color: var(--text); text-decoration: none; }
+	.topic-item.active { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+	.topic-item-all { font-weight: 500; }
+
+	.topic-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+	.topic-dot-uncategorised { background: var(--text-faint); }
+
+	.topic-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.topic-count { font-size: 11px; color: var(--text-faint); flex-shrink: 0; }
+
+	/* Folder rows */
+	.folder-row { display: flex; flex-direction: column; }
+	.folder-item {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 5px 10px;
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+		font-size: 12.5px;
+		cursor: default;
+	}
+	.folder-chevron {
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--text-faint);
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		flex-shrink: 0;
+		transition: transform 0.15s ease;
+	}
+	.folder-chevron.collapsed svg { transform: rotate(-90deg); }
+	.folder-icon { color: var(--text-faint); flex-shrink: 0; }
+	.folder-name { font-size: 12.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.topic-row { display: flex; align-items: center; }
+
+	/* Panel footer */
+	.panel-footer {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 8px 10px;
+		border-top: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+	.panel-user {
+		display: flex; align-items: center; gap: 8px;
+		flex: 1; min-width: 0;
+		padding: 6px 8px;
+		border-radius: var(--radius-sm);
+		text-align: left;
+	}
+	.panel-user-avatar {
+		width: 24px; height: 24px; border-radius: 50%;
+		background: var(--accent-dim); color: var(--accent);
+		font-size: 11px; font-weight: 600;
+		display: flex; align-items: center; justify-content: center;
+		flex-shrink: 0;
+	}
+	.panel-user-name {
+		font-size: 13px; color: var(--text-muted);
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+	.panel-settings-btn {
+		display: flex; align-items: center; justify-content: center;
+		padding: 6px; color: var(--text-faint);
+		border-radius: var(--radius-sm);
+		transition: background 0.12s, color 0.12s;
+		flex-shrink: 0; text-decoration: none;
+	}
+	.panel-settings-btn:hover,
+	.panel-settings-active { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); text-decoration: none; }
+	.panel-srv-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+	.panel-srv-dot-checking { background: var(--text-faint); animation: srv-pulse 1s infinite; }
+	.panel-srv-dot-online   { background: var(--success); }
+	.panel-srv-dot-offline  { background: var(--danger); }
+	@keyframes srv-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+	/* ── Settings content ─────────────────────────────── */
 	.page {
+		flex: 1;
+		overflow-y: auto;
 		padding: 20px 20px 40px;
 		max-width: 560px;
 		display: flex;

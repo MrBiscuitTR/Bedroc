@@ -32,6 +32,7 @@ Bedroc/
 │   │   └── routes/
 │   │       ├── auth.ts          Register, SRP login, logout, sessions, change-password
 │   │       ├── notes.ts         CRUD for notes, topics, folders
+│   │       ├── attachments.ts   Encrypted attachment upload/download
 │   │       └── sync.ts          WebSocket real-time sync
 │   └── Dockerfile
 │
@@ -340,6 +341,44 @@ A service worker (`bedroc/static/sw.js`) caches the app shell for true offline u
 - **API / WS**: never cached — always network-only.
 - Registered in `+layout.svelte` on mount. Works on iOS Safari 11.3+, Android, all desktop browsers.
 
+### Safari / iOS PWA notes
+
+- `viewport-fit=cover` + `env(safe-area-inset-*)` handles status-bar / home-indicator padding.
+- `body { position: fixed; background: var(--bg-elevated); padding-bottom: env(safe-area-inset-bottom) }` fills the gap below the bottom nav in PWA standalone mode.
+- **Safari ITP cookie fix**: `restoreSession()` checks IndexedDB key material even when `tryRefreshToken()` returns `'expired'` (Safari ITP blocks cross-site httpOnly cookies). If key material exists the user sees the unlock prompt instead of a blank login form.
+
+---
+
+## Theme system
+
+`bedroc/src/lib/stores/theme.svelte.ts` provides `theme`, `setTheme()`, `toggleTheme()`, `initTheme()`.
+
+- Persists to `localStorage` under key `bedroc_theme` (`'dark'` | `'light'`).
+- Applies `data-theme="light"` on `<html>` — all CSS variables are overridden in `app.css` under `[data-theme="light"]`.
+- An inline `<script>` in `app.html` applies the saved theme before first paint (prevents flash).
+- `initTheme()` is called in `+layout.svelte` on mount to rehydrate on navigation.
+- Toggle is in **Settings → Appearance**.
+
+---
+
+## UI layout
+
+### Desktop sidebar
+
+There is **one unified sidebar** per page. On the notes list (`/`) and settings (`/settings`), the `<aside class="topics-panel">` component acts as the full sidebar:
+
+- Logo at top
+- "All notes" + "Uncategorised" pinned entries
+- Topic separator
+- Scrollable folders/topics list
+- Bottom footer: user avatar + settings icon + server status dot
+
+The layout (`+layout.svelte`) no longer renders a separate sidebar. Each page manages its own sidebar. The editor (`/note/[id]`) is full-screen with a slide-in topics drawer.
+
+### Mobile
+
+Bottom nav (`Notes` | `Settings`) replaces the sidebar. The settings icon in the topics panel footer is hidden on mobile.
+
 ---
 
 ## Offline conflict resolution
@@ -392,6 +431,10 @@ Rate limits are configured per-route in `server/src/routes/` and globally in `se
 | `PUT /api/topics/:id`, `PUT /api/folders/:id` | 120 req/min | Rapid drag-to-reorder |
 | `GET /api/topics`, `GET /api/folders` | 120 req/min | Sync reads |
 | `DELETE /api/notes/:id` | 60 req/min | Delete operations |
+| `POST /api/attachments/check` | 120 req/min | Pre-upload hash existence check |
+| `PUT /api/attachments/:hash` | 60 req/min | Attachment upload (idempotent) |
+| `GET /api/attachments/:hash` | 120 req/min | Attachment download |
+| `DELETE /api/attachments/:hash` | 30 req/min | Explicit attachment removal |
 | `POST /api/auth/register` | 5 req/min | Anti-spam |
 | `POST /api/auth/login/init` | 10 req/min | Brute-force protection |
 | `POST /api/auth/login/verify` | 10 req/min | Brute-force protection |
@@ -403,5 +446,5 @@ To change a per-route limit, update `config: { rateLimit: { max: N, timeWindow: 
 - **Change password** re-derives master key and re-wraps the DEK, but does not revoke existing sessions. Users who want to invalidate all sessions after a password change should also use "Revoke all sessions" in Settings.
 - **Rate limiting** on auth routes uses Redis — if Redis is unavailable, the rate limiter falls back to in-memory (single-instance only).
 - **iOS push notifications**: the PWA service worker does not support push notifications on iOS (Apple limitation). Real-time sync uses the WebSocket connection instead — it works while the app is open.
-- **Editor**: text formatting uses `document.execCommand` (deprecated). Phase 6 will migrate to ProseMirror. Current editor supports bold/italic/underline/strikethrough/lists/font-size/color/clear-formatting/paste-without-formatting.
+- **Attachment deletion UX**: `DELETE /api/attachments/:hash` is available server-side but the client does not yet call it automatically when a file card is removed from a note. Orphaned server-side attachments are cleaned up only on account deletion (CASCADE). Future: track reference counts or call delete when all note references are gone.
 - **Self-signed cert (browser)**: browsers block fetch() to HTTPS backends with self-signed certs. Use a domain with a real certificate (Caddy, Let's Encrypt) for the best experience. The Electron desktop app bypasses this restriction for private IPs.

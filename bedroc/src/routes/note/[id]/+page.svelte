@@ -779,12 +779,6 @@
 		}, 300);
 	}
 
-	function hideLinkTooltip() {
-		_cursorInLink = false;
-		_mouseOnLink = false;
-		scheduleLinkTooltipHide();
-	}
-
 	function hideLinkTooltipImmediate() {
 		if (_linkTooltipFadeTimer) { clearTimeout(_linkTooltipFadeTimer); _linkTooltipFadeTimer = null; }
 		_linkTooltipVisible = false;

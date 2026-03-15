@@ -76,6 +76,20 @@ function serveFile(res, filePath, isSpaFallback = false) {
     } else {
       headers['Cache-Control'] = 'no-cache';
     }
+    // CSP for HTML responses — satisfies Electron's security warning.
+    // connect-src * is required: users point the app at arbitrary backend URLs.
+    // unsafe-inline is required for SvelteKit's hydration scripts and Svelte styles.
+    if (ext === '.html') {
+      headers['Content-Security-Policy'] =
+        "default-src 'self'; " +
+        "script-src 'self' 'unsafe-inline'; " +
+        "style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data: blob: https:; " +
+        "font-src 'self' data:; " +
+        "connect-src *; " +
+        "worker-src 'self' blob:; " +
+        "frame-src 'none';";
+    }
     res.writeHead(200, headers);
     res.end(data);
   });

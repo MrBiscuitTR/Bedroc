@@ -67,19 +67,22 @@
 					var cs = getComputedStyle(document.documentElement);
 					var saiT = cs.getPropertyValue('--_sai-t') || '?';
 					var saiB = cs.getPropertyValue('--_sai-b') || '?';
-					var html = document.documentElement;
-					var body = document.body;
 					var shell = document.querySelector('.app-shell') || document.querySelector('.auth-shell');
+					var nav = document.querySelector('.bottom-nav');
+					var mwrap = document.querySelector('.main-wrap');
+					var navRect = nav ? nav.getBoundingClientRect() : null;
+					var mwrapRect = mwrap ? mwrap.getBoundingClientRect() : null;
+					var shellRect = shell ? shell.getBoundingClientRect() : null;
 					d.textContent =
 						'screen: ' + screen.width + 'x' + screen.height +
-						'\ninner: ' + window.innerWidth + 'x' + window.innerHeight +
-						'\nhtml: ' + html.clientWidth + 'x' + html.clientHeight + ' (offset: ' + html.offsetHeight + ')' +
-						'\nbody: ' + body.clientWidth + 'x' + body.clientHeight + ' (offset: ' + body.offsetHeight + ')' +
-						'\nshell: ' + (shell ? shell.clientWidth + 'x' + shell.clientHeight + ' (offset: ' + shell.offsetHeight + ')' : 'none') +
-						'\nsai-top: ' + saiT + '  sai-bot: ' + saiB +
-						'\nstandalone: ' + (window.navigator.standalone ? 'apple' : 'manifest');
+						'  inner: ' + window.innerWidth + 'x' + window.innerHeight +
+						'\nhtml: ' + document.documentElement.clientHeight + '  body: ' + document.body.clientHeight +
+						'\nshell: ' + (shellRect ? 't=' + Math.round(shellRect.top) + ' b=' + Math.round(shellRect.bottom) + ' h=' + Math.round(shellRect.height) : 'none') +
+						'\nmwrap: ' + (mwrapRect ? 't=' + Math.round(mwrapRect.top) + ' b=' + Math.round(mwrapRect.bottom) + ' h=' + Math.round(mwrapRect.height) : 'none') +
+						'\nnav: ' + (navRect ? 't=' + Math.round(navRect.top) + ' b=' + Math.round(navRect.bottom) + ' h=' + Math.round(navRect.height) : 'none') +
+						'\nsai: t=' + saiT + ' b=' + saiB +
+						'\ngap = inner(' + window.innerHeight + ') - nav.bot(' + (navRect ? Math.round(navRect.bottom) : '?') + ') = ' + (navRect ? Math.round(window.innerHeight - navRect.bottom) : '?') + 'px';
 				}
-				// Expose safe-area values via CSS custom properties so JS can read them
 				var s = document.createElement('style');
 				s.textContent = ':root{--_sai-t:env(safe-area-inset-top,0px);--_sai-b:env(safe-area-inset-bottom,0px)}';
 				document.head.appendChild(s);

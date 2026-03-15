@@ -68,9 +68,6 @@ body {
 	/* Prevent iOS rubber-band on the body itself */
 	position: fixed;
 	width: 100%;
-	/* Fill the bottom safe area with the nav/sidebar colour so no dark gap
-	   appears below the bottom nav in PWA standalone mode on iOS. */
-	padding-bottom: env(safe-area-inset-bottom, 0px);
 	background-color: var(--bg-elevated);
 }
 

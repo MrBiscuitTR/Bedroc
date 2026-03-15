@@ -331,6 +331,11 @@
 	let headingPanelEl = $state<HTMLDivElement | undefined>(undefined);
 	// Link insert UI
 	let showLinkDialog = $state(false);
+	// Link tooltip (hover/cursor)
+	let linkTooltip = <{ href: string; x: number; y: number } | null>(null);
+	let _linkTooltipFadeTimer: ReturnType<typeof setTimeout> | null = null;
+	let _linkHoverTimer: ReturnType<typeof setTimeout> | null = null;
+	let _linkTooltipVisible = (false); // false = fading out
 	let linkUrl = $state('');
 	let linkBtnEl = $state<HTMLButtonElement | undefined>(undefined);
 	// Image insert UI
@@ -739,6 +744,26 @@
 		previewContent = null;
 	}
 
+	function showLinkTooltip(href: string, x: number, y: number) {
+		if (_linkTooltipFadeTimer) { clearTimeout(_linkTooltipFadeTimer); _linkTooltipFadeTimer = null; }
+		linkTooltip = { href, x, y };
+		_linkTooltipVisible = true;
+	}
+
+	function hideLinkTooltip() {
+		_linkTooltipVisible = false;
+		_linkTooltipFadeTimer = setTimeout(() => {
+			linkTooltip = null;
+			_linkTooltipFadeTimer = null;
+		}, 500);
+	}
+
+	// Browser detection for PDF rendering
+	const _ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+	const _isIOS = /iPhone|iPad|iPod/.test(_ua);
+	// Safari desktop: has "Safari" but NOT "Chrome" in UA
+	const _isSafariDesktop = !_isIOS && /Safari/.test(_ua) && !/Chrome|Chromium|Edg/.test(_ua);
+
 	function isPreviewable(mimeType: string): boolean {
 		return (
 			mimeType === 'application/pdf' ||
@@ -1051,8 +1076,25 @@
 				// can lag by one frame when Svelte batches state writes.
 				updateFormatState();
 			},
-			onSelectionUpdate: () => {
+			onSelectionUpdate: ({ editor: ed }) => {
 				updateFormatState();
+				// Cursor-on-link: show tooltip if cursor is inside a link mark
+				const { state } = ed;
+				if (state.selection.empty && state.selection.$from.parent.type.name !== "codeBlock") {
+					const mark = state.doc.resolve(state.selection.from).marks().find((m: any) => m.type.name === "link");
+					if (mark) {
+						const href: string = mark.attrs.href ?? "";
+						// Get DOM position for tooltip anchor
+						try {
+							const coords = ed.view.coordsAtPos(state.selection.from);
+							showLinkTooltip(href, coords.left, coords.top);
+						} catch {}
+					} else {
+						if (linkTooltip) hideLinkTooltip();
+					}
+				} else {
+					if (linkTooltip) hideLinkTooltip();
+				}
 			},
 			onFocus: () => {
 				updateFormatState();
@@ -1150,6 +1192,34 @@
 					return true;
 				},
 			},
+		});
+
+		// ── Link hover tooltip ───────────────────────────────────────
+		function getAnchorTarget(el: EventTarget | null): HTMLAnchorElement | null {
+			let node = el as HTMLElement | null;
+			while (node && node !== editorEl) {
+				if (node.tagName === "A") return node as HTMLAnchorElement;
+				node = node.parentElement;
+			}
+			return null;
+		}
+		editorEl.addEventListener("mouseover", (e: MouseEvent) => {
+			const a = getAnchorTarget(e.target);
+			if (!a) { if (_linkHoverTimer) { clearTimeout(_linkHoverTimer); _linkHoverTimer = null; } return; }
+			const href = a.href;
+			const rect = a.getBoundingClientRect();
+			if (_linkHoverTimer) clearTimeout(_linkHoverTimer);
+			_linkHoverTimer = setTimeout(() => {
+				showLinkTooltip(href, rect.left + rect.width / 2, rect.top - 4);
+				_linkHoverTimer = null;
+			}, 1000);
+		});
+		editorEl.addEventListener("mouseout", (e: MouseEvent) => {
+			const a = getAnchorTarget(e.relatedTarget);
+			if (!a) {
+				if (_linkHoverTimer) { clearTimeout(_linkHoverTimer); _linkHoverTimer = null; }
+				if (linkTooltip) hideLinkTooltip();
+			}
 		});
 		// Signal to $effects that the editor is ready
 		editorReady = true;
@@ -1947,6 +2017,29 @@
 	<div class="editor-scroll-area">
 		<div class="body-editor-wrap" bind:this={editorEl}></div>
 
+		<!-- Link hover tooltip -->
+		{#if linkTooltip}
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div
+				class="link-tooltip"
+				class:link-tooltip-fade={!_linkTooltipVisible}
+				style="left: {linkTooltip.x}px; top: {linkTooltip.y}px"
+				onmouseenter={() => { if (_linkTooltipFadeTimer) { clearTimeout(_linkTooltipFadeTimer); _linkTooltipFadeTimer = null; } _linkTooltipVisible = true; }}
+				onmouseleave={hideLinkTooltip}
+			>
+				<a
+					href={linkTooltip.href}
+					target="_blank"
+					rel="noopener noreferrer"
+					class="link-tooltip-anchor"
+					onclick={() => { hideLinkTooltip(); }}
+				>
+					<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M1 9L9 1M9 1H4M9 1v5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+					<span class="link-tooltip-text">{linkTooltip.href}</span>
+				</a>
+			</div>
+		{/if}
+
 		<!-- ── Word count footer ─────────────────────────────── -->
 		<div class="word-count" aria-live="polite" aria-atomic="true">
 			<span>{wordCount} word{wordCount === 1 ? '' : 's'}</span>
@@ -2182,10 +2275,22 @@
 					<button class="btn-ghost preview-dl-btn" onclick={async () => {
 							const dataUri = await loadAttachment(previewState!.hash, auth.userId!, auth.dek);
 							if (!dataUri) return;
-							const a = document.createElement('a');
-							a.href = dataUri;
+							const comma = dataUri.indexOf(",");
+							const b64 = dataUri.slice(comma + 1);
+							const binary = atob(b64);
+							const bytes = new Uint8Array(binary.length);
+							for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+							const mime = dataUri.slice(5, comma).split(";")[0];
+							const blob = new Blob([bytes], { type: mime });
+							const blobUrl = URL.createObjectURL(blob);
+							const a = document.createElement("a");
+							a.href = blobUrl;
 							a.download = previewState!.fileName;
+							a.target = "_blank";
+							document.body.appendChild(a);
 							a.click();
+							document.body.removeChild(a);
+							setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
 						}}>
 						<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v7M3.5 6l2.5 2 2.5-2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 10h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
 						Download
@@ -2201,15 +2306,29 @@
 				{:else if !previewContent}
 					<div class="preview-error">Attachment unavailable (vault may be locked or file missing).</div>
 				{:else if previewState.mimeType === 'application/pdf'}
-					<!-- object tag avoids Edge/Chrome blocking blob PDFs in iframes -->
-					<object
-						data={previewContent}
-						type="application/pdf"
-						class="preview-pdf"
-						aria-label={previewState.fileName}
-					>
-						<p class="preview-error">PDF cannot display inline - use the Download button.</p>
-					</object>
+					{#if _isIOS}
+						<div class="preview-pdf-ios">
+							<p>PDF inline preview is not supported on iOS Safari.</p>
+							<p>Tap the <strong>Download</strong> button above to open it in a PDF viewer.</p>
+						</div>
+					{:else if _isSafariDesktop}
+						<!-- Safari desktop blocks object/plugin PDFs; iframe works -->
+						<iframe
+							src={previewContent}
+							class="preview-pdf"
+							title={previewState.fileName}
+						></iframe>
+					{:else}
+						<!-- Chrome/Edge/Firefox: object tag renders blob PDFs reliably -->
+						<object
+							data={previewContent}
+							type="application/pdf"
+							class="preview-pdf"
+							aria-label={previewState.fileName}
+						>
+							<p class="preview-error">PDF cannot display inline - use the Download button.</p>
+						</object>
+					{/if}
 				{:else}
 					<!-- previewContent is already decoded text (set in openPreview) -->
 					<pre class="preview-text">{previewContent}</pre>
@@ -3219,7 +3338,59 @@
 	.body-editor-wrap :global(.ProseMirror a) {
 		color: var(--accent);
 		text-decoration: underline;
+		cursor: text;
+	}
+
+	/* Link hover tooltip */
+	.link-tooltip {
+		position: fixed;
+		z-index: 500;
+		transform: translate(-50%, -100%);
+		margin-top: -6px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		padding: 5px 10px;
+		box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+		pointer-events: auto;
+		opacity: 1;
+		transition: opacity 0.5s ease;
+		max-width: 320px;
+	}
+	.link-tooltip.link-tooltip-fade {
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 0.15s ease;
+	}
+	.link-tooltip-anchor {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		color: var(--accent);
+		text-decoration: none;
+		font-size: 12px;
+		line-height: 1.4;
 		cursor: pointer;
+	}
+	.link-tooltip-anchor:hover { text-decoration: underline; }
+	.link-tooltip-text {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 280px;
+		display: block;
+	}
+	.preview-pdf-ios {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		height: 100%;
+		gap: 8px;
+		color: var(--text-muted);
+		font-size: 14px;
+		text-align: center;
+		padding: 32px;
 	}
 
 	/* Link / image insert dialog */

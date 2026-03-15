@@ -342,7 +342,7 @@
 		   In Safari browser: safe-area-inset-top = 0, so 24px fallback applies.
 		   In PWA standalone: safe-area-inset-top = status bar height (~59px). */
 		padding-top: max(env(safe-area-inset-top, 0px), 24px);
-		padding-bottom: max(env(safe-area-inset-bottom, 0px), 24px);
+		padding-bottom: 24px;
 		padding-left: 16px;
 		padding-right: 16px;
 		background: var(--bg);
@@ -352,6 +352,7 @@
 	@media (display-mode: standalone) {
 		.auth-shell {
 			padding-top: max(env(safe-area-inset-top, 44px), 44px);
+			padding-bottom: env(safe-area-inset-bottom, 24px);
 		}
 	}
 

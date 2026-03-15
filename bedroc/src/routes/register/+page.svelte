@@ -567,7 +567,7 @@
 	}
 
 	/* ── Corner 3-dot menu ── */
-	.corner-menu-wrap { position: fixed; top: 12px; right: 12px; z-index: 100; }
+	.corner-menu-wrap { position: fixed; top: max(env(safe-area-inset-top, 0px), 12px); right: 12px; z-index: 100; }
 	.corner-menu-btn {
 		display: flex; align-items: center; justify-content: center;
 		width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border);

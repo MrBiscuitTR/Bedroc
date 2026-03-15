@@ -80,17 +80,21 @@ All Phase 1 placeholders have been replaced. See `lib/crypto/`, `lib/stores/auth
 
 | File | Status | Notes |
 | --- | --- | --- |
-| `routes/note/[id]/+page.svelte` | ✅ Done | `document.execCommand` replaced with TipTap (ProseMirror). Extensions: StarterKit, Underline, TextStyle, Color, FontSize, TextAlign, Subscript, Superscript, Link, Table, Image, Placeholder, Highlight, Typography, TaskList, TaskItem, CharacterCount. |
-| `routes/note/[id]/+page.svelte` | ✅ Done | Font color picker: custom swatch panel + native `<input type="color">` fallback; color-at-cursor reads from `editor.getAttributes('textStyle').color`; preview swatch updates in real time. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | `document.execCommand` replaced with TipTap (ProseMirror). Extensions: StarterKit, Underline, TextStyle, Color, FontSize, TextAlign, Subscript, Superscript, Link, Table, Image, Placeholder, Highlight, Typography, TaskList, TaskItem, CharacterCount, CodeBlockLowlight, TrailingParagraph. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Font color picker: custom swatch panel + native `<input type="color">` fallback; color-at-cursor reads from `editor.getAttributes('textStyle').color`; preview swatch updates in real time. "Default" swatch calls `unsetColor()` to restore theme text color (slash-circle icon). |
 | `routes/note/[id]/+page.svelte` | ✅ Done | Font size: dropdown with preset sizes; value stored as `"16px"` (with unit) via FontSize extension; display strips unit with `.replace('px','')` to avoid double-unit bug. |
 | `routes/note/[id]/+page.svelte` | ✅ Done | Word/char count footer via CharacterCount extension — updates in real time, also updated on external sync. |
 | `routes/note/[id]/+page.svelte` | ✅ Done | Tables: insert 3×3 table, add/delete row/column, delete table. Contextual table toolbar appears only when cursor is inside a table. |
-| `routes/note/[id]/+page.svelte` | ✅ Done | Images: upload from device → base64 data URI stored in note HTML (no server upload, fully private, encrypted with rest of note). |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Images: upload from device → content-addressed encrypted attachment. Resize via drag handle (persists `data-width`). Alignment modes: inline / float-left / float-right (persists `data-align`). Both attributes use `parseHTML`+`renderHTML` for save/reload persistence. |
 | `routes/note/[id]/+page.svelte` | ✅ Done | Task lists: checkboxes with nested support; completed items struck through via CSS. |
-| `routes/note/[id]/+page.svelte` | ✅ Done | Highlights: multi-color highlight via `<mark>` with `data-color`. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Highlights: multi-color highlight via `Highlight.configure({ multicolor: true })`. Split button: left applies current color, arrow opens picker. Presets: yellow/green/blue/red/purple/orange + custom `<input type="color">`. Saved to `localStorage` (`bedroc_highlight_color`). |
 | `routes/note/[id]/+page.svelte` | ✅ Done | Link dialog: inline URL input; Enter or Apply inserts link; clicking button again on a link removes it. |
 | `routes/note/[id]/+page.svelte` | ✅ Done | Typography: smart quotes, em-dashes, ellipsis auto-substitution. |
 | `routes/note/[id]/+page.svelte` | ✅ Done | Headings H1–H4 via dropdown; Code, Blockquote, Code block via toolbar buttons. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Syntax highlighting: `CodeBlockLowlight` with `createLowlight(all)` (all highlight.js languages). Custom NodeView with language `<select>` picker in code block header. Token CSS classes: `hljs-*` styled for dark+light themes. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Tab key: inserts 4 spaces outside lists/tables. Inside list items/task items falls through to TipTap's native list indent. Inside tables moves to next cell. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Toolbar state (bold/italic/underline/color/etc.) now updates via `onTransaction` — fires synchronously on every ProseMirror transaction including cursor moves, eliminating the lag where state only updated after the user typed. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | TrailingParagraph extension: ProseMirror `appendTransaction` plugin ensures a clickable empty paragraph always exists after the last block node (table, image, code block). Prevents cursor being "trapped" with no exit. |
 
 ### Current note storage format
 
@@ -101,13 +105,14 @@ Notes are stored as **semantic HTML** output by TipTap/ProseMirror. The decrypte
 <p>Hello <span style="font-size:24px;color:#6b8afd;">world</span>, this is a <strong>note</strong>.</p>
 <ul data-type="taskList"><li data-checked="true"><p>Done item</p></li></ul>
 <table><tbody><tr><th><p>Cell</p></th></tr></tbody></table>
-<img src="attachment:a3f1..." style="width:400px">
+<img src="attachment:a3f1..." data-width="400" data-align="left">
 <div data-file-attachment data-hash="b2e4..." data-file-name="report.pdf" ...></div>
+<pre><code class="language-typescript">const x = 1;</code></pre>
 ```
 
 This is clean ProseMirror HTML — semantic tags (`<strong>`, `<em>`, `<h1>`–`<h4>`, `<mark>`, `<table>`, task list `<ul>`) with inline styles only for font-size and color overrides. It is backward-compatible with notes written before the TipTap migration (old `<b>`/`<span>` execCommand HTML renders fine in ProseMirror).
 
-Images use `attachment:<sha256-hex>` placeholders in the `src` attribute. File cards use a custom `<div data-file-attachment>` node serialised by TipTap. Both are restored to their data URIs before the editor renders them.
+Images use `attachment:<sha256-hex>` placeholders in the `src` attribute, with `data-width` and `data-align` for layout persistence. File cards use a custom `<div data-file-attachment>` node serialised by TipTap. Both are restored to their data URIs before the editor renders them.
 
 ---
 
@@ -124,17 +129,32 @@ Images use `attachment:<sha256-hex>` placeholders in the `src` attribute. File c
 | `server/src/db/queries/attachments.ts` | ✅ Done | `upsertAttachment`, `getAttachment`, `getExistingHashes`, `deleteAttachment`, `deleteAllAttachments`. |
 | `server/src/routes/attachments.ts` | ✅ Done | `POST /api/attachments/check`, `PUT /api/attachments/:hash`, `GET /api/attachments/:hash`, `DELETE /api/attachments/:hash`. |
 | `routes/note/[id]/+page.svelte` | ✅ Done | File attachment card: custom TipTap node (`fileAttachment`), download button, preview trigger (PDF/text/code). |
-| `routes/note/[id]/+page.svelte` | ✅ Done | Image resize: drag handle on selected image; persists `style="width:Xpx"` into TipTap node attributes. |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Image resize: drag handle on selected image; persists width as `data-width` attribute (not inline style). |
+| `routes/note/[id]/+page.svelte` | ✅ Done | Image alignment: inline / float-left / float-right; persists as `data-align` attribute via `parseHTML`+`renderHTML`. Survives save/reload. |
 | `routes/note/[id]/+page.svelte` | ✅ Done | File preview modal: PDF shown via `<iframe>`, text/code shown in scrollable `<pre>`. Triggered by clicking file icon or name for previewable types. |
+| `lib/attachments.ts` | ✅ Done | `retryAttachmentUpload(hash)`: re-attempts background server upload on every `doSave()` and after note load (`requestAnimationFrame`). Ensures uploads that silently failed reach the server. |
 
 ### Attachment sync design
 
 - **Content-addressed**: SHA-256 of the **plaintext** data URI is the key. Same file on any device → same hash → single server record.
-- **Upload: once only**: the server `PUT /api/attachments/:hash` uses `ON CONFLICT DO NOTHING`. Normal note saves never re-upload attachment blobs — only the tiny placeholder text travels with the note body.
+- **Upload: idempotent**: the server `PUT /api/attachments/:hash` uses `ON CONFLICT DO NOTHING`. A retry of a previously uploaded blob is a safe no-op. Normal note saves never re-upload attachment blobs — only the tiny placeholder text travels with the note body.
+- **Upload retry**: `retryAttachmentUpload()` is called on every save and every note load, ensuring that a failed fire-and-forget upload is eventually delivered.
 - **Cross-device**: when `rehydrateAttachments()` finds a hash not in local IndexedDB, it calls `GET /api/attachments/:hash`, caches the encrypted blob in IndexedDB, then decrypts it. Subsequent loads are fully offline.
-- **Deletion**: server attachment records are deleted only when the user explicitly calls `DELETE /api/attachments/:hash` (e.g. when removing a file card). Account deletion cascades via `ON DELETE CASCADE` on `user_id`.
+- **IDB as cache**: IDB stores encrypted blobs as a local cache for offline use. No GC is run. Stale or missing IDB entries are re-fetched from the server transparently. The server is the authoritative record.
+- **Attachment cleanup**: client-side orphan detection is not implemented — it is unsafe due to multi-device sync races (a note on another device may reference a hash not yet loaded locally). Orphaned blobs are cleaned up via manual or scheduled Postgres hard-deletes of soft-deleted notes. Account deletion cascades via `ON DELETE CASCADE`.
 - **Encryption**: everything stored on the server is `enc:<JSON {iv,ct}>` (AES-256-GCM with the user's DEK). The server never sees plaintext. If the vault is locked, placeholders remain in the editor.
 - **Bandwidth**: large binary blobs only travel once (upload) or on first cross-device access (download). Regular autosaves only carry the placeholder text.
+
+---
+
+## Phase 8 — Desktop (Electron) ✅ COMPLETE
+
+| File | Status | Notes |
+| --- | --- | --- |
+| `desktop/main.js` | ✅ Done | Electron wrapper: local Node.js HTTP server serves SvelteKit static build; `BrowserWindow` loads `http://localhost:<port>`. Private-IP TLS bypass for WireGuard/Tailscale/LAN backends. |
+| `desktop/main.js` | ✅ Done | Right-click context menu: Cut, Copy, Paste, Paste without formatting, Select All — shown contextually via `webContents.on('context-menu')`. |
+| `desktop/package.json` | ✅ Done | electron-builder targets: NSIS installer + portable (Windows), DMG + zip (macOS x64+arm64), AppImage + deb + rpm (Linux). |
+| `.github/workflows/build-desktop.yml` | ✅ Done | CI builds: `ubuntu-latest` for Linux, `macos-latest` for macOS. Triggered on `v*` tag push or `workflow_dispatch`. `CSC_IDENTITY_AUTO_DISCOVERY=false` skips macOS code signing. Windows must be built locally. |
 
 ---
 
@@ -142,7 +162,7 @@ Images use `attachment:<sha256-hex>` placeholders in the `src` attribute. File c
 
 | File | Status | Notes |
 | --- | --- | --- |
-| `lib/stores/theme.svelte.ts` | ✅ Done | Dark/light theme toggle; persisted to localStorage; `data-theme` attribute on `<html>`; flash-free via inline script in `app.html`. |
+| `lib/stores/theme.svelte.ts` | ✅ Done | Dark/light theme toggle; persisted to localStorage; `data-theme` attribute on `<html>`; flash-free via inline script in `app.html`. Priority: localStorage → OS `prefers-color-scheme` → dark default. |
 
 ---
 

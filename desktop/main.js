@@ -14,7 +14,7 @@
  * to __dirname in development (npm start from desktop/).
  */
 
-const { app, BrowserWindow, shell, Menu, nativeImage, session } = require('electron');
+const { app, BrowserWindow, shell, Menu, MenuItem, nativeImage, session, clipboard, ipcMain } = require('electron');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
@@ -163,6 +163,46 @@ function createWindow(port) {
   });
 
   // Open external links in the default browser, not a new Electron window
+  // Right-click context menu with copy/cut/paste/paste-without-formatting
+  mainWindow.webContents.on('context-menu', (event, params) => {
+    const menu = new Menu();
+
+    if (params.selectionText) {
+      menu.append(new MenuItem({
+        label: 'Cut',
+        enabled: params.isEditable,
+        click: () => mainWindow.webContents.cut(),
+      }));
+      menu.append(new MenuItem({
+        label: 'Copy',
+        click: () => mainWindow.webContents.copy(),
+      }));
+    }
+
+    menu.append(new MenuItem({
+      label: 'Paste',
+      enabled: params.isEditable,
+      click: () => mainWindow.webContents.paste(),
+    }));
+
+    menu.append(new MenuItem({
+      label: 'Paste without formatting',
+      enabled: params.isEditable,
+      click: () => mainWindow.webContents.pasteAndMatchStyle(),
+    }));
+
+    if (params.selectionText || params.isEditable) {
+      menu.append(new MenuItem({ type: 'separator' }));
+      menu.append(new MenuItem({
+        label: 'Select All',
+        enabled: params.isEditable,
+        click: () => mainWindow.webContents.selectAll(),
+      }));
+    }
+
+    if (menu.items.length > 0) menu.popup({ window: mainWindow });
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (!url.startsWith(`http://localhost:${port}`)) {
       shell.openExternal(url);

@@ -26,6 +26,8 @@
 	import { Superscript } from '@tiptap/extension-superscript';
 	import { Link } from '@tiptap/extension-link';
 	import { Table, TableRow, TableHeader, TableCell } from '@tiptap/extension-table';
+	import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
+	import { createLowlight, all } from 'lowlight';
 	import { Image } from '@tiptap/extension-image';
 	import { Placeholder } from '@tiptap/extension-placeholder';
 	import { Highlight } from '@tiptap/extension-highlight';
@@ -102,6 +104,17 @@
 				_bodyText = editor.getText() ?? '';
 				loadedNoteId = noteId ?? null;
 				saved = true;
+				// On note load, retry any file attachment uploads that may have failed.
+				// Runs after setContent so the doc has the fileAttachment nodes.
+				if (auth.dek && auth.userId) {
+					requestAnimationFrame(() => {
+						editor?.state.doc.descendants((node) => {
+							if (node.type.name === 'fileAttachment' && node.attrs.hash) {
+								retryAttachmentUpload(node.attrs.hash, auth.userId!, auth.dek!);
+							}
+						});
+					});
+				}
 			}
 		} else if (isNew && isNewNoteId) {
 			title = '';
@@ -318,6 +331,51 @@
 	let colorPanelEl = $state<HTMLDivElement | undefined>(undefined);
 	let fontsizeBtnEl = $state<HTMLButtonElement | undefined>(undefined);
 	let fontsizePanelEl = $state<HTMLDivElement | undefined>(undefined);
+
+	// ── Highlight color ────────────────────────────────────────────
+	const LS_HIGHLIGHT_COLOR = 'bedroc_highlight_color';
+	const highlightPresets = [
+		{ label: 'Yellow', color: '#facc15' },
+		{ label: 'Green',  color: '#4ade80' },
+		{ label: 'Blue',   color: '#60a5fa' },
+		{ label: 'Red',    color: '#f87171' },
+		{ label: 'Purple', color: '#c084fc' },
+		{ label: 'Orange', color: '#fb923c' },
+	];
+	function loadHighlightColor(): string {
+		if (typeof localStorage === 'undefined') return '#facc15';
+		return localStorage.getItem(LS_HIGHLIGHT_COLOR) ?? '#facc15';
+	}
+	let currentHighlightColor = $state(loadHighlightColor());
+	let showHighlightPicker = $state(false);
+	let highlightBtnEl = $state<HTMLButtonElement | undefined>(undefined);
+	let highlightPanelEl = $state<HTMLDivElement | undefined>(undefined);
+
+	function applyHighlight() {
+		if (!editor) return;
+		if (editor.isActive('highlight')) {
+			editor.chain().focus().unsetHighlight().run();
+		} else {
+			(editor.chain().focus() as any).setHighlight({ color: currentHighlightColor }).run();
+		}
+		saved = false;
+		scheduleAutosave();
+	}
+	function setHighlightColor(color: string) {
+		currentHighlightColor = color;
+		localStorage.setItem(LS_HIGHLIGHT_COLOR, color);
+		showHighlightPicker = false;
+		// Apply the new color immediately if highlight is active
+		if (editor?.isActive('highlight')) {
+			(editor.chain().focus() as any).setHighlight({ color }).run();
+			saved = false;
+			scheduleAutosave();
+		}
+	}
+
+	$effect(() => {
+		if (showHighlightPicker) positionPanel(highlightBtnEl, highlightPanelEl);
+	});
 
 	// ── Custom Image extension ──────────────────────────────────────
 	// Block node with per-image resize + alignment (float-left, float-right, block).
@@ -865,7 +923,52 @@
 		editor = new Editor({
 			element: editorEl,
 			extensions: [
-				StarterKit.configure({ link: false, underline: false }),
+				StarterKit.configure({ link: false, underline: false, codeBlock: false }),
+				CodeBlockLowlight.extend({
+					addNodeView() {
+						return ({ node, updateAttributes, editor: e }) => {
+							const wrap = document.createElement('div');
+							wrap.className = 'code-block-wrap';
+
+							const header = document.createElement('div');
+							header.className = 'code-block-header';
+
+							const langSelect = document.createElement('select');
+							langSelect.className = 'code-block-lang';
+							const langs = ['plaintext','javascript','typescript','python','rust','go','java','c','cpp','csharp','php','ruby','swift','kotlin','bash','shell','sql','html','css','json','yaml','toml','markdown','diff','xml'];
+							for (const l of langs) {
+								const opt = document.createElement('option');
+								opt.value = l;
+								opt.textContent = l;
+								if (l === (node.attrs.language || 'plaintext')) opt.selected = true;
+								langSelect.appendChild(opt);
+							}
+							langSelect.addEventListener('change', () => {
+								updateAttributes({ language: langSelect.value });
+							});
+
+							header.appendChild(langSelect);
+
+							const pre = document.createElement('pre');
+							const code = document.createElement('code');
+							pre.appendChild(code);
+
+							wrap.append(header, pre);
+
+							return {
+								dom: wrap,
+								contentDOM: code,
+								update(updatedNode) {
+									if (updatedNode.type.name !== 'codeBlock') return false;
+									const lang = updatedNode.attrs.language || 'plaintext';
+									langSelect.value = lang;
+									code.className = `language-${lang}`;
+									return true;
+								},
+							};
+						};
+					},
+				}).configure({ lowlight: createLowlight(all), defaultLanguage: 'plaintext' }),
 				Underline,
 				TextStyle,
 				Color,
@@ -900,6 +1003,12 @@
 				scheduleAutosave();
 				updateFormatState();
 			},
+			onTransaction: () => {
+				// updateFormatState on every transaction so toolbar reflects mark
+				// toggles (bold/italic/underline etc.) immediately — onUpdate alone
+				// can lag by one frame when Svelte batches state writes.
+				updateFormatState();
+			},
 			onSelectionUpdate: () => {
 				updateFormatState();
 			},
@@ -909,6 +1018,22 @@
 			editorProps: {
 				attributes: {
 					spellcheck: 'true',
+				},
+				handleKeyDown(view, event) {
+					// Tab → insert 4 spaces (never steal focus from the editor)
+					if (event.key === 'Tab' && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+						// Inside a list or table, let TipTap handle native indent behaviour
+						const { state } = view;
+						const selFrom = state.selection.$from;
+						const inList = selFrom.node(selFrom.depth - 1)?.type.name === 'listItem'
+							|| selFrom.node(selFrom.depth - 1)?.type.name === 'taskItem';
+						const inTable = state.selection.$from.node(1)?.type.name === 'table';
+						if (inList || inTable) return false; // let TipTap handle it
+						event.preventDefault();
+						view.dispatch(state.tr.insertText('    '));
+						return true;
+					}
+					return false;
 				},
 			},
 		});
@@ -1349,9 +1474,18 @@
 				<div class="color-backdrop" onclick={() => (showColorPicker = false)}></div>
 				<div class="color-panel" bind:this={colorPanelEl} role="dialog" aria-label="Text color picker">
 					<div class="color-swatches">
+						<!-- Default: removes color mark, text uses theme default -->
+						<button
+							class="color-swatch color-swatch-default"
+							class:active={colorIsDefault}
+							onmousedown={(e) => { e.preventDefault(); unsetColor(); showColorPicker = false; }}
+							aria-label="Default (remove color)"
+							title="Default (remove color)"
+						></button>
 						{#each textColors as c}
 							<button
 								class="color-swatch"
+								class:active={!colorIsDefault && customColor === c}
 								style="background: {c}"
 								onmousedown={(e) => { e.preventDefault(); applyColor(c); }}
 								aria-label="Color {c}"
@@ -1369,15 +1503,49 @@
 
 		<div class="fmt-divider"></div>
 
-		<!-- Highlight -->
-		<button class="fmt-btn" class:active={isHighlight}
-			onmousedown={(e) => { e.preventDefault(); editor?.chain().focus().toggleHighlight().run(); }} title="Highlight" aria-label="Highlight">
-			<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-				<path d="M2 10l3-3 4-4 2 2-4 4-3 3-2-2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
-				<path d="M8 4l2 2" stroke="currentColor" stroke-width="1.3"/>
-				<path d="M2 12h3" stroke={isHighlight ? 'var(--accent)' : 'currentColor'} stroke-width="2" stroke-linecap="round"/>
-			</svg>
-		</button>
+		<!-- Highlight (split button: icon toggles, arrow opens color picker) -->
+		<div class="highlight-wrap">
+			<button class="fmt-btn highlight-apply-btn" class:active={isHighlight}
+				onmousedown={(e) => { e.preventDefault(); applyHighlight(); }}
+				title="Highlight (current color)" aria-label="Highlight">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+					<path d="M2 10l3-3 4-4 2 2-4 4-3 3-2-2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+					<path d="M8 4l2 2" stroke="currentColor" stroke-width="1.3"/>
+					<path d="M2 12h3" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:{currentHighlightColor}"/>
+				</svg>
+			</button>
+			<button class="fmt-btn highlight-arrow-btn"
+				bind:this={highlightBtnEl}
+				onmousedown={(e) => { e.preventDefault(); showHighlightPicker = !showHighlightPicker; showColorPicker = false; showFontSizePicker = false; }}
+				title="Highlight color" aria-label="Highlight color" aria-expanded={showHighlightPicker}>
+				<svg width="7" height="5" viewBox="0 0 7 5" fill="none" aria-hidden="true">
+					<path d="M1 1l2.5 3L6 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</button>
+			{#if showHighlightPicker}
+				<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+				<div class="color-backdrop" onclick={() => (showHighlightPicker = false)}></div>
+				<div class="color-panel highlight-color-panel" bind:this={highlightPanelEl} role="dialog" aria-label="Highlight color">
+					<div class="color-swatches">
+						{#each highlightPresets as p}
+							<button
+								class="color-swatch"
+								class:active={currentHighlightColor === p.color}
+								style="background: {p.color}"
+								onmousedown={(e) => { e.preventDefault(); setHighlightColor(p.color); }}
+								aria-label={p.label}
+								title={p.label}
+							></button>
+						{/each}
+					</div>
+					<div class="color-custom-row">
+						<input type="color" class="color-input-native" value={currentHighlightColor}
+							onchange={(e) => setHighlightColor((e.currentTarget as HTMLInputElement).value)} title="Custom highlight color" />
+						<span class="color-custom-label">Custom</span>
+					</div>
+				</div>
+			{/if}
+		</div>
 
 		<!-- Inline code -->
 		<button class="fmt-btn" class:active={isCode}
@@ -2494,6 +2662,44 @@
 	}
 
 	.color-swatch:hover { transform: scale(1.2); border-color: var(--text); }
+	.color-swatch.active { border-color: var(--text); }
+
+	/* Default color swatch — slash-circle to indicate "no color" */
+	.color-swatch-default {
+		background: transparent;
+		border-color: var(--border);
+		position: relative;
+		overflow: hidden;
+	}
+	.color-swatch-default::after {
+		content: '';
+		display: block;
+		position: absolute;
+		inset: 0;
+		background: linear-gradient(
+			to top right,
+			transparent calc(50% - 1px),
+			var(--danger) calc(50% - 1px),
+			var(--danger) calc(50% + 1px),
+			transparent calc(50% + 1px)
+		);
+	}
+	.color-swatch-default.active { border-color: var(--text); }
+
+	/* ── Highlight split button ───────────────────────────────────── */
+	.highlight-wrap {
+		position: relative;
+		display: flex;
+		align-items: center;
+	}
+	.highlight-apply-btn { border-radius: var(--radius-sm) 0 0 var(--radius-sm) !important; }
+	.highlight-arrow-btn {
+		padding: 0 4px !important;
+		min-width: 16px !important;
+		border-radius: 0 var(--radius-sm) var(--radius-sm) 0 !important;
+		border-left: 1px solid var(--border) !important;
+	}
+	.highlight-color-panel { min-width: 120px; }
 
 	.color-custom-row { display: flex; align-items: center; gap: 8px; }
 
@@ -2569,12 +2775,36 @@
 		font-size: 0.88em;
 		color: var(--text);
 	}
-	.body-editor-wrap :global(.ProseMirror pre) {
-		background: var(--bg-hover);
+	.body-editor-wrap :global(.code-block-wrap) {
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
-		padding: 12px 14px;
 		margin: 0.5em 0;
+		overflow: hidden;
+	}
+	.body-editor-wrap :global(.code-block-header) {
+		display: flex;
+		align-items: center;
+		padding: 4px 8px;
+		background: color-mix(in srgb, var(--border) 60%, var(--bg-elevated));
+		border-bottom: 1px solid var(--border);
+	}
+	.body-editor-wrap :global(.code-block-lang) {
+		font-size: 11px;
+		color: var(--text-muted);
+		background: transparent;
+		border: none;
+		outline: none;
+		cursor: pointer;
+		padding: 0 2px;
+	}
+	.body-editor-wrap :global(.code-block-lang option) {
+		background: var(--bg-elevated);
+		color: var(--text);
+	}
+	.body-editor-wrap :global(.ProseMirror pre) {
+		background: var(--bg-hover);
+		padding: 12px 14px;
+		margin: 0;
 		overflow-x: auto;
 	}
 	.body-editor-wrap :global(.ProseMirror pre code) {
@@ -2582,6 +2812,37 @@
 		padding: 0;
 		font-size: 0.875em;
 	}
+
+	/* ── Syntax highlighting (lowlight / highlight.js token classes) ── */
+	.body-editor-wrap :global(.hljs-comment),
+	.body-editor-wrap :global(.hljs-quote)           { color: #6b7280; font-style: italic; }
+	.body-editor-wrap :global(.hljs-keyword),
+	.body-editor-wrap :global(.hljs-selector-tag),
+	.body-editor-wrap :global(.hljs-built_in)        { color: #c084fc; }
+	.body-editor-wrap :global(.hljs-string),
+	.body-editor-wrap :global(.hljs-attr),
+	.body-editor-wrap :global(.hljs-addition)        { color: #4ade80; }
+	.body-editor-wrap :global(.hljs-number),
+	.body-editor-wrap :global(.hljs-literal)         { color: #fb923c; }
+	.body-editor-wrap :global(.hljs-function),
+	.body-editor-wrap :global(.hljs-title)           { color: #60a5fa; }
+	.body-editor-wrap :global(.hljs-variable),
+	.body-editor-wrap :global(.hljs-name)            { color: #f87171; }
+	.body-editor-wrap :global(.hljs-type),
+	.body-editor-wrap :global(.hljs-class .hljs-title) { color: #facc15; }
+	.body-editor-wrap :global(.hljs-meta),
+	.body-editor-wrap :global(.hljs-doctag)          { color: #38bdf8; }
+	.body-editor-wrap :global(.hljs-deletion)        { color: #f87171; }
+	.body-editor-wrap :global(.hljs-section)         { color: #6b8afd; font-weight: 600; }
+	.body-editor-wrap :global(.hljs-subst)           { color: var(--text); }
+	/* light mode adjustments */
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-comment) { color: #9ca3af; }
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-keyword) { color: #7c3aed; }
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-string)  { color: #16a34a; }
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-number)  { color: #ea580c; }
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-function){ color: #2563eb; }
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-variable){ color: #dc2626; }
+	:global([data-theme='light']) .body-editor-wrap :global(.hljs-type)    { color: #b45309; }
 	.body-editor-wrap :global(.ProseMirror blockquote) {
 		border-left: 3px solid var(--border);
 		padding-left: 1em;

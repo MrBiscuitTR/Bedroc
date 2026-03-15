@@ -461,6 +461,7 @@ export async function syncFromServer(): Promise<void> {
 
     console.log('[sync] Topics:', topicsMap.size, 'Folders:', foldersMap.size, 'Notes:', notesMap.size);
     console.log('[sync] syncFromServer complete');
+
   } catch (err) {
     reportSyncResult(false);
     throw err;

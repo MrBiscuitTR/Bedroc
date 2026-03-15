@@ -21,6 +21,12 @@ Bedroc/
 │   ├── nginx-static.conf    nginx config inside the bedroc container
 │   └── vercel.json          SPA rewrite rule for Vercel deployment
 │
+├── desktop/         Electron wrapper (main.js, preload.js, electron-builder config)
+│   ├── main.js              Main process: local HTTP server + BrowserWindow
+│   ├── preload.js           Context bridge (minimal — no Node APIs exposed)
+│   ├── package.json         electron-builder config (win/mac/linux targets)
+│   └── build-resources/     App icons (icon.png, icon.ico)
+│
 ├── server/          Fastify backend (TypeScript, Node 22)
 │   ├── src/
 │   │   ├── db/
@@ -294,6 +300,9 @@ All endpoints are at `/api/...`.
 | `GET` | `/api/folders` | JWT | Get all folders |
 | `PUT` | `/api/folders/:id` | JWT | Create/update folder |
 | `DELETE` | `/api/folders/:id` | JWT | Delete folder |
+| `PUT` | `/api/attachments/:hash` | JWT | Upload encrypted attachment (idempotent, `ON CONFLICT DO NOTHING`) |
+| `GET` | `/api/attachments/:hash` | JWT | Download encrypted attachment |
+| `DELETE` | `/api/attachments/:hash` | JWT | Delete attachment |
 | `GET` | `/ws` | JWT (query param) | WebSocket real-time sync |
 
 ---
@@ -358,6 +367,12 @@ A service worker (`bedroc/static/sw.js`) caches the app shell for true offline u
 - An inline `<script>` in `app.html` applies the saved theme before first paint (prevents flash).
 - `initTheme()` is called in `+layout.svelte` on mount to rehydrate on navigation.
 - Toggle is in **Settings → Appearance**.
+
+**Priority order** (highest wins):
+
+1. `localStorage` explicit preference (`bedroc_theme = 'dark'` | `'light'`)
+2. OS/browser system preference — detected via `window.matchMedia('(prefers-color-scheme: light)')`
+3. Default: **dark**
 
 ---
 
@@ -441,10 +456,86 @@ Rate limits are configured per-route in `server/src/routes/` and globally in `se
 
 To change a per-route limit, update `config: { rateLimit: { max: N, timeWindow: '1 minute' } }` on that route handler. To change the global fallback, update `max` in the `fastifyRateLimit` registration in `server/src/index.ts`.
 
+## Desktop (Electron)
+
+The `desktop/` directory contains an Electron wrapper that ships the SvelteKit static build as a native desktop app.
+
+### How it works
+
+- `main.js` starts a minimal Node.js HTTP server on a free port in the `49152+` range, serving the static build from `resources/app/` (production) or `../bedroc/build` (dev).
+- A `BrowserWindow` loads `http://localhost:<port>`. Using `localhost` (not `file://`) means service workers, `fetch()`, cookies, and IndexedDB all behave normally.
+- Private-IP TLS bypass: `session.defaultSession.setCertificateVerifyProc` and `app.on('certificate-error')` skip cert verification for RFC-1918, Tailscale CGNAT (`100.64–127.*`), and loopback addresses. Public internet addresses are fully verified.
+
+### Running in dev
+
+```bash
+cd bedroc && npm run build   # build frontend first
+cd ../desktop && npm start   # launch Electron (DevTools opens automatically)
+```
+
+### Building installers
+
+Requires native toolchain for each platform — cross-compilation is not supported by electron-builder.
+
+| Platform | Runner needed | Command | Output |
+| --- | --- | --- | --- |
+| Windows | Windows | `npm run dist:win` | NSIS installer + portable `.exe` |
+| macOS | macOS | `npm run dist:mac` | `.dmg` + `.zip` (x64 + arm64) |
+| Linux | Linux | `npm run dist:linux` | `.AppImage` + `.deb` + `.rpm` |
+
+**CI builds**: `.github/workflows/build-desktop.yml` runs `build-linux` on `ubuntu-latest` and `build-mac` on `macos-latest`. Triggered on `v*` tag push or manual `workflow_dispatch`. Windows builds must be done locally (no Windows runner configured). `CSC_IDENTITY_AUTO_DISCOVERY=false` skips macOS code signing in CI — users will need to right-click → Open the first time.
+
+### Right-click context menu
+
+`main.js` handles the `context-menu` event on `mainWindow.webContents`. The menu includes Cut, Copy, Paste, Paste without formatting, and Select All — shown contextually based on whether text is selected and whether the target is editable.
+
+---
+
+## Editor enhancements
+
+The note editor (`routes/note/[id]/+page.svelte`) uses TipTap v3 with ProseMirror.
+
+### Toolbar state updates
+
+Toolbar active states (bold, italic, underline, color preview, etc.) update via `onTransaction` — not `onUpdate`. `onTransaction` fires synchronously on every ProseMirror transaction, including cursor moves, ensuring the toolbar always reflects the current selection state immediately.
+
+### Tab key indent
+
+`handleKeyDown` in `editorProps` intercepts the Tab key. Outside list items and table cells, Tab inserts four literal spaces. Inside list items/task items, it falls through to TipTap's default list indent behaviour. Inside tables, it moves to the next cell (default).
+
+### Syntax highlighting
+
+Code blocks use `CodeBlockLowlight` (from `@tiptap/extension-code-block-lowlight`) with `createLowlight(all)` — all highlight.js languages are registered. A custom NodeView renders a `<select>` language picker in the code block header. Token classes use `hljs-*` prefix; CSS in `app.css` styles them for both dark and light themes.
+
+### Highlight color picker
+
+A split button next to the highlight toolbar icon:
+
+- Left side applies the current color immediately.
+- Arrow side opens a dropdown with preset swatches (yellow, green, blue, red, purple, orange) plus a native `<input type="color">` for custom colors.
+- Selected color is persisted to `localStorage` under `bedroc_highlight_color`.
+- Uses `Highlight.configure({ multicolor: true })` so different colors can coexist in the same note.
+
+### Default text color
+
+The text color picker includes a "default" swatch (shown as a slash-circle icon, class `.color-swatch-default`). Clicking it calls `editor.commands.unsetColor()`, removing the `textStyle` color mark so the text inherits the theme's `--text` variable.
+
+### Image alignment
+
+Images support three placement modes: **inline** (default flow), **float left**, and **float right**. Mode is stored as a `data-align` attribute on the `<img>` tag and read back via `parseHTML` in the TipTap extension. A resize handle persists width as `data-width`. Both attributes survive save/reload because they use `parseHTML` + `renderHTML` (not inline styles, which TipTap does not parse back by default).
+
+### Trailing paragraph
+
+A `TrailingParagraph` ProseMirror plugin (`appendTransaction`) ensures there is always a clickable empty paragraph after the last block node (table, image, code block, etc.). This prevents the cursor from being "trapped" with no way to place it after a block.
+
+---
+
 ## Known limitations (current state)
 
 - **Change password** re-derives master key and re-wraps the DEK, but does not revoke existing sessions. Users who want to invalidate all sessions after a password change should also use "Revoke all sessions" in Settings.
 - **Rate limiting** on auth routes uses Redis — if Redis is unavailable, the rate limiter falls back to in-memory (single-instance only).
 - **iOS push notifications**: the PWA service worker does not support push notifications on iOS (Apple limitation). Real-time sync uses the WebSocket connection instead — it works while the app is open.
-- **Attachment deletion UX**: `DELETE /api/attachments/:hash` is available server-side but the client does not yet call it automatically when a file card is removed from a note. Orphaned server-side attachments are cleaned up only on account deletion (CASCADE). Future: track reference counts or call delete when all note references are gone.
+- **Attachment IDB cache**: IDB stores the encrypted blob as a local cache. Stale IDB entries do not cause data loss — if an attachment is missing from IDB, it is transparently re-fetched from the server on next access. No GC is run on IDB; the server is the authoritative record.
+- **Attachment retry**: `retryAttachmentUpload(hash, userId, dek)` re-attempts the background server upload on every `doSave()` call and after every note load (via `requestAnimationFrame`). Covers the case where the original fire-and-forget upload silently failed.
+- **Attachment cleanup**: orphaned attachments (blobs whose note was deleted) are not automatically removed client-side — client-side detection is unsafe due to multi-device sync races and incomplete note loads. Cleanup is done manually: hard-delete soft-deleted notes via Adminer or a scheduled Postgres script, then rely on account-level `ON DELETE CASCADE` for full teardown. See `MANAGEMENT-GUIDE.md` for the recommended SQL.
 - **Self-signed cert (browser)**: browsers block fetch() to HTTPS backends with self-signed certs. Use a domain with a real certificate (Caddy, Let's Encrypt) for the best experience. The Electron desktop app bypasses this restriction for private IPs.

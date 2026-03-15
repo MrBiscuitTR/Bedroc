@@ -2,7 +2,7 @@
 
 /* ─── Design tokens ───────────────────────────────────────────── */
 :root {
-	--bg:          #0f1117;
+	--bg:          #16181f; /*#0f1117*/
 	--bg-elevated: #16181f;
 	--bg-hover:    #1e2028;
 	--border:      #2a2d37;
@@ -24,7 +24,7 @@
 
 /* ─── Light mode overrides ────────────────────────────────────── */
 [data-theme="light"] {
-	--bg:          #f0f2f7;
+	--bg:          #ffffff; /*#f0f2f7*/
 	--bg-elevated: #ffffff;
 	--bg-hover:    #e8eaf0;
 	--border:      #d0d3de;

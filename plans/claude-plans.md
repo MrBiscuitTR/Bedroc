@@ -47,14 +47,14 @@ The `self-hosting/` folder that was created is superseded by this structure — 
 There are no "modes" — there is one field: **server URL**.
 
 - The frontend build is identical regardless of how it is accessed (website, PWA on home screen, Electron app).
-- Login and register screens have a subtle **server URL field** defaulting to `https://api.bedroc.app`.
+- Login and register screens have a subtle **server URL field** defaulting to `https://bedrocapi.cagancalidag.com`.
 - Users change it to their own server URL to use a self-hosted backend. The URL is saved to localStorage. Multiple saved servers are remembered (Bitwarden-style switcher).
 - This transparently covers all three use cases:
   1. **Public/commercial** — leave default URL, create account on bedroc.app
   2. **Self-hosted on VPS/public IP** — enter `https://notes.mydomain.com`
   3. **Self-hosted behind VPN/CGNAT** — enter Tailscale IP `https://100.x.x.x` or LAN `http://192.168.x.x:3000`
 - Frontend URL is irrelevant — it is either a website the user visited and added to home screen, or the Electron app.
-- The server URL field is subtle: small text "Server: api.bedroc.app ▾" that expands on tap/click to a text input + saved server dropdown.
+- The server URL field is subtle: small text "Server: bedrocapi.cagancalidag.com ▾" that expands on tap/click to a text input + saved server dropdown.
 
 ---
 

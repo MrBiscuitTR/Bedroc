@@ -124,13 +124,13 @@ Bedroc/                              ← root git repo
 
 The frontend build is **always the same** regardless of where it is accessed from (website, PWA on home screen, Electron app). There are no "modes."
 
-At login and register, a subtle **server URL field** defaults to `https://api.bedroc.app` (the public hosted instance). Users change this to their own server URL to use a self-hosted backend. The chosen URL is saved to localStorage and multiple saved servers are remembered (dropdown switcher).
+At login and register, a subtle **server URL field** defaults to `https://bedrocapi.cagancalidag.com` (the public hosted instance). Users change this to their own server URL to use a self-hosted backend. The chosen URL is saved to localStorage and multiple saved servers are remembered (dropdown switcher).
 
 This transparently covers all use cases:
 
 | Use case | Server URL |
 | --- | --- |
-| Public / commercial (bedroc.app) | `https://api.bedroc.app` (default) |
+| Public / commercial (bedroc.app) | `https://bedrocapi.cagancalidag.com` (default) |
 | Self-hosted on VPS / public domain | `https://notes.mydomain.com` |
 | Self-hosted behind VPN / CGNAT | `https://100.x.x.x` (Tailscale) or `http://192.168.x.x:3000` |
 

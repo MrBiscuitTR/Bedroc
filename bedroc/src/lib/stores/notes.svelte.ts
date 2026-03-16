@@ -263,6 +263,30 @@ export async function loadFromDb(): Promise<void> {
   for (const f of folders) {
     foldersMap.set(f.id, localToFolder(f));
   }
+
+  // Repair orphaned folders (circular parentId references)
+  for (const [id, folder] of foldersMap) {
+    if (folder.parentId === null) continue;
+    // Walk the parent chain; if we revisit this folder's id, it's circular
+    const visited = new Set<string>([id]);
+    let cur = folder.parentId;
+    let broken = false;
+    while (cur) {
+      if (visited.has(cur)) { broken = true; break; }
+      visited.add(cur);
+      const parent = foldersMap.get(cur);
+      cur = parent?.parentId ?? null;
+    }
+    // Also broken if parentId references a folder that doesn't exist
+    if (!broken && folder.parentId && !foldersMap.has(folder.parentId)) broken = true;
+    if (broken) {
+      const fixed = { ...folder, parentId: null };
+      foldersMap.set(id, fixed);
+      // Persist the fix
+      saveFolder(fixed);
+    }
+  }
+
   for (const c of conflicts) {
     conflictsMap.set(c.noteId, c);
   }
@@ -916,6 +940,17 @@ export async function deleteFolder(id: string): Promise<void> {
 export async function moveFolder(id: string, newParentId: string | null, afterId?: string): Promise<void> {
   const folder = foldersMap.get(id);
   if (!folder) return;
+  // Prevent circular reference: can't move folder into itself or any of its descendants
+  if (newParentId !== null) {
+    if (newParentId === id) return;
+    let cur = newParentId;
+    while (cur) {
+      const p = foldersMap.get(cur);
+      if (!p || !p.parentId) break;
+      if (p.parentId === id) return; // descendant — would create cycle
+      cur = p.parentId;
+    }
+  }
   const siblings = getFolders()
     .filter((f) => f.parentId === newParentId && f.id !== id)
     .sort((a, b) => a.order - b.order);

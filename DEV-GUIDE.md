@@ -313,7 +313,7 @@ Bedroc uses a **"public frontend, self-hosted backend"** model:
 
 - The frontend (this repo's `bedroc/` directory) is stateless — it has no server-side component.
 - It can be hosted anywhere: Vercel, GitHub Pages, nginx, Electron, etc.
-- At login/register, the user specifies their backend URL (defaults to `https://api.bedroc.app`).
+- At login/register, the user specifies their backend URL (defaults to `https://bedrocapi.cagancalidag.com`).
 - The backend URL is saved to localStorage so users don't re-enter it.
 
 This means:
@@ -352,8 +352,9 @@ A service worker (`bedroc/static/sw.js`) caches the app shell for true offline u
 
 ### Safari / iOS PWA notes
 
-- `viewport-fit=cover` + `env(safe-area-inset-*)` handles status-bar / home-indicator padding.
-- `body { position: fixed; background: var(--bg-elevated); padding-bottom: env(safe-area-inset-bottom) }` fills the gap below the bottom nav in PWA standalone mode.
+- **Do NOT use `viewport-fit=cover`** in the viewport meta tag. It causes iOS standalone PWA to missize the viewport, creating a persistent gap at the bottom of the screen that is invisible in Safari or DevTools emulators but visible on real devices. Without it, iOS handles safe areas natively and the viewport fills the screen properly.
+- `apple-mobile-web-app-capable: yes` + `apple-mobile-web-app-status-bar-style: black-translucent` is sufficient for full-screen standalone behaviour.
+- Safe area insets (`env(safe-area-inset-*)`) still work without `viewport-fit=cover` — use `max(env(safe-area-inset-bottom, 0px), Xpx)` fallback patterns where needed.
 - **Safari ITP cookie fix**: `restoreSession()` checks IndexedDB key material even when `tryRefreshToken()` returns `'expired'` (Safari ITP blocks cross-site httpOnly cookies). If key material exists the user sees the unlock prompt instead of a blank login form.
 
 ---
@@ -489,6 +490,41 @@ Requires native toolchain for each platform — cross-compilation is not support
 
 `main.js` handles the `context-menu` event on `mainWindow.webContents`. The menu includes Cut, Copy, Paste, Paste without formatting, and Select All — shown contextually based on whether text is selected and whether the target is editable.
 
+### Content Security Policy
+
+`main.js` sets a CSP header for every response from the local HTTP server:
+
+```text
+frame-src 'self' blob:;
+```
+
+`'self'` is required for the split-pane iframe feature (which loads `http://localhost:<port>`). `blob:` is required for PDF preview. **Do not remove `'self'`** — the split pane will show a blank panel with no error visible in the app.
+
+---
+
+## Touch / pointer input
+
+### Hover styles
+
+All CSS `:hover` rules in the app are wrapped in `@media (hover: hover)` so they only activate on real cursor devices (mouse, trackpad, Magic Keyboard). This prevents "sticky hover" on touch devices where:
+
+- Topics/folders/notes remain highlighted after a finger lifts
+- Toolbar buttons stay highlighted after a tap
+- Topics require two taps to select (first tap activates hover, second tap fires click)
+
+Any new hover rules **must** be wrapped in `@media (hover: hover)`. Do not add bare `:hover` rules — they will break touch UX.
+
+### Drag and drop (touch)
+
+Long-press (400ms) activates drag mode with haptic feedback (`navigator.vibrate(30)`). `onTouchMove` uses `document.elementFromPoint()` for hit-testing.
+
+**Critical**: always guard against self-drops:
+
+- `onTouchEnd` checks `dragId === dropTarget` and skips the action
+- `moveFolder()` checks for circular parent references before committing — a folder cannot be moved into itself or any of its descendants
+
+If a folder is accidentally given a circular `parentId` (e.g. by a bug), it becomes invisible in the sidebar (which only renders from `parentId === null`). `loadFromDb()` runs an orphan repair pass on startup: any folder with a circular or missing parentId is reset to `parentId: null`.
+
 ---
 
 ## Editor enhancements
@@ -523,6 +559,17 @@ The text color picker includes a "default" swatch (shown as a slash-circle icon,
 ### Image alignment
 
 Images support three placement modes: **inline** (default flow), **float left**, and **float right**. Mode is stored as a `data-align` attribute on the `<img>` tag and read back via `parseHTML` in the TipTap extension. A resize handle persists width as `data-width`. Both attributes survive save/reload because they use `parseHTML` + `renderHTML` (not inline styles, which TipTap does not parse back by default).
+
+### Link tooltip
+
+A tooltip appears below a link when:
+
+- The text cursor is positioned inside a link mark (`onSelectionUpdate` detects this via `marks().find(m => m.type.name === 'link')`) — works on all platforms including mobile
+- The mouse hovers over a link for 600ms (desktop/Electron only, via `mouseover` listener on the editor element)
+
+The tooltip is `position: absolute` inside `.editor-scroll-area` (which has `position: relative`). This means it scrolls with the content — `showLinkTooltip()` converts viewport coordinates from `coordsAtPos()` to scroll-area-relative coordinates using `getBoundingClientRect()` and `scrollTop`. **Do not change it to `position: fixed`** — it will then stay fixed on screen while the user scrolls, detaching from the link.
+
+Visibility logic uses three flags (`_cursorInLink`, `_mouseOnLink`, `_mouseOnTooltip`) to prevent the tooltip from disappearing while the user moves the cursor from the link to the tooltip. `scheduleLinkTooltipHide()` checks all three flags before fading out.
 
 ### Trailing paragraph
 

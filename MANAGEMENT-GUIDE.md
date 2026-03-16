@@ -1,6 +1,6 @@
 # Bedroc — Management Guide
 
-This guide covers day-to-day operations: viewing and editing database records, creating backups, rotating secrets, and administrative tasks. It applies to both public backend operators (running `api.bedroc.app` or similar) and private self-hosters.
+This guide covers day-to-day operations: viewing and editing database records, creating backups, rotating secrets, and administrative tasks. It applies to both public backend operators (running `bedrocapi.cagancalidag.com` or similar) and private self-hosters.
 
 ---
 

@@ -2,7 +2,7 @@
  * plugins/accessLog.ts — Server-side access log for public deployments.
  *
  * Only active when ENABLE_ACCESS_LOG=true is set in the environment.
- * Intended for the public VPS deployment (api.bedroc.app) where the server
+ * Intended for the public VPS deployment (bedrocapi.cagancalidag.com) where the server
  * owner wants an audit trail of which IPs are logging in and when.
  *
  * NOT enabled by default — WireGuard/private self-hosted deployments have no

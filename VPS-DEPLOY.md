@@ -231,7 +231,7 @@ curl https://api.yourdomain.com/health
 ## Step 5 — Connect from the app
 
 1. Open `https://bedroc.cagancalidag.com`
-2. Tap **Server: api.bedroc.app ▾** to expand the server URL field
+2. Tap **Server: bedrocapi.cagancalidag.com ▾** to expand the server URL field
 3. Enter `https://api.yourdomain.com`
 4. Register and start using Bedroc
 

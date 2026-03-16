@@ -47,7 +47,7 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_SERVER = 'https://api.bedroc.app';
+const DEFAULT_SERVER = 'https://bedrocapi.cagancalidag.com';
 const LS_SERVERS_KEY = 'bedroc_servers';      // saved server list
 const LS_LAST_SERVER_KEY = 'bedroc_last_srv'; // most recently used server URL
 const REQUEST_TIMEOUT_MS = 12_000;            // 12s before treating as unreachable

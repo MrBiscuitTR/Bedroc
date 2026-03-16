@@ -238,7 +238,7 @@ No two notes in the same topic (or both uncategorised) may share the same title.
 
 - Username and password fields.
 - Password show/hide toggle.
-- Server URL row: collapsed by default showing the current URL. Expands on click to a text input with a Save button. Defaults to `https://api.bedroc.app`. Saved to `localStorage` under the key `bedroc_server`.
+- Server URL row: collapsed by default showing the current URL. Expands on click to a text input with a Save button. Defaults to `https://bedrocapi.cagancalidag.com`. Saved to `localStorage` under the key `bedroc_server`.
 - Form submission is a no-op placeholder — wired to auth logic in Phase 1.
 
 ### `/register` — Register ([register/+page.svelte](../bedroc/src/routes/register/+page.svelte))

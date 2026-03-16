@@ -290,7 +290,7 @@
 				if (dragKind === 'note') {
 					const note = notesMap.get(dragId);
 					if (note) saveNote({ ...note, topicId: dropTarget });
-				} else if (dragKind === 'topic') {
+				} else if (dragKind === 'topic' && dragId !== dropTarget) {
 					// reorder/move topic
 					const tgt = topicsMap.get(dropTarget);
 					if (tgt) {
@@ -305,7 +305,8 @@
 					}
 				}
 			} else if (dropZone === 'folder') {
-				if (dragKind === 'topic') {
+				if (dragId === dropTarget) { /* dropped on self — no-op */ }
+				else if (dragKind === 'topic') {
 					if (dropSide === 'into') moveTopic(dragId, dropTarget);
 					else {
 						const tgt = foldersMap.get(dropTarget);
@@ -837,7 +838,9 @@
 {#snippet folderRow(folder: Folder, depth: number)}
 	<div
 		class="folder-row"
-		class:drop-target-folder={dropTarget === folder.id && dropZone === 'folder' && (dragKind === 'topic' || dragKind === 'folder')}
+		class:drop-target-folder={dropTarget === folder.id && dropZone === 'folder' && dropSide === 'into' && (dragKind === 'topic' || dragKind === 'folder')}
+		class:drop-target-folder-before={dropTarget === folder.id && dropZone === 'folder' && dropSide === 'before' && (dragKind === 'topic' || dragKind === 'folder')}
+		class:drop-target-folder-after={dropTarget === folder.id && dropZone === 'folder' && dropSide === 'after' && (dragKind === 'topic' || dragKind === 'folder')}
 	>
 		<div
 			class="folder-item"
@@ -1299,13 +1302,17 @@
 		transition: background 0.1s ease;
 	}
 
-	/* Folder: dragging a topic/note INTO this folder — full accent outline on header row */
+	/* Folder: dragging a topic/folder INTO this folder — full accent outline on header row */
 	.folder-row.drop-target-folder > .folder-item {
 		background: color-mix(in srgb, var(--accent) 12%, transparent);
 		border-radius: var(--radius-sm);
 		outline: 1.5px solid var(--accent);
 		outline-offset: -1px;
 	}
+
+	/* Folder reorder: insertion lines show where folder will land */
+	.folder-row.drop-target-folder-before { border-top: 2px solid var(--accent); }
+	.folder-row.drop-target-folder-after { border-bottom: 2px solid var(--accent); }
 
 	.folder-item {
 		display: flex;

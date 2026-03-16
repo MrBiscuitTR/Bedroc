@@ -268,7 +268,7 @@
 								<button type="button" class="saved-server-btn" onclick={() => selectServer(url)}>
 									{url}
 								</button>
-								{#if url !== 'https://api.bedroc.app'}
+								{#if url !== 'https://bedrocapi.cagancalidag.com'}
 									<button
 										type="button"
 										class="btn-icon remove-server"

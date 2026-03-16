@@ -583,4 +583,22 @@
 		font-weight: 500;
 		letter-spacing: 0.02em;
 	}
+
+	/* ── Print ─────────────────────────────────────── */
+	@media print {
+		.bottom-nav,
+		.mobile-header,
+		.splitter,
+		.split-pane,
+		.splitter-ghost {
+			display: none !important;
+		}
+		.app-shell, .main-wrap, .pane-container, .main-content {
+			height: auto !important;
+			overflow: visible !important;
+		}
+		.main-content {
+			width: 100% !important;
+		}
+	}
 </style>

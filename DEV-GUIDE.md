@@ -583,15 +583,21 @@ Toggleable per note via the page icon button in the toolbar (left of Save). Sett
 
 - Editor content is fixed at **794px wide** (A4 = 210mm at 96 DPI), centered in the scroll area with a paper-like shadow
 - Content renders identically on every device regardless of screen dimensions — what you see is what prints
-- Visual page-break guide lines appear every 1123px (A4 page height at 96 DPI)
+- JS-computed page-break guide lines (dashed blue) appear at content-aware positions every ~1123px (A4 page height)
+  - `computePageBreaks()` measures each ProseMirror child via `getBoundingClientRect()` + `scrollTop` to get scroll-area-relative coordinates
+  - If a child element straddles a page boundary, the break line shifts above it to avoid splitting content
+  - Lines are `position: absolute` inside `.editor-scroll-area` and scroll with content
+  - Recomputed on editor content changes and window resize via `requestAnimationFrame`
 - A **Print** button appears in the toolbar, triggering the browser's native print dialog
 
 **Print output (`@media print`):**
 
 - All UI chrome is hidden (toolbar, format bar, word count, side drawer, bottom nav, splitter, file preview modal)
+- WYSIWYG: when print layout is on, A4 sizing (794px width, 40px padding) is preserved in print output
 - Content fills the page with `@page { size: A4; margin: 20mm }` for proper margins
 - `break-inside: avoid` on images, tables, code blocks, file attachments, blockquotes, and task list items
 - `break-after: avoid` on headings (keeps headings with following content)
+- Print-friendly colors: tables get light borders/headers, code blocks get light backgrounds, all text forced to black/dark
 - Image alignment toolbars and resize handles are hidden
 
 **Horizontal scroll prevention:**

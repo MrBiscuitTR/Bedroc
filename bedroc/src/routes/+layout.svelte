@@ -34,6 +34,7 @@
 	// origin so the refresh cookie works, but the DEK can't be unlocked without
 	// a password — we don't redirect iframes to /login to avoid an auth loop.
 	let isInIframe = $state(false);
+	let authInitialized = $state(false);
 
 	// ── Auth guard + WebSocket ─────────────────────────────────────
 	// On mount, try to restore session from httpOnly refresh cookie.
@@ -41,7 +42,7 @@
 	// On success, open the WebSocket connection for real-time sync.
 	onMount(async () => {
 		isInIframe = window.self !== window.top;
-		if (isAuthRoute) return;
+		if (isAuthRoute) { authInitialized = true; return; }
 		// Skip restoreSession if already logged in (e.g. just came from login page).
 		// restoreSession calls tryRefreshToken which can clobber an in-memory token
 		// if the refresh network request fails or races with an existing valid token.
@@ -51,7 +52,7 @@
 		if (!auth.isLoggedIn) {
 			// Don't redirect iframes to /login — they share the parent's vault
 			// state and will work once the parent window unlocks the DEK.
-			if (!isInIframe) goto('/login');
+			if (!isInIframe) goto('/login').then(() => { authInitialized = true; });
 			else {
 				// Iframe: userId is set from the refresh token even without a DEK.
 				// Load notes from the shared IndexedDB so the pane shows content.
@@ -66,6 +67,8 @@
 			// up-to-date without waiting for the first periodic interval tick.
 			syncFromServer().catch(() => {});
 		}
+
+		authInitialized = true;
 
 		// Disconnect WebSocket on page unload (tab close, navigate away)
 		return () => {
@@ -208,7 +211,11 @@
 	}
 </script>
 
-{#if isAuthRoute}
+{#if !authInitialized && !isAuthRoute}
+	<div class="app-shell" style="display:flex;align-items:center;justify-content:center;color:var(--text-faint)">
+		<!-- Optional: A subtle loading indicator could go here -->
+	</div>
+{:else if isAuthRoute}
 	<div class="auth-shell">
 		{@render children()}
 	</div>
@@ -582,5 +589,23 @@
 		font-size: 10px;
 		font-weight: 500;
 		letter-spacing: 0.02em;
+	}
+
+	/* ── Print ─────────────────────────────────────── */
+	@media print {
+		.bottom-nav,
+		.mobile-header,
+		.splitter,
+		.split-pane,
+		.splitter-ghost {
+			display: none !important;
+		}
+		.app-shell, .main-wrap, .pane-container, .main-content {
+			height: auto !important;
+			overflow: visible !important;
+		}
+		.main-content {
+			width: 100% !important;
+		}
 	}
 </style>

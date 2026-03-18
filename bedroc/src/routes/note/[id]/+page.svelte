@@ -92,6 +92,83 @@
 		}
 	}
 
+	// ── Print layout (A4 page mode) ──────────────────────────────
+	const LS_PRINT_LAYOUT = 'bedroc_print_layout_notes';
+	function loadPrintLayoutSet(): Set<string> {
+		if (typeof localStorage === 'undefined') return new Set();
+		try {
+			const raw = localStorage.getItem(LS_PRINT_LAYOUT);
+			return raw ? new Set(JSON.parse(raw)) : new Set();
+		} catch { return new Set(); }
+	}
+	function savePrintLayoutSet(s: Set<string>) {
+		localStorage.setItem(LS_PRINT_LAYOUT, JSON.stringify([...s]));
+	}
+	let printLayout = $state(false);
+	// Sync printLayout with noteId on navigation
+	$effect(() => {
+		if (noteId && noteId !== 'new') {
+			printLayout = loadPrintLayoutSet().has(noteId);
+		} else {
+			printLayout = false;
+		}
+	});
+	function togglePrintLayout() {
+		printLayout = !printLayout;
+		if (noteId && noteId !== 'new') {
+			const s = loadPrintLayoutSet();
+			if (printLayout) s.add(noteId); else s.delete(noteId);
+			savePrintLayoutSet(s);
+		}
+	}
+	function handlePrint() {
+		window.print();
+	}
+
+	// ── Page break line computation ──────────────────────────────
+	// A4 page height = 1123px at 96 DPI.
+	// Fixed-interval dividers at every A4_PAGE_H from ProseMirror top.
+	// These are visual guides only; actual print pagination uses CSS
+	// break-inside:avoid rules handled by the browser.
+	const A4_PAGE_H = 1123;
+
+	let pageBreakLines = $state<number[]>([]);
+	let _pageBreakRaf: number | null = null;
+
+	function computePageBreaks() {
+		if (!printLayout || !editorEl || !contentWrapEl) { pageBreakLines = []; return; }
+		const pm = editorEl.querySelector('.ProseMirror') as HTMLElement | null;
+		if (!pm) { pageBreakLines = []; return; }
+
+		// Use offsetTop for stable layout positions (unaffected by scroll)
+		// editorEl is inside contentWrapEl; pm is inside editorEl
+		const pmTop = editorEl.offsetTop + pm.offsetTop;
+		const pmHeight = pm.scrollHeight;
+		const lines: number[] = [];
+
+		for (let y = A4_PAGE_H; y < pmHeight; y += A4_PAGE_H) {
+			lines.push(pmTop + y);
+		}
+		pageBreakLines = lines;
+	}
+
+	function schedulePageBreakCompute() {
+		if (_pageBreakRaf) cancelAnimationFrame(_pageBreakRaf);
+		_pageBreakRaf = requestAnimationFrame(() => {
+			computePageBreaks();
+			_pageBreakRaf = null;
+		});
+	}
+
+	// Recompute page breaks when print layout toggles, content changes, or window resizes
+	$effect(() => {
+		if (printLayout && editorReady) {
+			schedulePageBreakCompute();
+		} else {
+			pageBreakLines = [];
+		}
+	});
+
 	// ── Load note ─────────────────────────────────────────────────
 	// Notes are stored decrypted in IndexedDB; encryption happens at sync time.
 	let title = $state('');
@@ -100,6 +177,7 @@
 	// bind:this on a plain let works fine in Svelte 5 for DOM element refs.
 	let editorEl: HTMLDivElement;
 	let scrollAreaEl: HTMLDivElement;
+	let contentWrapEl: HTMLDivElement;
 	let editor: Editor | null = null;
 	// Used to trigger $effects that need the editor to be ready
 	let editorReady = $state(false);
@@ -1099,6 +1177,7 @@
 				saved = false;
 				scheduleAutosave();
 				updateFormatState();
+				if (printLayout) schedulePageBreakCompute();
 			},
 			onTransaction: () => {
 				// updateFormatState on every transaction so toolbar reflects mark
@@ -1352,7 +1431,7 @@
 	<title>{title || 'New note'} - Bedroc</title>
 </svelte:head>
 
-<div class="editor-page">
+<div class="editor-page" class:print-layout={printLayout}>
 	<!-- ── Top toolbar ─────────────────────────────────────────── -->
 	<div class="toolbar">
 		<!-- Left side: drawer toggle on mobile, back button on desktop -->
@@ -1378,6 +1457,37 @@
 		</button>
 
 		<div class="toolbar-actions">
+			<!-- Print layout toggle -->
+			<button
+				class="btn-icon print-layout-btn"
+				class:active={printLayout}
+				onclick={togglePrintLayout}
+				title={printLayout ? 'Exit print layout' : 'Print layout (A4)'}
+				aria-label={printLayout ? 'Exit print layout' : 'Print layout (A4)'}
+				aria-pressed={printLayout}
+			>
+				<svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+					<rect x="2.5" y="1" width="10" height="13" rx="1" stroke="currentColor" stroke-width="1.3"/>
+					<path d="M5 4h5M5 6.5h5M5 9h3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+				</svg>
+			</button>
+
+			{#if printLayout}
+				<button
+					class="btn-icon print-btn"
+					onclick={handlePrint}
+					title="Print"
+					aria-label="Print"
+				>
+					<svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+						<path d="M4 5V1.5h7V5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+						<rect x="1.5" y="5" width="12" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/>
+						<path d="M4 8.5h7v5H4z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+						<circle cx="10.5" cy="7.5" r="0.6" fill="currentColor"/>
+					</svg>
+				</button>
+			{/if}
+
 			{#if !saved}
 				<span class="unsaved-dot" title="Unsaved changes"></span>
 			{/if}
@@ -2056,7 +2166,25 @@
 
 	<!-- ── TipTap editor + image resize overlay wrapper ───────── -->
 	<div class="editor-scroll-area" bind:this={scrollAreaEl}>
-		<div class="body-editor-wrap" bind:this={editorEl}></div>
+		<!-- Print layout wrapper — position:relative container for page break
+		     lines. In normal mode this is just a pass-through flex child. -->
+		<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl}>
+			<div class="body-editor-wrap" bind:this={editorEl}></div>
+
+			<!-- Page break lines (print layout only) — inside the content wrapper
+			     so they scroll with the editor content, not fixed on screen. -->
+			{#if printLayout && pageBreakLines.length > 0}
+				{#each pageBreakLines as y, i}
+					<div
+						class="page-break-line"
+						style="top: {y}px"
+						aria-hidden="true"
+					>
+						<span class="page-break-label">Page {i + 2}</span>
+					</div>
+				{/each}
+			{/if}
+		</div>
 
 		<!-- Link hover tooltip -->
 		{#if linkTooltip}
@@ -3060,8 +3188,20 @@
 		flex-direction: column;
 	}
 
+	.editor-content-wrap {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+	}
+	.editor-content-wrap.print-layout-wrap {
+		position: relative;
+		display: block;
+		flex: 0 0 auto;
+	}
+
 	.body-editor-wrap {
 		flex: 1;
+		overflow-x: hidden;
 	}
 
 	/* ProseMirror is the actual contenteditable TipTap renders */
@@ -3185,12 +3325,13 @@
 		margin: 1em 0;
 	}
 
-	/* Tables */
+	/* Tables — max-width prevents horizontal page overflow.
+	   Do NOT set table-layout:fixed or overflow:hidden -
+	   those break ProseMirror's column-resize-handle drag. */
 	.body-editor-wrap :global(.ProseMirror table) {
 		border-collapse: collapse;
 		margin: 0.75em 0;
-		/* Do NOT set table-layout:fixed or overflow:hidden -
-		   those break ProseMirror's column-resize-handle drag */
+		max-width: 100%;
 	}
 	.body-editor-wrap :global(.ProseMirror td),
 	.body-editor-wrap :global(.ProseMirror th) {
@@ -4043,5 +4184,263 @@
 		tab-size: 2;
 		background: var(--bg);
 		max-height: calc(90vh - 60px);
+	}
+
+	/* ── Print layout toggle button ────────────────────────────── */
+	.print-layout-btn {
+		color: var(--text-faint);
+		transition: color 0.15s;
+	}
+	.print-layout-btn.active {
+		color: var(--accent);
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
+	}
+	@media (hover: hover) {
+		.print-layout-btn:hover { color: var(--accent); }
+	}
+
+	.print-btn {
+		color: var(--text-muted);
+		transition: color 0.15s;
+	}
+	@media (hover: hover) {
+		.print-btn:hover { color: var(--accent); }
+	}
+
+	/* ── Print layout mode (A4 page simulation) ──────────────── */
+	/* A4 = 210mm × 297mm ≈ 794px × 1123px at 96 DPI.
+	   We fix the editor content to 794px wide so it renders
+	   identically on every device regardless of screen size. */
+	.print-layout .editor-scroll-area {
+		background: var(--bg-hover);
+	}
+
+	.print-layout .body-editor-wrap {
+		width: 794px;
+		min-width: 794px;
+		max-width: 794px;
+		margin: 24px auto;
+		background: var(--bg);
+		box-shadow: 0 1px 6px rgba(0,0,0,0.15), 0 0 0 1px var(--border);
+		border-radius: 2px;
+	}
+
+	.print-layout .body-editor-wrap :global(.ProseMirror) {
+		padding: 40px 40px 60px;
+		min-height: 1123px;
+		font-size: 16px;
+		line-height: 1.7;
+	}
+
+	/* In print layout, images must not exceed A4 content width */
+	.print-layout .body-editor-wrap :global(.img-node-wrapper img) {
+		max-width: 100%;
+	}
+
+	/* Title in print layout - constrain to same width */
+	.print-layout .title-input {
+		max-width: 794px;
+		margin-left: auto;
+		margin-right: auto;
+		width: 100%;
+		box-sizing: border-box;
+	}
+
+	/* ── Page break lines (content-aware, JS-positioned) ──── */
+	/* Positioned absolutely within .editor-content-wrap (position:relative).
+	   Constrained to 794px (A4 width) and centered to match the paper. */
+	.page-break-line {
+		position: absolute;
+		left: 50%;
+		transform: translateX(-50%);
+		width: 794px;
+		height: 0px;
+		border-top: 1.5px dashed color-mix(in srgb, var(--accent) 50%, transparent);
+		z-index: 4;
+		pointer-events: none;
+	}
+	.page-break-label {
+		position: absolute;
+		right: 0;
+		top: 4px;
+		font-size: 10px;
+		color: var(--text-faint);
+		background: var(--bg-hover);
+		padding: 1px 6px;
+		border-radius: 3px;
+		user-select: none;
+		letter-spacing: 0.03em;
+	}
+
+	/* ── @media print — for actual printing ──────────────────── */
+	/* Strategy: keep the same sizing as print layout (794px, 40px padding)
+	   so the printed output matches what the user sees in the editor.
+	   The browser scales the content to fit the @page printable area.
+	   This gives true WYSIWYG printing. */
+	@media print {
+		/* Hide all chrome — only the title + editor body remain */
+		.toolbar,
+		.format-bar,
+		.word-count,
+		.topics-drawer,
+		.drawer-backdrop,
+		.no-dek-banner,
+		.conflict-banner,
+		.conflict-diff,
+		.incoming-banner,
+		.link-tooltip,
+		.preview-backdrop,
+		.print-layout-btn,
+		.print-btn,
+		.page-break-line {
+			display: none !important;
+		}
+
+		.editor-page {
+			height: auto !important;
+			overflow: visible !important;
+		}
+
+		.editor-scroll-area {
+			overflow: visible !important;
+			background: white !important;
+		}
+
+		.editor-content-wrap {
+			display: block !important;
+			overflow: visible !important;
+		}
+
+		/* Keep A4-width container if print layout is on; otherwise full width.
+		   Remove decorative styles (shadow, border-radius, bg-hover). */
+		.body-editor-wrap {
+			box-shadow: none !important;
+			background: white !important;
+			overflow: visible !important;
+			border-radius: 0 !important;
+		}
+		/* When NOT in print layout, reset to full width for normal printing */
+		.editor-page:not(.print-layout) .body-editor-wrap {
+			width: 100% !important;
+			max-width: 100% !important;
+			min-width: 0 !important;
+			margin: 0 !important;
+		}
+		/* When in print layout, keep the A4 sizing but remove decorative margins */
+		.editor-page.print-layout .body-editor-wrap {
+			margin: 0 auto !important;
+		}
+
+		.body-editor-wrap :global(.ProseMirror) {
+			min-height: 0 !important;
+			color: black !important;
+			background: none !important;
+			background-image: none !important;
+		}
+		/* When NOT in print layout, use minimal padding */
+		.editor-page:not(.print-layout) .body-editor-wrap :global(.ProseMirror) {
+			padding: 0 !important;
+		}
+
+		.title-input {
+			color: black !important;
+			font-size: 22px !important;
+			font-weight: 600 !important;
+			padding: 0 0 8px !important;
+			border-bottom: 1px solid #ccc !important;
+			margin-bottom: 12px !important;
+		}
+		.editor-page.print-layout .title-input {
+			max-width: 794px !important;
+			margin-left: auto !important;
+			margin-right: auto !important;
+		}
+
+		/* Avoid page breaks inside block elements */
+		.body-editor-wrap :global(.img-node-wrapper),
+		.body-editor-wrap :global(.ProseMirror table),
+		.body-editor-wrap :global(.code-block-wrap),
+		.body-editor-wrap :global(.file-attachment-card),
+		.body-editor-wrap :global(.ProseMirror blockquote),
+		.body-editor-wrap :global(.ProseMirror ul[data-type="taskList"] li) {
+			break-inside: avoid;
+			page-break-inside: avoid;
+		}
+
+		/* Keep headings with the content that follows them */
+		.body-editor-wrap :global(.ProseMirror h1),
+		.body-editor-wrap :global(.ProseMirror h2),
+		.body-editor-wrap :global(.ProseMirror h3) {
+			break-after: avoid;
+			page-break-after: avoid;
+		}
+
+		/* Constrain images and tables */
+		.body-editor-wrap :global(.img-node-wrapper img) {
+			max-width: 100% !important;
+		}
+		.body-editor-wrap :global(.ProseMirror table) {
+			max-width: 100%;
+			border-collapse: collapse;
+		}
+		/* Print-friendly table colors */
+		.body-editor-wrap :global(.ProseMirror td),
+		.body-editor-wrap :global(.ProseMirror th) {
+			border: 1px solid #ccc !important;
+			color: black !important;
+			background: white !important;
+		}
+		.body-editor-wrap :global(.ProseMirror th) {
+			background: #f0f0f0 !important;
+			font-weight: 600;
+		}
+
+		/* Hide image alignment toolbars and resize handles */
+		.body-editor-wrap :global(.img-align-toolbar),
+		.body-editor-wrap :global(.img-resize-handle-inline) {
+			display: none !important;
+		}
+
+		/* Print-friendly text colors */
+		.body-editor-wrap :global(.ProseMirror) {
+			color: black !important;
+		}
+		.body-editor-wrap :global(.ProseMirror h1),
+		.body-editor-wrap :global(.ProseMirror h2),
+		.body-editor-wrap :global(.ProseMirror h3),
+		.body-editor-wrap :global(.ProseMirror h4) {
+			color: black !important;
+		}
+		.body-editor-wrap :global(.ProseMirror blockquote) {
+			border-left-color: #ccc !important;
+			color: #333 !important;
+		}
+		.body-editor-wrap :global(.ProseMirror code) {
+			background: #f5f5f5 !important;
+			color: #333 !important;
+		}
+		.body-editor-wrap :global(.code-block-wrap) {
+			background: #f5f5f5 !important;
+			border: 1px solid #ddd !important;
+		}
+		.body-editor-wrap :global(.code-block-wrap code) {
+			color: #333 !important;
+		}
+		.body-editor-wrap :global(.code-block-header) {
+			background: #eee !important;
+			color: #333 !important;
+			border-bottom: 1px solid #ddd !important;
+		}
+
+		/* Links: show URL after link text for printed copies */
+		.body-editor-wrap :global(.ProseMirror a) {
+			color: black !important;
+			text-decoration: underline !important;
+		}
+
+		@page {
+			size: A4;
+			margin: 20mm;
+		}
 	}
 </style>

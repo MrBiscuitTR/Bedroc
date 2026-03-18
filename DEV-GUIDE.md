@@ -575,6 +575,37 @@ Visibility logic uses three flags (`_cursorInLink`, `_mouseOnLink`, `_mouseOnToo
 
 A `TrailingParagraph` ProseMirror plugin (`appendTransaction`) ensures there is always a clickable empty paragraph after the last block node (table, image, code block, etc.). This prevents the cursor from being "trapped" with no way to place it after a block.
 
+### Print layout (A4 page mode)
+
+Toggleable per note via the page icon button in the toolbar (left of Save). Setting is stored in `localStorage` (`bedroc_print_layout_notes` — a JSON array of enabled noteIds).
+
+**When enabled:**
+
+- Editor content is fixed at **794px wide** (A4 = 210mm at 96 DPI), centered in the scroll area with a paper-like shadow
+- Content renders identically on every device regardless of screen dimensions — what you see is what prints
+- JS-computed page-break guide lines (dashed blue) appear at content-aware positions every ~1123px (A4 page height)
+  - `computePageBreaks()` measures each ProseMirror child via `getBoundingClientRect()` + `scrollTop` to get scroll-area-relative coordinates
+  - If a child element straddles a page boundary, the break line shifts above it to avoid splitting content
+  - Lines are `position: absolute` inside `.editor-scroll-area` and scroll with content
+  - Recomputed on editor content changes and window resize via `requestAnimationFrame`
+- A **Print** button appears in the toolbar, triggering the browser's native print dialog
+
+**Print output (`@media print`):**
+
+- All UI chrome is hidden (toolbar, format bar, word count, side drawer, bottom nav, splitter, file preview modal)
+- WYSIWYG: when print layout is on, A4 sizing (794px width, 40px padding) is preserved in print output
+- Content fills the page with `@page { size: A4; margin: 20mm }` for proper margins
+- `break-inside: avoid` on images, tables, code blocks, file attachments, blockquotes, and task list items
+- `break-after: avoid` on headings (keeps headings with following content)
+- Print-friendly colors: tables get light borders/headers, code blocks get light backgrounds, all text forced to black/dark
+- Image alignment toolbars and resize handles are hidden
+
+**Horizontal scroll prevention:**
+
+- `.body-editor-wrap` has `overflow-x: hidden` — images and tables cannot cause page-level horizontal scroll
+- Tables have `max-width: 100%`; columns can be resized by the user but won't overflow
+- Images are constrained by `max-width: 100%` on both wrapper and `<img>`
+
 ---
 
 ## Known limitations (current state)

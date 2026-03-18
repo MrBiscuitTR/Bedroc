@@ -213,3 +213,14 @@ button:disabled {
 	text-transform: uppercase;
 	color: var(--text-faint);
 }
+
+/* ── Print ────────────────────────────────────────────────────────── */
+/* The app uses height:100% + overflow:hidden on html/body for the SPA
+   shell. For printing, everything must be auto-height + overflow:visible
+   so the browser can paginate content across multiple pages. */
+@media print {
+	html, body {
+		height: auto !important;
+		overflow: visible !important;
+	}
+}

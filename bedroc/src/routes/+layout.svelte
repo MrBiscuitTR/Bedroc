@@ -6,7 +6,7 @@
 	import { auth, restoreSession, serverStatus, lockVault } from '$lib/stores/auth.svelte.js';
 	import { initTheme } from '$lib/stores/theme.svelte.js';
 	import { connect as wsConnect, disconnect as wsDisconnect } from '$lib/sync/websocket.js';
-import { syncFromServer, syncIntervalStore, loadFromDb, inactivityLockStore, dbState } from '$lib/stores/notes.svelte.js';
+	import { syncFromServer, syncIntervalStore, loadFromDb, inactivityLockStore, dbState, syncState } from '$lib/stores/notes.svelte.js';
 
 	let { children } = $props();
 
@@ -41,6 +41,7 @@ import { syncFromServer, syncIntervalStore, loadFromDb, inactivityLockStore, dbS
 	// If that fails (or DEK is missing), redirect to /login.
 	// On success, open the WebSocket connection for real-time sync.
 	onMount(async () => {
+		document.getElementById('initial-bedroc-spinner')?.remove();
 		isInIframe = window.self !== window.top;
 		if (isAuthRoute) { authInitialized = true; return; }
 		// Skip restoreSession if already logged in (e.g. just came from login page).
@@ -212,18 +213,22 @@ import { syncFromServer, syncIntervalStore, loadFromDb, inactivityLockStore, dbS
 </script>
 
 {#if !authInitialized && !isAuthRoute}
-        <div class="app-shell" style="display:flex;align-items:center;justify-content:center;color:var(--text-faint)">
+        <div class="app-shell" style="display:flex;flex-direction:column;gap:1.5rem;align-items:center;justify-content:center;color:var(--text-faint);height:100vh;">
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" class="animate-spin" style="color:var(--accent);" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+					<path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+                </svg>
+                <div style="font-size:0.9rem;opacity:0.8;">Loading...</div>
         </div>
 {:else if isAuthRoute}
         <div class="auth-shell">
                 {@render children()}
         </div>
-{:else if !dbState.loaded}
+{:else if !dbState.loaded || syncState.isInitialSync}
         <div class="app-shell" style="display:flex;flex-direction:column;gap:1.5rem;align-items:center;justify-content:center;color:var(--text-faint);height:100vh;">
-                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" class="animate-spin" style="color:var(--accent);" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
-                </svg>
-                <div style="font-size:0.9rem;opacity:0.8;">Loading vault...</div>
+			<svg width="36" height="36" viewBox="0 0 24 24" fill="none" class="animate-spin" style="color:var(--accent);" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+				<path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+			</svg>
+			<div style="font-size:0.9rem;opacity:0.8;">Loading vault...</div>
         </div>
 {:else}
 	<div class="app-shell">

@@ -94,7 +94,10 @@ export const topicsMap = new SvelteMap<string, Topic>();
 export const foldersMap = new SvelteMap<string, Folder>();
 
 let _syncing = $state(false);
-export const syncState = { get syncing() { return _syncing; } };
+export const syncState = {
+  get syncing() { return _syncing; },
+  get isInitialSync() { return _syncing && (typeof localStorage === 'undefined' || localStorage.getItem(lastSyncKey()) === null); }
+};
 
 let _dbLoaded = $state(false);
 export const dbState = { get loaded() { return _dbLoaded; } };

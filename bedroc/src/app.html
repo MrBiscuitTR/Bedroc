@@ -57,6 +57,17 @@
 		</script>
 	</head>
 	<body data-sveltekit-preload-data="hover">
-		<div style="display: contents">%sveltekit.body%</div>
+		<div id="initial-bedroc-spinner" style="position:fixed;inset:0;display:flex;flex-direction:column;gap:1.5rem;align-items:center;justify-content:center;color:#4a4d5e;background-color:#16181f;z-index:999999;">
+            <style>
+                @keyframes bedroc-spin { to { transform: rotate(360deg); } }
+                #initial-bedroc-spinner svg { animation: bedroc-spin 1s linear infinite; color: #6b8afd; }
+                html[data-theme="light"] #initial-bedroc-spinner { background-color: #ffffff; color: #7f85a5; }
+                html[data-theme="light"] #initial-bedroc-spinner svg { color: #5a7af0; }
+            </style>
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" class="app-spinner" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+            </svg>
+        </div>
+        <div style="display: contents">%sveltekit.body%</div>
 	</body>
 </html>

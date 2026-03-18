@@ -96,6 +96,9 @@ export const foldersMap = new SvelteMap<string, Folder>();
 let _syncing = $state(false);
 export const syncState = { get syncing() { return _syncing; } };
 
+let _dbLoaded = $state(false);
+export const dbState = { get loaded() { return _dbLoaded; } };
+
 // ---------------------------------------------------------------------------
 // Conflicts reactive map
 // ---------------------------------------------------------------------------
@@ -242,6 +245,7 @@ export async function loadFromDb(): Promise<void> {
   const userId = auth.userId;
   if (!userId) return;
 
+  _dbLoaded = false;
   const [notes, topics, folders, conflicts] = await Promise.all([
     getNotesByUser(userId),
     getTopicsByUser(userId),
@@ -288,13 +292,16 @@ export async function loadFromDb(): Promise<void> {
   }
 
   for (const c of conflicts) {
-    conflictsMap.set(c.noteId, c);
-  }
+      conflictsMap.set(c.noteId, c);
+    }
+
+    _dbLoaded = true;
 }
 
 /** Clear reactive maps on logout. */
 export function clearStore(): void {
-  notesMap.clear();
+    _dbLoaded = false;
+    notesMap.clear();
   topicsMap.clear();
   foldersMap.clear();
   conflictsMap.clear();

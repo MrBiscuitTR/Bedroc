@@ -343,12 +343,19 @@ export function scheduleProactiveRefresh(): void {
  *   'offline' — network error / server unreachable
  */
 async function tryRefreshToken(): Promise<'ok' | 'expired' | 'offline'> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000); // 4s timeout so slow networks don't block layout
+
   try {
     const res = await fetch(`${_serverUrl}/api/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
+      signal: controller.signal,
     });
     if (!res.ok) {
+      if (res.status >= 500) {
+        return 'offline'; // Backend is down, but not a token expiration
+      }
       console.warn('[auth] tryRefreshToken failed:', res.status);
       return 'expired';
     }
@@ -357,8 +364,10 @@ async function tryRefreshToken(): Promise<'ok' | 'expired' | 'offline'> {
     scheduleProactiveRefresh();
     return 'ok';
   } catch {
-    // Network error — server unreachable or offline
+    // Network error or timeout — server unreachable or offline
     return 'offline';
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -607,12 +616,15 @@ export async function logout(): Promise<void> {
 
   // Revoke server session (best-effort; don't block on failure)
   try {
-    await fetch(`${_serverUrl}/api/auth/logout`, {
-      method: 'POST',
-      credentials: 'include',
-    });
+      const controller = new AbortController();
+      const logoutTimer = setTimeout(() => controller.abort(), 2000);
+      await fetch(`${_serverUrl}/api/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+        signal: controller.signal,
+      }).finally(() => clearTimeout(logoutTimer));
   } catch {
-    // Offline logout — session will expire naturally
+      // Offline logout
   }
 
   // Wipe local IndexedDB data

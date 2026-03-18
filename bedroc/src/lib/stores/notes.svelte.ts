@@ -484,6 +484,7 @@ export async function syncFromServer(): Promise<void> {
     await syncFoldersFromServer();
 
     console.log('[sync] Topics:', topicsMap.size, 'Folders:', foldersMap.size, 'Notes:', notesMap.size);
+    setLastSync(data.serverTime);
     console.log('[sync] syncFromServer complete');
 
   } catch (err) {

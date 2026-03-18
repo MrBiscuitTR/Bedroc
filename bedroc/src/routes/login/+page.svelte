@@ -37,14 +37,36 @@
 
 		if (isUnlockMode) {
 			if (!password) { localError = 'Please enter your password.'; return; }
-			try {
-				await unlockWithPassword(password);
-				await loadFromDb();
-				syncFromServer();
-				goto('/');
-			} catch {
-				localError = 'Incorrect password.';
+			
+			let serverLoginSuccess = false;
+			const currentUsername = auth.username;
+			
+			if (currentUsername) {
+				try {
+					await login(currentUsername, password);
+					serverLoginSuccess = true;
+				} catch (err: any) {
+					const msg = err.message || '';
+					if (msg.includes('Invalid username') || msg.toLowerCase().includes('password')) {
+						localError = 'Incorrect password.';
+						return;
+					}
+					// Network error — fall through to local unlock
+				}
 			}
+
+			if (!serverLoginSuccess) {
+				try {
+					await unlockWithPassword(password);
+				} catch {
+					localError = 'Incorrect password.';
+					return;
+				}
+			}
+
+			await loadFromDb();
+			syncFromServer();
+			goto('/');
 			return;
 		}
 

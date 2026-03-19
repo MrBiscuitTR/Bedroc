@@ -51,9 +51,12 @@
 					},
 				},
 			};
+					updateMobilePrintScale();
+					window.addEventListener('resize', handleViewportResize, { passive: true });
 		},
 	});
 
+					window.removeEventListener('resize', handleViewportResize);
 	// ── Note identity ─────────────────────────────────────────────
 	let noteId  = $derived(page.params.id);
 	let isNew   = $derived(noteId === 'new');
@@ -252,14 +255,24 @@
 	}
 
 	// ── Page break line computation ──────────────────────────────
-	// A4 page height = 1123px at 96 DPI.
-	// Fixed-interval dividers at every A4_PAGE_H from ProseMirror top.
-	// These are visual guides only; actual print pagination uses CSS
-	// break-inside:avoid rules handled by the browser.
+	// A4 at 96 CSS DPI.
+	const A4_PAGE_W = 794;
 	const A4_PAGE_H = 1123;
 
 	let pageBreakLines = $state<number[]>([]);
+	let mobilePrintScale = $state(1);
 	let _pageBreakRaf: number | null = null;
+
+	function updateMobilePrintScale() {
+		if (typeof window === 'undefined' || !printLayout || window.innerWidth >= 768) {
+			mobilePrintScale = 1;
+			return;
+		}
+		const viewportW = scrollAreaEl?.clientWidth ?? window.innerWidth;
+		const available = Math.max(280, viewportW - 18);
+		const scale = Math.min(1, available / A4_PAGE_W);
+		mobilePrintScale = Math.max(0.45, Number(scale.toFixed(4)));
+	}
 
 	function computePageBreaks() {
 		if (!printLayout || !editorEl || !contentWrapEl) { pageBreakLines = []; return; }
@@ -289,11 +302,18 @@
 	// Recompute page breaks when print layout toggles, content changes, or window resizes
 	$effect(() => {
 		if (printLayout && editorReady) {
+			updateMobilePrintScale();
 			schedulePageBreakCompute();
 		} else {
+			mobilePrintScale = 1;
 			pageBreakLines = [];
 		}
 	});
+
+	function handleViewportResize() {
+		updateMobilePrintScale();
+		if (printLayout) schedulePageBreakCompute();
+	}
 
 	// ── Load note ─────────────────────────────────────────────────
 	// Notes are stored decrypted in IndexedDB; encryption happens at sync time.
@@ -1477,9 +1497,12 @@
 		});
 		// Signal to $effects that the editor is ready
 		editorReady = true;
+		updateMobilePrintScale();
+		window.addEventListener('resize', handleViewportResize, { passive: true });
 	});
 
 	onDestroy(() => {
+		window.removeEventListener('resize', handleViewportResize);
 		editor?.destroy();
 	});
 
@@ -2388,7 +2411,7 @@
 	<div class="editor-scroll-area" bind:this={scrollAreaEl}>
 		<!-- Print layout wrapper — position:relative container for page break
 		     lines. In normal mode this is just a pass-through flex child. -->
-		<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl}>
+		<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl} style={printLayout ? `--mobile-print-scale:${mobilePrintScale}` : ''}>
 			<div class="body-editor-wrap" bind:this={editorEl}></div>
 
 			<!-- Page break lines (print layout only) — inside the content wrapper
@@ -3407,11 +3430,18 @@
 	.editor-scroll-area {
 		flex: 1;
 		overflow-y: auto;
+		overflow-x: hidden;
 		-webkit-overflow-scrolling: touch;
 		overscroll-behavior: contain;
+		touch-action: pan-y pinch-zoom;
 		position: relative; /* for the image resize overlay */
 		display: flex;
 		flex-direction: column;
+	}
+
+	.editor-page.print-layout .editor-scroll-area {
+		overflow: auto;
+		touch-action: pan-x pan-y pinch-zoom;
 	}
 
 	.editor-content-wrap {
@@ -4437,9 +4467,16 @@
 		background: rgba(0, 0, 0, 0.72);
 		z-index: 200;
 		display: flex;
-		align-items: center;
+		align-items: flex-start;
 		justify-content: center;
-		padding: 16px;
+		overflow: auto;
+		padding: max(env(safe-area-inset-top, 0px), 10px) 12px max(env(safe-area-inset-bottom, 0px), 10px);
+	}
+	@media (min-width: 768px) {
+		.preview-backdrop {
+			align-items: center;
+			padding: 16px;
+		}
 	}
 
 	.preview-modal {
@@ -4448,10 +4485,16 @@
 		border-radius: 10px;
 		width: 100%;
 		max-width: 860px;
-		max-height: 90vh;
+		max-height: min(90vh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 20px));
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
+		margin: 0 auto;
+	}
+	@media (max-width: 767px) {
+		.preview-modal {
+			max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 8px);
+		}
 	}
 
 	.preview-header {
@@ -4462,6 +4505,10 @@
 		border-bottom: 1px solid var(--border);
 		flex-shrink: 0;
 		gap: 12px;
+		position: sticky;
+		top: 0;
+		background: var(--bg-elevated);
+		z-index: 1;
 	}
 
 	.preview-filename {
@@ -4507,6 +4554,7 @@
 		overflow: hidden;
 		display: flex;
 		flex-direction: column;
+		min-height: 0;
 	}
 
 	.preview-loading,
@@ -4521,7 +4569,7 @@
 		flex: 1;
 		width: 100%;
 		height: 100%;
-		min-height: 500px;
+		min-height: min(500px, calc(100dvh - 220px));
 		border: none;
 		background: #fff;
 	}
@@ -4568,6 +4616,27 @@
 	   identically on every device regardless of screen size. */
 	.print-layout .editor-scroll-area {
 		background: var(--bg-hover);
+	}
+
+	@media (max-width: 767px) {
+		.editor-page.print-layout .editor-content-wrap.print-layout-wrap {
+			zoom: var(--mobile-print-scale, 1);
+		}
+
+		/* Fallback for engines without zoom support. */
+		@supports not (zoom: 1) {
+			.editor-page.print-layout .body-editor-wrap {
+				width: min(794px, calc(100vw - 18px));
+				min-width: 0;
+				max-width: 794px;
+			}
+			.editor-page.print-layout .title-input {
+				max-width: min(794px, calc(100vw - 18px));
+			}
+			.editor-page.print-layout .page-break-line {
+				width: min(794px, calc(100vw - 18px));
+			}
+		}
 	}
 
 	.print-layout .body-editor-wrap {
@@ -4795,7 +4864,7 @@
 
 		@page {
 			size: A4;
-			margin: 20mm;
+			margin: 0;
 		}
 	}
 </style>

@@ -1,8 +1,9 @@
 {
   "name": "bedroc",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "description": "Bedroc — private, encrypted notes",
   "author": "Bedroc",
+  "repository": "https://github.com/MrBiscuitTR/Bedroc",
   "main": "main.js",
   "private": true,
   "scripts": {
@@ -48,12 +49,6 @@
       "target": [
         {
           "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "portable",
           "arch": [
             "x64"
           ]

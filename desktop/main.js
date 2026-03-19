@@ -322,6 +322,10 @@ function buildMenu() {
 // App lifecycle
 // ---------------------------------------------------------------------------
 
+// Set AppUserModelId so Windows can identify the app consistently
+// This fixes issues with taskbar pinning and shortcuts
+app.setAppUserModelId('com.bedroc.app');
+
 app.whenReady().then(async () => {
   // Allow self-signed TLS certificates for private/local IP addresses.
   // Covers ALL network requests (fetch, WebSocket, navigation) for WireGuard IPs,

@@ -70,7 +70,7 @@ services:
       PORT: 3000
       NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL}
-      POSTGRES_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/bedroc
+      # POSTGRES_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/bedroc
       REDIS_URL: ${REDIS_URL}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}

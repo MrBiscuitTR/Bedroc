@@ -1,6 +1,6 @@
 {
   "name": "bedroc-server",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Bedroc backend — Fastify + PostgreSQL + Redis",
   "private": true,
   "type": "module",

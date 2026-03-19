@@ -3,10 +3,7 @@
   "version": "1.0.0",
   "description": "Bedroc — private, encrypted notes",
   "homepage": "https://github.com/MrBiscuitTR/Bedroc",
-  "author": {
-    "name": "Cagan Calidag",
-    "email": "contact@cagancalidag.com"
-  },
+  "author": "Cagan Calidag <contact@cagancalidag.com>",
   "repository": {
     "type": "git",
     "url": "https://github.com/MrBiscuitTR/Bedroc.git"
@@ -118,11 +115,9 @@
       ],
       "icon": "build-resources/icon.png",
       "category": "Office",
-      "synopsis": "Private encrypted notes",
-      "maintainer": "Cagan Calidag <contact@cagancalidag.com>"
+      "synopsis": "Private encrypted notes"
     },
     "deb": {
-      "fpm": ["--maintainer=Cagan Calidag <contact@cagancalidag.com>"],
       "packageCategory": "utils"
     }
   }

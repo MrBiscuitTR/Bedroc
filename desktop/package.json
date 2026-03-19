@@ -2,11 +2,12 @@
   "name": "bedroc",
   "version": "1.0.0",
   "description": "Bedroc — private, encrypted notes",
-  "author": {
-    "name": "Cagan Calidag",
-    "email": "contact@cagancalidag.com"
+  "homepage": "https://github.com/MrBiscuitTR/Bedroc",
+  "author": "Cagan Calidag <contact@cagancalidag.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MrBiscuitTR/Bedroc.git"
   },
-  "repository": "https://github.com/MrBiscuitTR/Bedroc",
   "main": "main.js",
   "private": true,
   "scripts": {

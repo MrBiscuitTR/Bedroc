@@ -27,6 +27,10 @@ jobs:
         working-directory: desktop
         run: npm install
 
+      - name: Fix app-builder-bin permissions
+        working-directory: desktop
+        run: chmod +x ./node_modules/app-builder-bin/linux/x64/app-builder
+
       - name: Build Linux (AppImage + deb + rpm)
         working-directory: desktop
         run: npm run dist:linux

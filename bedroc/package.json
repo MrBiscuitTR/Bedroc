@@ -3,6 +3,7 @@
 	"private": true,
 	"version": "1.0.0",
 	"type": "module",
+	"author": "Cagan Calidag <contact@cagancalidag.com>",
 	"scripts": {
 		"dev": "vite dev --host",
 		"build": "vite build",

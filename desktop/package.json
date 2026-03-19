@@ -13,12 +13,12 @@
   "scripts": {
     "start": "electron .",
     "build:frontend": "cd ../bedroc && npm run build",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
-    "dist:win:zip": "electron-builder --win zip",
-    "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux",
-    "dist:all": "electron-builder --win --mac --linux"
+    "dist": "electron-builder --projectDir .",
+    "dist:win": "electron-builder --win --projectDir .",
+    "dist:win:zip": "electron-builder --win zip --projectDir .",
+    "dist:mac": "electron-builder --mac --projectDir .",
+    "dist:linux": "electron-builder --linux --projectDir .",
+    "dist:all": "electron-builder --win --mac --linux --projectDir ."
   },
   "devDependencies": {
     "electron": "^33.0.0",
@@ -35,6 +35,7 @@
       "buildResources": "build-resources"
     },
     "files": [
+      "package.json",
       "main.js",
       "preload.js",
       "node_modules/**/*"
@@ -118,6 +119,7 @@
       "maintainer": "Cagan Calidag <contact@cagancalidag.com>"
     },
     "deb": {
+      "maintainer": "Cagan Calidag <contact@cagancalidag.com>",
       "packageCategory": "utils"
     }
   }

@@ -326,6 +326,22 @@ function buildMenu() {
 // This fixes issues with taskbar pinning and shortcuts
 app.setAppUserModelId('com.bedroc.app');
 
+ipcMain.handle('print', async (event) => {
+  try {
+    // Prefer Electron's native print dialog (Windows includes preview pane).
+    await new Promise((resolve, reject) => {
+      event.sender.print({ silent: false, printBackground: true }, (success, errorType) => {
+        if (success) resolve(true);
+        else reject(new Error(errorType || 'print failed'));
+      });
+    });
+    return { ok: true };
+  } catch {
+    // Do not fallback to window.print() - it can trigger unsupported preview dialogs.
+    return { ok: false };
+  }
+});
+
 app.whenReady().then(async () => {
   // Allow self-signed TLS certificates for private/local IP addresses.
   // Covers ALL network requests (fetch, WebSocket, navigation) for WireGuard IPs,

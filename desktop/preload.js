@@ -12,4 +12,9 @@
  * browser page.
  */
 
-// No APIs exposed. The renderer is treated as an untrusted web page.
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('bedrocElectron', {
+    print: () => ipcRenderer.invoke('print')
+});
+

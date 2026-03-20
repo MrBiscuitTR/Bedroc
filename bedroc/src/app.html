@@ -4,14 +4,14 @@
 		<meta charset="utf-8" />
 
 		<!--
-			Viewport: initial-scale=1, no user-scalable to prevent iOS double-tap zoom.
-			We set font-size: 16px on all inputs in CSS to prevent iOS auto-zoom on focus.
+			Viewport: allow deliberate pinch-zoom (needed for mobile print layout navigation).
+			Input font-size remains 16px in CSS to avoid iOS auto-zoom on focus.
 			Do NOT use viewport-fit=cover — it causes iOS standalone PWA to missize
 			the viewport, leaving a gap at the bottom of the screen.
 		-->
 		<meta
 			name="viewport"
-			content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+			content="width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes"
 		/>
 
 		<!-- PWA / home screen -->

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
 	import { auth, serverStatus } from '$lib/stores/auth.svelte.js';
 	import {
 		notesMap, topicsMap, foldersMap, conflictsMap,
@@ -17,7 +17,7 @@
 
 	// ── TipTap editor ─────────────────────────────────────────────
 	import { Editor, Node, mergeAttributes, Extension } from '@tiptap/core';
-	import { Plugin } from '@tiptap/pm/state';
+	import { Plugin, TextSelection } from '@tiptap/pm/state';
 	import StarterKit from '@tiptap/starter-kit';
 	import { Underline } from '@tiptap/extension-underline';
 	import { TextStyle, Color, FontSize } from '@tiptap/extension-text-style';
@@ -51,9 +51,12 @@
 					},
 				},
 			};
+					updateMobilePrintScale();
+					window.addEventListener('resize', handleViewportResize, { passive: true });
 		},
 	});
 
+					window.removeEventListener('resize', handleViewportResize);
 	// ── Note identity ─────────────────────────────────────────────
 	let noteId  = $derived(page.params.id);
 	let isNew   = $derived(noteId === 'new');
@@ -122,18 +125,154 @@
 		}
 	}
 	function handlePrint() {
-		window.print();
+		if ((window as any).bedrocElectron && (window as any).bedrocElectron.print) {
+			(window as any).bedrocElectron.print();
+		} else {
+			window.print();
+		}
+	}
+
+	// ── Find / replace ───────────────────────────────────────────
+	type FindMatch = { from: number; to: number };
+	let showFindDialog = $state(false);
+	let findQuery = $state('');
+	let replaceQuery = $state('');
+	let findCaseSensitive = $state(false);
+	let findMatches = $state<FindMatch[]>([]);
+	let activeFindIndex = $state(-1);
+	let findInputEl = $state<HTMLInputElement | undefined>(undefined);
+
+	function collectFindMatches(): FindMatch[] {
+		if (!editor || !findQuery) return [];
+		const q = findCaseSensitive ? findQuery : findQuery.toLowerCase();
+		const qLen = findQuery.length;
+		if (!qLen) return [];
+		const matches: FindMatch[] = [];
+
+		editor.state.doc.descendants((node, pos) => {
+			if (!node.isText || !node.text) return;
+			const hay = findCaseSensitive ? node.text : node.text.toLowerCase();
+			let idx = 0;
+			while (idx <= hay.length - qLen) {
+				const foundAt = hay.indexOf(q, idx);
+				if (foundAt === -1) break;
+				// `pos` for text nodes already points to the first character.
+				// Using `+1` shifts matches one character to the right.
+				matches.push({ from: pos + foundAt, to: pos + foundAt + qLen });
+				idx = foundAt + Math.max(1, qLen);
+			}
+		});
+
+		return matches;
+	}
+
+	function selectFindMatch(index: number) {
+		if (!editor || index < 0 || index >= findMatches.length) return;
+		const match = findMatches[index];
+		const tr = editor.state.tr
+			.setSelection(TextSelection.create(editor.state.doc, match.from, match.to))
+			.scrollIntoView();
+		editor.view.dispatch(tr);
+		editor.view.focus();
+		activeFindIndex = index;
+	}
+
+	function refreshFindMatches() {
+		const matches = collectFindMatches();
+		findMatches = matches;
+		if (!editor || !matches.length) {
+			activeFindIndex = -1;
+			return;
+		}
+		const selFrom = editor.state.selection.from;
+		const selTo = editor.state.selection.to;
+		activeFindIndex = matches.findIndex((m) => m.from === selFrom && m.to === selTo);
+	}
+
+	async function openFindDialog() {
+		if (!editor) return;
+		showFindDialog = true;
+		const { from, to } = editor.state.selection;
+		if (from !== to) {
+			const selected = editor.state.doc.textBetween(from, to, ' ', ' ');
+			if (selected && selected.length <= 120) findQuery = selected;
+		}
+		await tick();
+		findInputEl?.focus();
+		findInputEl?.select();
+		refreshFindMatches();
+	}
+
+	function closeFindDialog() {
+		showFindDialog = false;
+		findMatches = [];
+		activeFindIndex = -1;
+		editor?.commands.focus();
+	}
+
+	function findNext() {
+		refreshFindMatches();
+		if (!editor || !findMatches.length) return;
+		const next = activeFindIndex >= 0
+			? (activeFindIndex + 1) % findMatches.length
+			: 0;
+		selectFindMatch(next);
+	}
+
+	function findPrev() {
+		refreshFindMatches();
+		if (!editor || !findMatches.length) return;
+		const prev = activeFindIndex >= 0
+			? (activeFindIndex - 1 + findMatches.length) % findMatches.length
+			: findMatches.length - 1;
+		selectFindMatch(prev);
+	}
+
+	function replaceCurrentMatch() {
+		if (!editor || activeFindIndex < 0 || activeFindIndex >= findMatches.length) return;
+		const match = findMatches[activeFindIndex];
+		const tr = editor.state.tr.insertText(replaceQuery, match.from, match.to);
+		editor.view.dispatch(tr);
+		saved = false;
+		scheduleAutosave();
+		refreshFindMatches();
+		if (findMatches.length) {
+			selectFindMatch(Math.min(activeFindIndex, findMatches.length - 1));
+		}
+	}
+
+	function replaceAllMatches() {
+		if (!editor || !findMatches.length) return;
+		let tr = editor.state.tr;
+		for (let i = findMatches.length - 1; i >= 0; i--) {
+			const m = findMatches[i];
+			tr = tr.insertText(replaceQuery, m.from, m.to);
+		}
+		editor.view.dispatch(tr);
+		saved = false;
+		scheduleAutosave();
+		refreshFindMatches();
 	}
 
 	// ── Page break line computation ──────────────────────────────
-	// A4 page height = 1123px at 96 DPI.
-	// Fixed-interval dividers at every A4_PAGE_H from ProseMirror top.
-	// These are visual guides only; actual print pagination uses CSS
-	// break-inside:avoid rules handled by the browser.
+	// A4 at 96 CSS DPI.
+	const A4_PAGE_W = 794;
 	const A4_PAGE_H = 1123;
 
 	let pageBreakLines = $state<number[]>([]);
+	let mobilePrintScale = $state(1);
 	let _pageBreakRaf: number | null = null;
+
+	function updateMobilePrintScale() {
+		if (typeof window === 'undefined' || !printLayout || window.innerWidth >= 768) {
+			mobilePrintScale = 1;
+			return;
+		}
+		const viewportW = scrollAreaEl?.clientWidth ?? window.innerWidth;
+		const available = Math.max(280, viewportW - 18);
+		const scale = Math.min(1, available / A4_PAGE_W);
+		mobilePrintScale = Math.max(0.45, Number(scale.toFixed(4)));
+	}
 
 	function computePageBreaks() {
 		if (!printLayout || !editorEl || !contentWrapEl) { pageBreakLines = []; return; }
@@ -163,11 +302,18 @@
 	// Recompute page breaks when print layout toggles, content changes, or window resizes
 	$effect(() => {
 		if (printLayout && editorReady) {
+			updateMobilePrintScale();
 			schedulePageBreakCompute();
 		} else {
+			mobilePrintScale = 1;
 			pageBreakLines = [];
 		}
 	});
+
+	function handleViewportResize() {
+		updateMobilePrintScale();
+		if (printLayout) schedulePageBreakCompute();
+	}
 
 	// ── Load note ─────────────────────────────────────────────────
 	// Notes are stored decrypted in IndexedDB; encryption happens at sync time.
@@ -1056,6 +1202,14 @@
 		if (showImageDialog) positionPanel(imageBtnEl as any, document.getElementById('image-dialog') as any);
 	});
 
+	$effect(() => {
+		if (!showFindDialog || !editorReady) return;
+		// Recompute only on query/options changes to avoid deep effect loops.
+		findQuery;
+		findCaseSensitive;
+		refreshFindMatches();
+	});
+
 	// ── Ensure paragraph padding around block nodes ───────────────
 	// Tables and images are block-level; ProseMirror can't place a cursor
 	// "beside" them since they span the full editor width. This extension
@@ -1343,9 +1497,12 @@
 		});
 		// Signal to $effects that the editor is ready
 		editorReady = true;
+		updateMobilePrintScale();
+		window.addEventListener('resize', handleViewportResize, { passive: true });
 	});
 
 	onDestroy(() => {
+		window.removeEventListener('resize', handleViewportResize);
 		editor?.destroy();
 	});
 
@@ -1395,7 +1552,11 @@
 	}
 	function saveTopicModal() {
 		if (!topicName.trim()) return;
-		if (editingTopic) saveTopic({ ...editingTopic, name: topicName.trim(), color: topicColor, folderId: topicFolderId });
+		if (editingTopic) {
+			saveTopic({ ...editingTopic, name: topicName.trim(), color: topicColor, folderId: topicFolderId });
+		} else {
+			createTopic(topicName.trim(), topicColor, topicFolderId);
+		}
 		showTopicEditor = false;
 	}
 	function handleDeleteTopic(id: string) {
@@ -1415,7 +1576,11 @@
 	}
 	function saveFolderModal() {
 		if (!folderName.trim()) return;
-		if (editingFolder) saveFolder({ ...editingFolder, name: folderName.trim(), parentId: folderParentId });
+		if (editingFolder) {
+			saveFolder({ ...editingFolder, name: folderName.trim(), parentId: folderParentId });
+		} else {
+			createFolder(folderName.trim(), folderParentId);
+		}
 		showFolderEditor = false;
 	}
 </script>
@@ -1424,6 +1589,15 @@
 	if ((e.ctrlKey || e.metaKey) && e.key === 's') {
 		e.preventDefault();
 		handleSave();
+	}
+	if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+		e.preventDefault();
+		openFindDialog();
+		return;
+	}
+	if (showFindDialog && e.key === 'Escape') {
+		e.preventDefault();
+		closeFindDialog();
 	}
 }} />
 
@@ -1457,6 +1631,15 @@
 		</button>
 
 		<div class="toolbar-actions">
+			<button
+				class="btn-icon find-toolbar-btn"
+				onclick={openFindDialog}
+				title="Find and replace (Ctrl+F)"
+				aria-label="Find and replace"
+			>
+				<span class="find-toolbar-icon" aria-hidden="true"></span>
+			</button>
+
 			<!-- Print layout toggle -->
 			<button
 				class="btn-icon print-layout-btn"
@@ -1514,6 +1697,66 @@
 			{/if}
 		</div>
 	</div>
+
+	{#if showFindDialog}
+		<div class="find-dialog" role="dialog" aria-label="Find and replace">
+			<div class="find-row">
+				<input
+					class="find-input"
+					bind:this={findInputEl}
+					type="text"
+					placeholder="Find"
+					bind:value={findQuery}
+					onkeydown={(e) => {
+						if (e.key === 'Enter') {
+							e.preventDefault();
+							if (e.shiftKey) findPrev(); else findNext();
+						}
+						if (e.key === 'Escape') {
+							e.preventDefault();
+							closeFindDialog();
+						}
+					}}
+				/>
+				<span class="find-count" aria-live="polite">
+					{#if findQuery && findMatches.length > 0}
+						{activeFindIndex >= 0 ? activeFindIndex + 1 : 0}/{findMatches.length}
+					{:else}
+						0/0
+					{/if}
+				</span>
+				<button class="find-btn" onclick={findPrev} disabled={!findMatches.length} aria-label="Previous match">Prev</button>
+				<button class="find-btn" onclick={findNext} disabled={!findMatches.length} aria-label="Next match">Next</button>
+				<button class="find-close" onclick={closeFindDialog} aria-label="Close find">
+					<span class="find-close-icon" aria-hidden="true"></span>
+				</button>
+			</div>
+			<div class="find-row">
+				<input
+					class="find-input"
+					type="text"
+					placeholder="Replace"
+					bind:value={replaceQuery}
+					onkeydown={(e) => {
+						if (e.key === 'Enter') {
+							e.preventDefault();
+							replaceCurrentMatch();
+						}
+						if (e.key === 'Escape') {
+							e.preventDefault();
+							closeFindDialog();
+						}
+					}}
+				/>
+				<label class="find-case">
+					<input type="checkbox" bind:checked={findCaseSensitive} />
+					<span>Case</span>
+				</label>
+				<button class="find-btn" onclick={replaceCurrentMatch} disabled={!findMatches.length}>Replace</button>
+				<button class="find-btn" onclick={replaceAllMatches} disabled={!findMatches.length}>Replace all</button>
+			</div>
+		</div>
+	{/if}
 
 	<!-- ── Note title ──────────────────────────────────────────── -->
 	<input
@@ -2168,7 +2411,7 @@
 	<div class="editor-scroll-area" bind:this={scrollAreaEl}>
 		<!-- Print layout wrapper — position:relative container for page break
 		     lines. In normal mode this is just a pass-through flex child. -->
-		<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl}>
+		<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl} style={printLayout ? `--mobile-print-scale:${mobilePrintScale}` : ''}>
 			<div class="body-editor-wrap" bind:this={editorEl}></div>
 
 			<!-- Page break lines (print layout only) — inside the content wrapper
@@ -2378,7 +2621,8 @@
 		<h3 class="modal-title">{editingTopic ? 'Edit topic' : 'New topic'}</h3>
 		<div class="modal-field">
 			<label class="field-label" for="topic-name-e">Name</label>
-			<input id="topic-name-e" type="text" bind:value={topicName} placeholder="Topic name" autocorrect="off" autocapitalize="words" />
+			<input id="topic-name-e" type="text" bind:value={topicName} placeholder="Topic name" autocorrect="off" autocapitalize="words"
+				onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveTopicModal(); } }} />
 		</div>
 		<div class="modal-field">
 			<label class="field-label" for="topic-color-e">Color</label>
@@ -2410,11 +2654,13 @@
 		<h3 class="modal-title">{editingFolder ? 'Edit folder' : 'New folder'}</h3>
 		<div class="modal-field">
 			<label class="field-label" for="folder-name-e">Name</label>
-			<input id="folder-name-e" type="text" bind:value={folderName} placeholder="Folder name" autocorrect="off" autocapitalize="words" />
+			<input id="folder-name-e" type="text" bind:value={folderName} placeholder="Folder name" autocorrect="off" autocapitalize="words"
+				onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveFolderModal(); } }} />
 		</div>
 		<div class="modal-field">
 			<label class="field-label" for="folder-parent-e">Parent folder</label>
-			<select id="folder-parent-e" bind:value={folderParentId}>
+			<select id="folder-parent-e" bind:value={folderParentId}
+				onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveFolderModal(); } }}>
 				<option value={null}>- Root (no parent) -</option>
 				{#each allFolders.filter(f => f.id !== editingFolder?.id) as f (f.id)}
 					<option value={f.id}>{f.name}</option>
@@ -2513,6 +2759,8 @@
 		flex-direction: column;
 		height: 100%;
 		overflow: hidden;
+		position: relative;
+		isolation: isolate;
 	}
 
 	/* ── Visibility helpers ────────────────────────────────────── */
@@ -2951,7 +3199,8 @@
 		flex-shrink: 0;
 		overflow-x: auto;
 		scrollbar-width: none;
-		z-index: 5;
+		position: relative;
+		z-index: 105; /* higher than editor elements to prevent popups from appearing behind */
 	}
 
 	.format-bar::-webkit-scrollbar { display: none; }
@@ -3008,11 +3257,11 @@
 		white-space: nowrap;
 	}
 
-	.fontsize-backdrop { position: fixed; inset: 0; z-index: 200; }
+	.fontsize-backdrop { position: fixed; inset: 0; z-index: 1500; }
 
 	.fontsize-panel {
 		position: fixed;
-		z-index: 201;
+		z-index: 1501;
 		background: var(--bg-elevated);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
@@ -3080,11 +3329,11 @@
 		transform-origin: center;
 	}
 
-	.color-backdrop { position: fixed; inset: 0; z-index: 200; }
+	.color-backdrop { position: fixed; inset: 0; z-index: 1500; }
 
 	.color-panel {
 		position: fixed;
-		z-index: 201;
+		z-index: 1501;
 		background: var(--bg-elevated);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
@@ -3181,11 +3430,18 @@
 	.editor-scroll-area {
 		flex: 1;
 		overflow-y: auto;
+		overflow-x: hidden;
 		-webkit-overflow-scrolling: touch;
 		overscroll-behavior: contain;
+		touch-action: pan-y pinch-zoom;
 		position: relative; /* for the image resize overlay */
 		display: flex;
 		flex-direction: column;
+	}
+
+	.editor-page.print-layout .editor-scroll-area {
+		overflow: auto;
+		touch-action: pan-x pan-y pinch-zoom;
 	}
 
 	.editor-content-wrap {
@@ -3600,7 +3856,7 @@
 	/* Link / image insert dialog */
 	.link-dialog {
 		position: fixed;
-		z-index: 201;
+		z-index: 1501;
 		background: var(--bg-elevated);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
@@ -3611,6 +3867,135 @@
 		box-shadow: 0 8px 24px rgba(0,0,0,0.5);
 		min-width: 280px;
 	}
+
+	.find-dialog {
+		position: fixed;
+		top: max(env(safe-area-inset-top, 0px), 12px);
+		right: 12px;
+		z-index: 1600;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 10px;
+		width: min(520px, calc(100vw - 24px));
+		background: var(--bg-elevated);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-md);
+		box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+	}
+	.find-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.find-input {
+		flex: 1;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text);
+		font-size: 13px;
+		padding: 6px 10px;
+		outline: none;
+		font-family: inherit;
+	}
+	.find-input:focus { border-color: var(--accent); }
+	.find-count {
+		font-size: 12px;
+		color: var(--text-faint);
+		min-width: 42px;
+		text-align: center;
+	}
+	.find-btn {
+		padding: 6px 10px;
+		font-size: 12px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--bg-hover);
+		color: var(--text-muted);
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.find-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	@media (hover: hover) {
+		.find-btn:hover:not(:disabled) {
+			background: color-mix(in srgb, var(--accent) 10%, transparent);
+			color: var(--accent);
+		}
+	}
+	.find-close {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		background: none;
+		border: none;
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+		cursor: pointer;
+	}
+	@media (hover: hover) {
+		.find-close:hover {
+			background: var(--bg-hover);
+			color: var(--text);
+		}
+	}
+	.find-case {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 12px;
+		color: var(--text-muted);
+		user-select: none;
+	}
+
+	.find-toolbar-btn {
+		position: relative;
+	}
+	.find-toolbar-icon {
+		display: inline-block;
+		width: 12px;
+		height: 12px;
+		position: relative;
+		box-sizing: border-box;
+		border: 1.6px solid currentColor;
+		border-radius: 50%;
+	}
+	.find-toolbar-icon::before {
+		content: '';
+		position: absolute;
+		width: 6px;
+		height: 1.8px;
+		background: currentColor;
+		right: -4px;
+		top: 8px;
+		transform: rotate(42deg);
+		border-radius: 2px;
+	}
+
+	.find-close-icon {
+		display: inline-block;
+		width: 10px;
+		height: 10px;
+		position: relative;
+	}
+	.find-close-icon::before,
+	.find-close-icon::after {
+		content: '';
+		position: absolute;
+		left: 4px;
+		top: 0;
+		width: 1.5px;
+		height: 10px;
+		background: currentColor;
+		border-radius: 2px;
+	}
+	.find-close-icon::before { transform: rotate(45deg); }
+	.find-close-icon::after { transform: rotate(-45deg); }
 
 	.link-input {
 		flex: 1;
@@ -4082,9 +4467,16 @@
 		background: rgba(0, 0, 0, 0.72);
 		z-index: 200;
 		display: flex;
-		align-items: center;
+		align-items: flex-start;
 		justify-content: center;
-		padding: 16px;
+		overflow: auto;
+		padding: max(env(safe-area-inset-top, 0px), 10px) 12px max(env(safe-area-inset-bottom, 0px), 10px);
+	}
+	@media (min-width: 768px) {
+		.preview-backdrop {
+			align-items: center;
+			padding: 16px;
+		}
 	}
 
 	.preview-modal {
@@ -4093,10 +4485,16 @@
 		border-radius: 10px;
 		width: 100%;
 		max-width: 860px;
-		max-height: 90vh;
+		max-height: min(90vh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 20px));
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
+		margin: 0 auto;
+	}
+	@media (max-width: 767px) {
+		.preview-modal {
+			max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 8px);
+		}
 	}
 
 	.preview-header {
@@ -4107,6 +4505,10 @@
 		border-bottom: 1px solid var(--border);
 		flex-shrink: 0;
 		gap: 12px;
+		position: sticky;
+		top: 0;
+		background: var(--bg-elevated);
+		z-index: 1;
 	}
 
 	.preview-filename {
@@ -4152,6 +4554,7 @@
 		overflow: hidden;
 		display: flex;
 		flex-direction: column;
+		min-height: 0;
 	}
 
 	.preview-loading,
@@ -4166,7 +4569,7 @@
 		flex: 1;
 		width: 100%;
 		height: 100%;
-		min-height: 500px;
+		min-height: min(500px, calc(100dvh - 220px));
 		border: none;
 		background: #fff;
 	}
@@ -4213,6 +4616,27 @@
 	   identically on every device regardless of screen size. */
 	.print-layout .editor-scroll-area {
 		background: var(--bg-hover);
+	}
+
+	@media (max-width: 767px) {
+		.editor-page.print-layout .editor-content-wrap.print-layout-wrap {
+			zoom: var(--mobile-print-scale, 1);
+		}
+
+		/* Fallback for engines without zoom support. */
+		@supports not (zoom: 1) {
+			.editor-page.print-layout .body-editor-wrap {
+				width: min(794px, calc(100vw - 18px));
+				min-width: 0;
+				max-width: 794px;
+			}
+			.editor-page.print-layout .title-input {
+				max-width: min(794px, calc(100vw - 18px));
+			}
+			.editor-page.print-layout .page-break-line {
+				width: min(794px, calc(100vw - 18px));
+			}
+		}
 	}
 
 	.print-layout .body-editor-wrap {
@@ -4440,7 +4864,7 @@
 
 		@page {
 			size: A4;
-			margin: 20mm;
+			margin: 0;
 		}
 	}
 </style>

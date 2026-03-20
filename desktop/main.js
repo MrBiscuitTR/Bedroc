@@ -328,13 +328,17 @@ app.setAppUserModelId('com.bedroc.app');
 
 ipcMain.handle('print', async (event) => {
   try {
-    // Prefer renderer window.print() so Chromium can use its standard print UI.
-    await event.sender.executeJavaScript('window.print()');
+    // Prefer Electron's native print dialog (Windows includes preview pane).
+    await new Promise((resolve, reject) => {
+      event.sender.print({ silent: false, printBackground: true }, (success, errorType) => {
+        if (success) resolve(true);
+        else reject(new Error(errorType || 'print failed'));
+      });
+    });
     return { ok: true };
   } catch {
-    // Fallback to Electron print API if executeJavaScript is blocked/fails.
-    event.sender.print({ printBackground: true });
-    return { ok: true };
+    // Do not fallback to window.print() - it can trigger unsupported preview dialogs.
+    return { ok: false };
   }
 });
 

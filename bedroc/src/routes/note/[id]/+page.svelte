@@ -269,9 +269,8 @@
 			return;
 		}
 		const viewportW = scrollAreaEl?.clientWidth ?? window.innerWidth;
-		const available = Math.max(280, viewportW - 18);
-		const scale = Math.min(1, available / A4_PAGE_W);
-		mobilePrintScale = Math.max(0.45, Number(scale.toFixed(4)));
+		const scale = Math.min(1, viewportW / (A4_PAGE_W + 48)); // 48 = 24px side padding × 2
+		mobilePrintScale = Math.max(0.3, Number(scale.toFixed(4)));
 	}
 
 	function computePageBreaks() {
@@ -2413,7 +2412,7 @@
 	<div class="editor-scroll-area" bind:this={scrollAreaEl}>
 		<!-- Print layout wrapper — position:relative container for page break
 		     lines. In normal mode this is just a pass-through flex child. -->
-		<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl} style={printLayout ? `--mobile-print-scale:${mobilePrintScale}` : ''}>
+		<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl} style={printLayout && mobilePrintScale !== 1 ? `zoom:${mobilePrintScale}` : ''}>
 			<div class="body-editor-wrap" bind:this={editorEl}></div>
 
 			<!-- Page break lines (print layout only) — inside the content wrapper
@@ -3443,7 +3442,9 @@
 
 	.editor-page.print-layout .editor-scroll-area {
 		overflow: auto;
+		overflow-x: auto;
 		touch-action: pan-x pan-y pinch-zoom;
+		overscroll-behavior: contain;
 	}
 
 	.editor-content-wrap {
@@ -3455,6 +3456,9 @@
 		position: relative;
 		display: block;
 		flex: 0 0 auto;
+		width: calc(794px + 48px); /* A4 + 24px side padding each side */
+		padding: 0 24px 40px;
+		box-sizing: border-box;
 	}
 
 	.body-editor-wrap {
@@ -4660,27 +4664,6 @@
 	   identically on every device regardless of screen size. */
 	.print-layout .editor-scroll-area {
 		background: var(--bg-hover);
-	}
-
-	@media (max-width: 767px) {
-		.editor-page.print-layout .editor-content-wrap.print-layout-wrap {
-			zoom: var(--mobile-print-scale, 1);
-		}
-
-		/* Fallback for engines without zoom support. */
-		@supports not (zoom: 1) {
-			.editor-page.print-layout .body-editor-wrap {
-				width: min(794px, calc(100vw - 18px));
-				min-width: 0;
-				max-width: 794px;
-			}
-			.editor-page.print-layout .title-input {
-				max-width: min(794px, calc(100vw - 18px));
-			}
-			.editor-page.print-layout .page-break-line {
-				width: min(794px, calc(100vw - 18px));
-			}
-		}
 	}
 
 	.print-layout .body-editor-wrap {

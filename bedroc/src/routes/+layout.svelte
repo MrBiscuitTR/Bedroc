@@ -31,7 +31,13 @@
 
 		// Block viewport pinch-zoom everywhere. The print layout scroll area
 		// implements its own pinch-zoom via touchmove that scales only the A4 content.
-		const blockGesture = (e: Event) => e.preventDefault();
+		const blockGesture = (e: Event) => {
+			// Let gesture events through inside the print layout scroll area
+			// so the custom pinch-zoom handler on touchmove can fire.
+			const t = e.target as HTMLElement | null;
+			if (t?.closest?.('.editor-page.print-layout .editor-scroll-area')) return;
+			e.preventDefault();
+		};
 		document.addEventListener('gesturestart', blockGesture, { passive: false });
 		document.addEventListener('gesturechange', blockGesture, { passive: false });
 		return () => {

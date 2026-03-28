@@ -4870,8 +4870,10 @@
 	.print-layout .body-editor-wrap :global(.ProseMirror) {
 		padding: 40px 40px 40px;
 		min-height: 1123px;
-		font-size: 16px;
+		font-size: 12pt;  /* 12pt = 16px at 96dpi; matches @media print exactly */
 		line-height: 1.7;
+		-webkit-text-size-adjust: 100%;
+		text-size-adjust: 100%;
 	}
 
 	/* In print layout, images must not exceed A4 content width */

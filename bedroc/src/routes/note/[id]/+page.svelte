@@ -189,8 +189,11 @@
 		activeFindIndex = matches.findIndex((m) => m.from === selFrom && m.to === selTo);
 	}
 
+	let _findScrollTop = 0;
+
 	async function openFindDialog() {
 		if (!editor) return;
+		_findScrollTop = scrollAreaEl?.scrollTop ?? 0;
 		showFindDialog = true;
 		const { from, to } = editor.state.selection;
 		if (from !== to) {
@@ -204,10 +207,15 @@
 	}
 
 	function closeFindDialog() {
+		const savedTop = _findScrollTop;
 		showFindDialog = false;
 		findMatches = [];
 		activeFindIndex = -1;
 		editor?.commands.focus();
+		// Restore scroll position after focus (which may trigger a scroll-to-cursor)
+		requestAnimationFrame(() => {
+			if (scrollAreaEl) scrollAreaEl.scrollTop = savedTop;
+		});
 	}
 
 	function findNext() {
@@ -3947,6 +3955,10 @@
 		font-family: inherit;
 	}
 	.find-input:focus { border-color: var(--accent); }
+	/* Prevent iOS auto-zoom on focus — triggered when font-size < 16px */
+	@media (hover: none) {
+		.find-input { font-size: 16px; }
+	}
 	.find-count {
 		font-size: 12px;
 		color: var(--text-faint);
@@ -4680,7 +4692,7 @@
 
 	/* ── Print layout toggle button ────────────────────────────── */
 	.print-layout-btn {
-		color: var(--text-faint);
+		/* color: var(--text-faint); */
 		transition: color 0.15s;
 	}
 	.print-layout-btn.active {
@@ -4777,8 +4789,8 @@
 	   The browser scales the content to fit the @page printable area.
 	   This gives true WYSIWYG printing. */
 	@media print {
-		/* top/bottom 40px per page — browser repeats this on every page automatically.
-		   left/right = 0 so horizontal gutter comes from ProseMirror padding (keeps 794px). */
+		/* top/bottom 40px per page — browser repeats on every page automatically.
+		   left/right = 0, horizontal gutter comes from ProseMirror padding. */
 		@page {
 			size: 794px 1123px;
 			margin: 40px 0;
@@ -4817,6 +4829,9 @@
 			height: auto !important;
 			overflow: visible !important;
 			width: 794px !important;
+			border: none !important;
+			outline: none !important;
+			box-shadow: none !important;
 		}
 
 		.editor-scroll-area {
@@ -4824,6 +4839,10 @@
 			background: white !important;
 			width: 794px !important;
 			zoom: 1 !important;
+			border: none !important;
+			outline: none !important;
+			box-shadow: none !important;
+			scrollbar-gutter: auto !important;
 		}
 
 		.editor-content-wrap {
@@ -4846,7 +4865,7 @@
 			border-radius: 0 !important;
 		}
 
-		/* Horizontal padding = gutter. Top/bottom = 0 — @page margin handles per-page spacing. */
+		/* Horizontal gutter from padding. Top/bottom = 0 — @page margin handles per-page spacing. */
 		.body-editor-wrap :global(.ProseMirror) {
 			padding: 0 40px !important;
 			min-height: 0 !important;

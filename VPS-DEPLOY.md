@@ -214,16 +214,43 @@ openssl rand -hex 32   # → JWT_REFRESH_SECRET
 
 > **Never commit `.env.public` to git** — it is in `.gitignore`.
 
+### Create the logs directory with correct permissions
+
+The server runs as a non-root user (`uid 1001`) inside Docker. The `logs/` directory is mounted from the host, so the host directory must be writable by that uid:
+
+```bash
+mkdir -p ~/opt/Bedroc/logs
+sudo chown -R 1001:1001 ~/opt/Bedroc/logs
+```
+
+> Skip this if the directory already exists and logging works. If `logs/access.log` never appears after logins, this is almost certainly why.
+
+### Install the helper command
+
+All stack operations use several flags (`-p`, `-f`, `--env-file`). Install a wrapper so you never forget them:
+
+```bash
+sudo tee /usr/local/bin/bedroc-public >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd /home/biscuit/opt/Bedroc
+exec docker compose -p bedroc-public -f docker-compose.public.yml --env-file .env.public "$@"
+EOF
+sudo chmod +x /usr/local/bin/bedroc-public
+```
+
+> Adjust the `cd` path to wherever your repo lives. The `-p bedroc-public` flag is **critical** — see the isolation note below.
+
 ### Start the stack
 
 ```bash
-docker compose -f docker-compose.public.yml --env-file .env.public up -d
+bedroc-public up -d
 ```
 
 Verify all services are healthy:
 
 ```bash
-docker compose -f docker-compose.public.yml --env-file .env.public ps
+bedroc-public ps
 ```
 
 All three services (`postgres`, `redis`, `server`) should show `healthy` or `running`.
@@ -234,6 +261,20 @@ Test the API locally:
 curl http://127.0.0.1:3000/health
 # → {"ok":true}
 ```
+
+### Why `-p bedroc-public` matters
+
+Docker Compose derives a project name from the directory name by default. If the directory is called `Bedroc`, the project name becomes `bedroc` — which collides with any other Compose stack in the same directory (e.g. a previous WireGuard/private deployment). A collision means Compose reuses existing volumes (old Postgres data, wrong passwords) instead of creating fresh ones.
+
+Always use `-p bedroc-public` explicitly. With the helper script this is automatic.
+
+Resources created with the correct project name:
+
+- Containers: `bedroc-public-server-1`, `bedroc-public-postgres-1`, `bedroc-public-redis-1`
+- Volumes: `bedroc-public_postgres_data`, `bedroc-public_redis_data`
+- Network: `bedroc-public_internal`
+
+If you accidentally started without `-p bedroc-public` and ended up with stale volumes, stop the stack, identify the rogue volumes with `docker volume ls`, and remove them (`docker volume rm <name>`) before restarting with the correct project name.
 
 ---
 
@@ -296,6 +337,13 @@ Test the API through Caddy (locally):
 
 ```bash
 curl -k https://127.0.0.1/health -H "Host: bedrocapi.cagancalidag.com"
+# → {"ok":true}
+```
+
+Test through Caddy locally (SNI-correct method):
+
+```bash
+curl --resolve bedrocapi.cagancalidag.com:443:127.0.0.1 https://bedrocapi.cagancalidag.com/health
 # → {"ok":true}
 ```
 
@@ -397,11 +445,13 @@ The log records **usernames and IP addresses** of authentication events only. No
 ## Updating Bedroc
 
 ```bash
-cd /opt/Bedroc
+cd ~/opt/Bedroc
 git pull
-docker compose -f docker-compose.public.yml --env-file .env.public build --no-cache server
-docker compose -f docker-compose.public.yml --env-file .env.public up -d
+bedroc-public build --no-cache server
+bedroc-public up -d
 ```
+
+> `bedroc-public up -d` (without `down` first) does a rolling update — it only recreates containers whose image or config changed, leaving the database untouched.
 
 ---
 
@@ -427,8 +477,8 @@ The relationship: `sizeBytes` max = max plaintext file size. `MAX_ENCRYPTED_DATA
 After editing, rebuild:
 
 ```bash
-docker compose -f docker-compose.public.yml --env-file .env.public build --no-cache server
-docker compose -f docker-compose.public.yml --env-file .env.public up -d server
+bedroc-public build --no-cache server
+bedroc-public up -d server
 ```
 
 ---
@@ -520,7 +570,7 @@ CORS is a **browser-only** protection. A determined attacker with curl can send 
 
 ## Backups
 
-Same as the WireGuard setup — see [MANAGEMENT-GUIDE.md](MANAGEMENT-GUIDE.md) for backup commands. Use `-f docker-compose.public.yml --env-file .env.public` instead of the default compose invocation.
+Same as the WireGuard setup — see [MANAGEMENT-GUIDE.md](MANAGEMENT-GUIDE.md) for backup commands. Replace any raw `docker compose` invocation with `bedroc-public` to pick up the correct project name and env file.
 
 ---
 
@@ -533,11 +583,26 @@ Same as the WireGuard setup — see [MANAGEMENT-GUIDE.md](MANAGEMENT-GUIDE.md) f
 - Alternatively, temporarily set the DNS record to **DNS only** (grey cloud) while Caddy issues the cert, then re-enable proxy
 - Check Caddy logs: `sudo journalctl -u caddy -f`
 
+### Caddy fails to start — "address already in use" on port 80 or 443
+
+Another web server (nginx, Apache, an old proxy) is holding the port:
+
+```bash
+sudo ss -ltnp | awk '$4 ~ /:80$|:443$/ {print}'
+```
+
+If nginx is the culprit and you no longer need it:
+
+```bash
+sudo systemctl disable --now nginx
+sudo systemctl start caddy
+```
+
 ### "Cannot reach server" from the app
 
-1. Check the stack: `docker compose -f docker-compose.public.yml --env-file .env.public ps`
+1. Check the stack: `bedroc-public ps`
 2. Test locally: `curl http://127.0.0.1:3000/health`
-3. Test through Caddy: `curl -k https://127.0.0.1/health -H "Host: bedrocapi.cagancalidag.com"`
+3. Test through Caddy (SNI-correct): `curl --resolve bedrocapi.cagancalidag.com:443:127.0.0.1 https://bedrocapi.cagancalidag.com/health`
 4. Test publicly: `curl https://bedrocapi.cagancalidag.com/health`
 5. Check Caddy: `sudo systemctl status caddy`
 
@@ -547,7 +612,7 @@ Same as the WireGuard setup — see [MANAGEMENT-GUIDE.md](MANAGEMENT-GUIDE.md) f
 - After changing `.env.public`, restart the server:
 
   ```bash
-  docker compose -f docker-compose.public.yml --env-file .env.public up -d server
+  bedroc-public up -d server
   ```
 
 - For local dev testing, use a comma-separated list:
@@ -558,8 +623,36 @@ Same as the WireGuard setup — see [MANAGEMENT-GUIDE.md](MANAGEMENT-GUIDE.md) f
 
 ### Server container keeps restarting
 
-- Check logs: `docker compose -f docker-compose.public.yml --env-file .env.public logs server`
+- Check logs: `bedroc-public logs server`
 - Common causes: missing or wrong `DATABASE_URL` / `JWT_*` secrets in `.env.public`
+
+### Postgres authentication errors / wrong data in DB
+
+This usually means Compose reused a volume from a different deployment (missing `-p bedroc-public`). Check which volumes exist:
+
+```bash
+docker volume ls | grep bedroc
+```
+
+If you see `bedroc_postgres_data` (no `public` prefix) alongside `bedroc-public_postgres_data`, you accidentally started the stack without the project flag at some point. Stop the stack and confirm you're always using `bedroc-public` commands.
+
+To start fresh with a clean database (destructive — all data lost):
+
+```bash
+bedroc-public down -v   # removes containers AND volumes
+bedroc-public up -d
+```
+
+### Access log not appearing (`logs/access.log` missing)
+
+The server runs as uid 1001 inside the container. The host `logs/` directory must be owned by that uid:
+
+```bash
+sudo chown -R 1001:1001 ~/opt/Bedroc/logs
+bedroc-public restart server
+```
+
+After the next login or registration, `logs/access.log` should appear.
 
 ### Rate limited / 429 errors
 
@@ -567,3 +660,24 @@ Same as the WireGuard setup — see [MANAGEMENT-GUIDE.md](MANAGEMENT-GUIDE.md) f
 - Login: 10 requests/minute per IP
 - Register: 5 requests/minute per IP
 - If testing, wait 60 seconds or restart the server container
+
+### Adminer (DB GUI) via SSH tunnel
+
+Adminer is not included in the public stack by default. To inspect the database, run a temporary Adminer container attached to the internal network, then tunnel to it:
+
+```bash
+# On the VPS — start Adminer temporarily
+docker run -d --rm --name adminer-tmp \
+  --network bedroc-public_internal \
+  -p 127.0.0.1:8080:8080 \
+  adminer:latest
+
+# On your local machine — open the tunnel (use a different local port if 8080 is taken)
+ssh -L 18080:127.0.0.1:8080 biscuit@<vps-ip>
+
+# Open http://localhost:18080 in your browser
+# System: PostgreSQL | Server: postgres | Username/Password: from .env.public | Database: bedroc
+
+# Stop Adminer when done
+docker stop adminer-tmp
+```

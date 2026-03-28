@@ -1725,10 +1725,6 @@
 						0/0
 					{/if}
 				</span>
-				<label class="find-case">
-					<input type="checkbox" bind:checked={findCaseSensitive} />
-					<span>Case</span>
-				</label>
 				<button class="find-btn" onclick={findPrev} disabled={!findMatches.length} aria-label="Previous match">Prev</button>
 				<button class="find-btn" onclick={findNext} disabled={!findMatches.length} aria-label="Next match">Next</button>
 				<button class="find-close" onclick={closeFindDialog} aria-label="Close find">
@@ -1752,8 +1748,14 @@
 						}
 					}}
 				/>
-				<button class="find-btn" onclick={replaceCurrentMatch} disabled={!findMatches.length}>Replace</button>
-				<button class="find-btn" onclick={replaceAllMatches} disabled={!findMatches.length}>Replace all</button>
+				<div class="find-replace-actions">
+					<label class="find-case">
+						<input type="checkbox" bind:checked={findCaseSensitive} />
+						<span>Case</span>
+					</label>
+					<button class="find-btn" onclick={replaceCurrentMatch} disabled={!findMatches.length}>Replace</button>
+					<button class="find-btn" onclick={replaceAllMatches} disabled={!findMatches.length}>All</button>
+				</div>
 			</div>
 		</div>
 	{/if}
@@ -3944,6 +3946,12 @@
 			color: var(--text);
 		}
 	}
+	.find-replace-actions {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex-shrink: 0;
+	}
 	.find-case {
 		display: inline-flex;
 		align-items: center;
@@ -3951,6 +3959,8 @@
 		font-size: 12px;
 		color: var(--text-muted);
 		user-select: none;
+		flex-shrink: 0;
+		white-space: nowrap;
 	}
 
 	.find-toolbar-btn {

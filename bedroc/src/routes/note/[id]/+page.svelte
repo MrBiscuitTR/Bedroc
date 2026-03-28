@@ -3962,6 +3962,35 @@
 		flex-shrink: 0;
 		white-space: nowrap;
 	}
+	.find-case input[type="checkbox"] {
+		appearance: none;
+		-webkit-appearance: none;
+		width: 14px;
+		height: 14px;
+		min-width: 14px;
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		background: var(--bg);
+		cursor: pointer;
+		position: relative;
+		flex-shrink: 0;
+	}
+	.find-case input[type="checkbox"]:checked {
+		background: var(--accent);
+		border-color: var(--accent);
+	}
+	.find-case input[type="checkbox"]:checked::after {
+		content: '';
+		position: absolute;
+		left: 3px;
+		top: 1px;
+		width: 5px;
+		height: 8px;
+		border: 1.5px solid #fff;
+		border-top: none;
+		border-left: none;
+		transform: rotate(45deg);
+	}
 
 	.find-toolbar-btn {
 		position: relative;

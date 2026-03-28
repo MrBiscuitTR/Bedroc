@@ -305,10 +305,115 @@
 	let _pinchVP_X = 0;
 	let _pinchVP_Y = 0;
 
-	// ── iOS Safari: gesture events forwarded from +layout.svelte via custom events
-	// iOS gesturestart/gesturechange are proprietary and fire on the document.
-	// layout.svelte intercepts them, calls preventDefault to block viewport zoom,
-	// and forwards the scale data here via window custom events.
+	// ── Print layout touch handler (iOS + Android) ───────────────
+	// touch-action: none on the scroll area gives JS full control.
+	// We handle: 1-finger scroll, 2-finger pinch-zoom.
+	function _getPinchDist(touches: TouchList): number {
+		const dx = touches[0].clientX - touches[1].clientX;
+		const dy = touches[0].clientY - touches[1].clientY;
+		return Math.sqrt(dx * dx + dy * dy);
+	}
+	let _pinchStartDist = 0;
+	let _isPinching = false;
+	// 1-finger scroll tracking
+	let _scrollTouchStartX = 0;
+	let _scrollTouchStartY = 0;
+	let _scrollStartLeft = 0;
+	let _scrollStartTop = 0;
+	// Momentum
+	let _velX = 0;
+	let _velY = 0;
+	let _lastTouchX = 0;
+	let _lastTouchY = 0;
+	let _lastTouchT = 0;
+	let _momentumRaf: number | null = null;
+
+	function _stopMomentum() {
+		if (_momentumRaf !== null) { cancelAnimationFrame(_momentumRaf); _momentumRaf = null; }
+	}
+
+	function _runMomentum() {
+		if (!scrollAreaEl) return;
+		_velX *= 0.95;
+		_velY *= 0.95;
+		if (Math.abs(_velX) < 0.5 && Math.abs(_velY) < 0.5) { _momentumRaf = null; return; }
+		scrollAreaEl.scrollLeft = Math.max(0, scrollAreaEl.scrollLeft + _velX);
+		scrollAreaEl.scrollTop  = Math.max(0, scrollAreaEl.scrollTop  + _velY);
+		_momentumRaf = requestAnimationFrame(_runMomentum);
+	}
+
+	function handlePrintTouchStart(e: TouchEvent) {
+		if (!printLayout) return;
+		_stopMomentum();
+		if (e.touches.length === 2) {
+			// 2-finger pinch
+			e.preventDefault();
+			_isPinching = true;
+			_pinchStartDist = _getPinchDist(e.touches);
+			_pinchStartScale = mobilePrintScale;
+			const saRect = scrollAreaEl.getBoundingClientRect();
+			const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+			const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+			_pinchVP_X = midX - saRect.left;
+			_pinchVP_Y = midY - saRect.top;
+			_pinchFocalX = (scrollAreaEl.scrollLeft + _pinchVP_X) / mobilePrintScale;
+			_pinchFocalY = (scrollAreaEl.scrollTop  + _pinchVP_Y) / mobilePrintScale;
+		} else if (e.touches.length === 1 && !_isPinching) {
+			// 1-finger scroll
+			_scrollTouchStartX = e.touches[0].clientX;
+			_scrollTouchStartY = e.touches[0].clientY;
+			_scrollStartLeft = scrollAreaEl.scrollLeft;
+			_scrollStartTop  = scrollAreaEl.scrollTop;
+			_lastTouchX = e.touches[0].clientX;
+			_lastTouchY = e.touches[0].clientY;
+			_lastTouchT = e.timeStamp;
+			_velX = 0; _velY = 0;
+		}
+	}
+
+	function handlePrintTouchMove(e: TouchEvent) {
+		if (!printLayout) return;
+		e.preventDefault();
+		if (e.touches.length === 2) {
+			if (_pinchStartDist === 0) return;
+			const ratio = _getPinchDist(e.touches) / _pinchStartDist;
+			const newScale = Number(Math.max(_printMinScale, Math.min(3, _pinchStartScale * ratio)).toFixed(4));
+			mobilePrintScale = newScale;
+			scrollAreaEl.scrollLeft = Math.max(0, _pinchFocalX * newScale - _pinchVP_X);
+			scrollAreaEl.scrollTop  = Math.max(0, _pinchFocalY * newScale - _pinchVP_Y);
+		} else if (e.touches.length === 1 && !_isPinching) {
+			const dx = _scrollTouchStartX - e.touches[0].clientX;
+			const dy = _scrollTouchStartY - e.touches[0].clientY;
+			scrollAreaEl.scrollLeft = Math.max(0, _scrollStartLeft + dx);
+			scrollAreaEl.scrollTop  = Math.max(0, _scrollStartTop  + dy);
+			// Track velocity (px/ms → px/frame at ~60fps ≈ 16ms)
+			const dt = e.timeStamp - _lastTouchT;
+			if (dt > 0) {
+				_velX = ((e.touches[0].clientX - _lastTouchX) / dt) * -16;
+				_velY = ((e.touches[0].clientY - _lastTouchY) / dt) * -16;
+			}
+			_lastTouchX = e.touches[0].clientX;
+			_lastTouchY = e.touches[0].clientY;
+			_lastTouchT = e.timeStamp;
+		}
+	}
+
+	function handlePrintTouchEnd(e: TouchEvent) {
+		if (!printLayout) return;
+		if (e.touches.length < 2) {
+			_isPinching = false;
+			_pinchStartDist = 0;
+		}
+		if (e.touches.length === 0 && !_isPinching) {
+			// Kick off momentum
+			if (Math.abs(_velX) > 0.5 || Math.abs(_velY) > 0.5) {
+				_momentumRaf = requestAnimationFrame(_runMomentum);
+			}
+		}
+	}
+
+	// iOS Safari: gesture events forwarded from +layout.svelte as custom window events.
+	// These fire even when touch-action:none, as a fallback/complement.
 	function handlePrintGestureStart(e: CustomEvent) {
 		if (!printLayout) return;
 		_pinchStartScale = mobilePrintScale;
@@ -325,52 +430,8 @@
 		const gestureScale = e.detail?.scale ?? 1;
 		const newScale = Number(Math.max(_printMinScale, Math.min(3, _pinchStartScale * gestureScale)).toFixed(4));
 		mobilePrintScale = newScale;
-		const targetLeft = _pinchFocalX * newScale - _pinchVP_X;
-		const targetTop  = _pinchFocalY * newScale - _pinchVP_Y;
-		requestAnimationFrame(() => {
-			if (scrollAreaEl) {
-				scrollAreaEl.scrollLeft = Math.max(0, targetLeft);
-				scrollAreaEl.scrollTop  = Math.max(0, targetTop);
-			}
-		});
-	}
-
-	// ── Android / non-iOS: touchstart/touchmove (standard touch events)
-	function _getPinchDist(touches: TouchList): number {
-		const dx = touches[0].clientX - touches[1].clientX;
-		const dy = touches[0].clientY - touches[1].clientY;
-		return Math.sqrt(dx * dx + dy * dy);
-	}
-	let _pinchStartDist = 0;
-
-	function handlePrintPinchStart(e: TouchEvent) {
-		if (!printLayout || e.touches.length !== 2) return;
-		_pinchStartDist = _getPinchDist(e.touches);
-		_pinchStartScale = mobilePrintScale;
-		const saRect = scrollAreaEl.getBoundingClientRect();
-		const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-		const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-		_pinchVP_X = midX - saRect.left;
-		_pinchVP_Y = midY - saRect.top;
-		_pinchFocalX = (scrollAreaEl.scrollLeft + _pinchVP_X) / mobilePrintScale;
-		_pinchFocalY = (scrollAreaEl.scrollTop  + _pinchVP_Y) / mobilePrintScale;
-	}
-
-	function handlePrintPinchMove(e: TouchEvent) {
-		if (!printLayout || e.touches.length !== 2) return;
-		e.preventDefault();
-		if (_pinchStartDist === 0) return;
-		const ratio = _getPinchDist(e.touches) / _pinchStartDist;
-		const newScale = Number(Math.max(_printMinScale, Math.min(3, _pinchStartScale * ratio)).toFixed(4));
-		mobilePrintScale = newScale;
-		const targetLeft = _pinchFocalX * newScale - _pinchVP_X;
-		const targetTop  = _pinchFocalY * newScale - _pinchVP_Y;
-		requestAnimationFrame(() => {
-			if (scrollAreaEl) {
-				scrollAreaEl.scrollLeft = Math.max(0, targetLeft);
-				scrollAreaEl.scrollTop  = Math.max(0, targetTop);
-			}
-		});
+		scrollAreaEl.scrollLeft = Math.max(0, _pinchFocalX * newScale - _pinchVP_X);
+		scrollAreaEl.scrollTop  = Math.max(0, _pinchFocalY * newScale - _pinchVP_Y);
 	}
 
 	// Remove all injected spacers from ProseMirror DOM
@@ -1696,12 +1757,13 @@
 		window.addEventListener('resize', handleViewportResize, { passive: true });
 		window.addEventListener('beforeprint', prepareFloatGroupsForPrint);
 		window.addEventListener('afterprint', restoreFloatGroupsAfterPrint);
-		// Pinch-zoom for print layout: non-passive so we can call preventDefault()
-		// Android: standard touch events (iOS compositor steals these for panning)
-		scrollAreaEl.addEventListener('touchstart', handlePrintPinchStart, { passive: true });
-		scrollAreaEl.addEventListener('touchmove', handlePrintPinchMove, { passive: false });
-		// iOS Safari: gesture events forwarded from +layout.svelte as custom window events
-		window.addEventListener('printGestureStart', handlePrintGestureStart as EventListener);
+		// Print layout touch: touch-action:none so iOS compositor doesn't steal 2-finger gestures.
+		// We handle 1-finger scroll + 2-finger pinch entirely in JS.
+		scrollAreaEl.addEventListener('touchstart', handlePrintTouchStart, { passive: false });
+		scrollAreaEl.addEventListener('touchmove',  handlePrintTouchMove,  { passive: false });
+		scrollAreaEl.addEventListener('touchend',   handlePrintTouchEnd,   { passive: true });
+		// iOS gesture events as backup (forwarded from +layout.svelte)
+		window.addEventListener('printGestureStart',  handlePrintGestureStart  as EventListener);
 		window.addEventListener('printGestureChange', handlePrintGestureChange as EventListener);
 		// Track natural (un-transformed) height of contentWrapEl for the scale wrapper sizing
 		_contentResizeObs = new ResizeObserver(([entry]) => {
@@ -1714,9 +1776,11 @@
 		window.removeEventListener('resize', handleViewportResize);
 		window.removeEventListener('beforeprint', prepareFloatGroupsForPrint);
 		window.removeEventListener('afterprint', restoreFloatGroupsAfterPrint);
-		scrollAreaEl?.removeEventListener('touchstart', handlePrintPinchStart);
-		scrollAreaEl?.removeEventListener('touchmove', handlePrintPinchMove);
-		window.removeEventListener('printGestureStart', handlePrintGestureStart as EventListener);
+		scrollAreaEl?.removeEventListener('touchstart', handlePrintTouchStart);
+		scrollAreaEl?.removeEventListener('touchmove',  handlePrintTouchMove);
+		scrollAreaEl?.removeEventListener('touchend',   handlePrintTouchEnd);
+		_stopMomentum();
+		window.removeEventListener('printGestureStart',  handlePrintGestureStart  as EventListener);
 		window.removeEventListener('printGestureChange', handlePrintGestureChange as EventListener);
 		_contentResizeObs?.disconnect();
 		editor?.destroy();
@@ -3655,7 +3719,7 @@
 	.editor-page.print-layout .editor-scroll-area {
 		overflow: auto;
 		overflow-x: auto;
-		touch-action: manipulation;
+		touch-action: none;
 		overscroll-behavior: contain;
 		scrollbar-gutter: stable;
 	}

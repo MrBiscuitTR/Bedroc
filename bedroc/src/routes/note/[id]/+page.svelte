@@ -379,8 +379,16 @@
 			const ratio = _getPinchDist(e.touches) / _pinchStartDist;
 			const newScale = Number(Math.max(_printMinScale, Math.min(3, _pinchStartScale * ratio)).toFixed(4));
 			mobilePrintScale = newScale;
-			scrollAreaEl.scrollLeft = Math.max(0, _pinchFocalX * newScale - _pinchVP_X);
-			scrollAreaEl.scrollTop  = Math.max(0, _pinchFocalY * newScale - _pinchVP_Y);
+			// Defer scroll position update — Svelte needs one frame to re-render
+			// the print-scale-outer dimensions before scrollLeft/scrollTop can be set.
+			const tLeft = Math.max(0, _pinchFocalX * newScale - _pinchVP_X);
+			const tTop  = Math.max(0, _pinchFocalY * newScale - _pinchVP_Y);
+			requestAnimationFrame(() => {
+				if (scrollAreaEl) {
+					scrollAreaEl.scrollLeft = tLeft;
+					scrollAreaEl.scrollTop  = tTop;
+				}
+			});
 		} else if (e.touches.length === 1 && !_isPinching) {
 			const dx = _scrollTouchStartX - e.touches[0].clientX;
 			const dy = _scrollTouchStartY - e.touches[0].clientY;
@@ -430,8 +438,14 @@
 		const gestureScale = e.detail?.scale ?? 1;
 		const newScale = Number(Math.max(_printMinScale, Math.min(3, _pinchStartScale * gestureScale)).toFixed(4));
 		mobilePrintScale = newScale;
-		scrollAreaEl.scrollLeft = Math.max(0, _pinchFocalX * newScale - _pinchVP_X);
-		scrollAreaEl.scrollTop  = Math.max(0, _pinchFocalY * newScale - _pinchVP_Y);
+		const tLeft = Math.max(0, _pinchFocalX * newScale - _pinchVP_X);
+		const tTop  = Math.max(0, _pinchFocalY * newScale - _pinchVP_Y);
+		requestAnimationFrame(() => {
+			if (scrollAreaEl) {
+				scrollAreaEl.scrollLeft = tLeft;
+				scrollAreaEl.scrollTop  = tTop;
+			}
+		});
 	}
 
 	// Remove all injected spacers from ProseMirror DOM

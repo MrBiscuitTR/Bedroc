@@ -3484,6 +3484,7 @@
 		overflow-x: auto;
 		touch-action: pan-x pan-y pinch-zoom;
 		overscroll-behavior: contain;
+		scrollbar-gutter: stable;
 	}
 
 	.editor-content-wrap {

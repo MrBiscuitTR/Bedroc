@@ -51,12 +51,9 @@
 					},
 				},
 			};
-					updateMobilePrintScale();
-					window.addEventListener('resize', handleViewportResize, { passive: true });
-		},
-	});
+	},
+});
 
-					window.removeEventListener('resize', handleViewportResize);
 	// ── Note identity ─────────────────────────────────────────────
 	let noteId  = $derived(page.params.id);
 	let isNew   = $derived(noteId === 'new');
@@ -287,7 +284,9 @@
 			return;
 		}
 		const viewportW = scrollAreaEl?.clientWidth ?? window.innerWidth;
-		const scale = Math.min(1, viewportW / (A4_PAGE_W + 48));
+		// Zoom targets body-editor-wrap (794px paper). Content-wrap has 24px padding
+		// each side, so available space for the paper = viewportW - 48.
+		const scale = Math.min(1, (viewportW - 48) / A4_PAGE_W);
 		mobilePrintScale = Math.max(0.3, Number(scale.toFixed(4)));
 	}
 
@@ -346,6 +345,59 @@
 				i++;
 			}
 		}
+	}
+
+	// Before printing: wrap each floated image + its visually-adjacent siblings in a
+	// display:flow-root container with break-inside:avoid. This forces the browser to
+	// treat the float and its wrapping text as one indivisible unit for page breaks.
+	// Positions are all measured before any DOM mutations to avoid stale layout reads.
+	function prepareFloatGroupsForPrint() {
+		const pm = editorEl?.querySelector('.ProseMirror') as HTMLElement | null;
+		if (!pm) return;
+
+		// Measure all direct children's tops relative to pm BEFORE touching the DOM
+		const childTops = new Map<Element, number>();
+		Array.from(pm.children).forEach(c => {
+			childTops.set(c, offsetTopRelTo(c as HTMLElement, pm));
+		});
+
+		// Collect float images + their bottom boundary
+		const floats: { el: HTMLElement; bottom: number }[] = [];
+		pm.querySelectorAll(':scope > .img-node-wrapper').forEach(node => {
+			const el = node as HTMLElement;
+			if (!el.style.cssFloat || el.style.cssFloat === 'none') return;
+			floats.push({ el, bottom: (childTops.get(el) ?? 0) + el.offsetHeight });
+		});
+
+		// Wrap each float + overlapping siblings
+		floats.forEach(({ el, bottom }) => {
+			const wrapper = document.createElement('div');
+			wrapper.className = 'pm-float-group';
+			pm.insertBefore(wrapper, el);
+			wrapper.appendChild(el);
+
+			let next = wrapper.nextElementSibling as HTMLElement | null;
+			while (next && !next.classList.contains('img-node-wrapper')) {
+				const top = childTops.get(next) ?? Infinity;
+				if (top < bottom) {
+					wrapper.appendChild(next);
+					next = wrapper.nextElementSibling as HTMLElement | null;
+				} else {
+					break;
+				}
+			}
+		});
+	}
+
+	// After printing: restore the DOM exactly as it was
+	function restoreFloatGroupsAfterPrint() {
+		const pm = editorEl?.querySelector('.ProseMirror') as HTMLElement | null;
+		if (!pm) return;
+		pm.querySelectorAll('.pm-float-group').forEach(wrapper => {
+			// Move children back before the wrapper (preserves order)
+			while (wrapper.firstChild) pm.insertBefore(wrapper.firstChild, wrapper);
+			wrapper.remove();
+		});
 	}
 
 	function schedulePageBreakCompute() {
@@ -1559,10 +1611,14 @@
 		editorReady = true;
 		updateMobilePrintScale();
 		window.addEventListener('resize', handleViewportResize, { passive: true });
+		window.addEventListener('beforeprint', prepareFloatGroupsForPrint);
+		window.addEventListener('afterprint', restoreFloatGroupsAfterPrint);
 	});
 
 	onDestroy(() => {
 		window.removeEventListener('resize', handleViewportResize);
+		window.removeEventListener('beforeprint', prepareFloatGroupsForPrint);
+		window.removeEventListener('afterprint', restoreFloatGroupsAfterPrint);
 		editor?.destroy();
 	});
 
@@ -2473,8 +2529,8 @@
 	<div class="editor-scroll-area" bind:this={scrollAreaEl}>
 		<!-- Print layout wrapper — position:relative container for page break
 		     lines. In normal mode this is just a pass-through flex child. -->
-		<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl} style={printLayout && mobilePrintScale !== 1 ? `zoom:${mobilePrintScale}` : ''}>
-			<div class="body-editor-wrap" bind:this={editorEl}></div>
+		<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl} style={printLayout && mobilePrintScale !== 1 ? 'min-width:0' : ''}>
+			<div class="body-editor-wrap" bind:this={editorEl} style={printLayout && mobilePrintScale !== 1 ? `zoom:${mobilePrintScale}` : ''}></div>
 		</div>
 
 		<!-- Link hover tooltip -->
@@ -4784,24 +4840,26 @@
 	}
 
 	/* ── @media print — for actual printing ──────────────────── */
-	/* Strategy: keep the same sizing as print layout (794px, 40px padding)
-	   so the printed output matches what the user sees in the editor.
-	   The browser scales the content to fit the @page printable area.
-	   This gives true WYSIWYG printing. */
+	/* Use device-independent units throughout:
+	   - @page size: A4 (named size, always 210×297mm regardless of device DPI)
+	   - margin: mm (physical millimetres, not px which varies by DPI)
+	   - font-size: pt (1pt = 1/72in, physically consistent everywhere)
+	   - container widths: 100% of the A4 printable area
+	   This ensures identical output on desktop, iOS, and Android. */
 	@media print {
-		/* top/bottom 40px per page — browser repeats on every page automatically.
-		   left/right = 0, horizontal gutter comes from ProseMirror padding. */
 		@page {
-			size: 794px 1123px;
-			margin: 40px 0;
+			size: A4;
+			margin: 10.5mm 0; /* 10.5mm ≈ 40px at 96dpi; repeats on every page */
 		}
 
 		:global(html),
 		:global(body) {
-			width: 794px !important;
+			width: 100% !important;
 			margin: 0 !important;
 			padding: 0 !important;
-			font-size: 16px !important;
+			font-size: 12pt !important; /* 12pt = 16px at 96dpi, device-independent */
+			-webkit-text-size-adjust: 100% !important;
+			text-size-adjust: 100% !important;
 		}
 
 		.toolbar,
@@ -4828,7 +4886,7 @@
 		.editor-page {
 			height: auto !important;
 			overflow: visible !important;
-			width: 794px !important;
+			width: 100% !important;
 			border: none !important;
 			outline: none !important;
 			box-shadow: none !important;
@@ -4837,7 +4895,7 @@
 		.editor-scroll-area {
 			overflow: visible !important;
 			background: white !important;
-			width: 794px !important;
+			width: 100% !important;
 			zoom: 1 !important;
 			border: none !important;
 			outline: none !important;
@@ -4848,38 +4906,42 @@
 		.editor-content-wrap {
 			display: block !important;
 			overflow: visible !important;
-			width: 794px !important;
+			width: 100% !important;
 			padding: 0 !important;
 			zoom: 1 !important;
+			min-width: 0 !important;
 		}
 
 		.body-editor-wrap {
-			width: 794px !important;
-			min-width: 794px !important;
-			max-width: 794px !important;
+			width: 100% !important;
+			min-width: 0 !important;
+			max-width: 100% !important;
 			margin: 0 !important;
 			background: white !important;
 			background-image: none !important;
 			box-shadow: none !important;
 			overflow: visible !important;
 			border-radius: 0 !important;
+			zoom: 1 !important;
 		}
 
-		/* Horizontal gutter from padding. Top/bottom = 0 — @page margin handles per-page spacing. */
+		/* Horizontal gutter in mm. Top/bottom = 0 — @page margin handles per-page spacing. */
 		.body-editor-wrap :global(.ProseMirror) {
-			padding: 0 40px !important;
+			padding: 0 10.5mm !important;
 			min-height: 0 !important;
-			font-size: 16px !important;
+			font-size: 12pt !important;
 			line-height: 1.7 !important;
 			color: black !important;
 			background: none !important;
 		}
 
-		/* In print, reset floated images to block so break-inside can work on them.
-		   A floated image splits the flow; as block it's treated like any other element. */
 		.body-editor-wrap :global(.img-node-wrapper) {
-			float: none !important;
-			display: block !important;
+			break-inside: avoid;
+			page-break-inside: avoid;
+		}
+		/* Float group: BFC container injected before print to keep float + wrapping text together */
+		:global(.pm-float-group) {
+			display: flow-root;
 			break-inside: avoid;
 			page-break-inside: avoid;
 		}
@@ -4923,6 +4985,15 @@
 		/* Hide interactive chrome */
 		.body-editor-wrap :global(.img-align-toolbar),
 		.body-editor-wrap :global(.img-resize-handle-inline) {
+			display: none !important;
+		}
+
+		/* Hide selection outlines — selected nodes show accent outlines in print preview */
+		:global(.ProseMirror-selectednode) {
+			outline: none !important;
+			box-shadow: none !important;
+		}
+		:global(.selectedCell::after) {
 			display: none !important;
 		}
 

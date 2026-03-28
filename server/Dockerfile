@@ -53,7 +53,8 @@ COPY src/db/migrations ./dist/db/migrations
 # Create a non-root user to run the server
 # UID/GID 1001 — standard convention for app users
 RUN addgroup -g 1001 -S bedroc && \
-    adduser -u 1001 -S bedroc -G bedroc
+    adduser -u 1001 -S bedroc -G bedroc && \
+    mkdir -p /app/logs && chown bedroc:bedroc /app/logs
 
 USER bedroc
 

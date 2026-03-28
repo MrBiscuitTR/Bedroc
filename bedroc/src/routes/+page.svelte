@@ -1365,6 +1365,7 @@
 	}
 
 	@media (hover: hover) { .folder-item:hover .folder-actions { opacity: 1; } }
+	@media (hover: none) { .folder-actions { opacity: 1; } }
 
 	.folder-action-btn { padding: 4px; color: var(--text-faint); }
 
@@ -1479,6 +1480,7 @@
 	}
 
 	@media (hover: hover) { .topic-row:hover .topic-edit-btn { opacity: 1; } }
+	@media (hover: none) { .topic-edit-btn { opacity: 1; } }
 
 	.dragging { opacity: 0.4; }
 

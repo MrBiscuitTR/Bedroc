@@ -4,14 +4,16 @@
 		<meta charset="utf-8" />
 
 		<!--
-			Viewport: allow deliberate pinch-zoom (needed for mobile print layout navigation).
-			Input font-size remains 16px in CSS to avoid iOS auto-zoom on focus.
+			Viewport: block pinch-zoom — this is an app, not a document.
+			maximum-scale=1 + user-scalable=no is respected by iOS PWA and Android.
+			Regular iOS Safari ignores user-scalable=no since iOS 10; the gesturestart
+			JS handler in +layout.svelte covers that case.
 			Do NOT use viewport-fit=cover — it causes iOS standalone PWA to missize
 			the viewport, leaving a gap at the bottom of the screen.
 		-->
 		<meta
 			name="viewport"
-			content="width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes"
+			content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
 		/>
 
 		<!-- PWA / home screen -->

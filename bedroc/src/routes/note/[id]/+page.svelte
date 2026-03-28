@@ -3968,12 +3968,17 @@
 		width: 14px;
 		height: 14px;
 		min-width: 14px;
+		max-width: 14px;
 		border: 1px solid var(--border);
 		border-radius: 3px;
 		background: var(--bg);
 		cursor: pointer;
 		position: relative;
 		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		box-sizing: border-box;
 	}
 	.find-case input[type="checkbox"]:checked {
 		background: var(--accent);
@@ -3982,14 +3987,14 @@
 	.find-case input[type="checkbox"]:checked::after {
 		content: '';
 		position: absolute;
-		left: 3px;
-		top: 1px;
-		width: 5px;
-		height: 8px;
+		left: 50%;
+		top: 50%;
+		width: 4px;
+		height: 7px;
 		border: 1.5px solid #fff;
 		border-top: none;
 		border-left: none;
-		transform: rotate(45deg);
+		transform: translate(-50%, -60%) rotate(45deg);
 	}
 
 	.find-toolbar-btn {

@@ -297,18 +297,51 @@
 	// Viewport zoom is blocked globally (meta tag + gesturestart in layout.svelte).
 	// When the user pinches inside the print layout scroll area we intercept the
 	// 2-finger touchmove here and update mobilePrintScale instead.
-	let _pinchStartDist = 0;
 	let _pinchStartScale = 1;
-	let _pinchFocalX = 0;   // unscaled content x under pinch midpoint
-	let _pinchFocalY = 0;   // unscaled content y under pinch midpoint
-	let _pinchMidVP_X = 0;  // pinch mid relative to scroll area left edge
-	let _pinchMidVP_Y = 0;  // pinch mid relative to scroll area top edge
+	// Focal point: content coord under pinch center at start
+	let _pinchFocalX = 0;
+	let _pinchFocalY = 0;
+	// Viewport offset of pinch center from scroll area edges
+	let _pinchVP_X = 0;
+	let _pinchVP_Y = 0;
 
+	// ── iOS Safari: gesture events forwarded from +layout.svelte via custom events
+	// iOS gesturestart/gesturechange are proprietary and fire on the document.
+	// layout.svelte intercepts them, calls preventDefault to block viewport zoom,
+	// and forwards the scale data here via window custom events.
+	function handlePrintGestureStart(e: CustomEvent) {
+		if (!printLayout) return;
+		_pinchStartScale = mobilePrintScale;
+		const sa = scrollAreaEl;
+		if (!sa) return;
+		_pinchVP_X = sa.clientWidth / 2;
+		_pinchVP_Y = sa.clientHeight / 2;
+		_pinchFocalX = (sa.scrollLeft + _pinchVP_X) / mobilePrintScale;
+		_pinchFocalY = (sa.scrollTop  + _pinchVP_Y) / mobilePrintScale;
+	}
+
+	function handlePrintGestureChange(e: CustomEvent) {
+		if (!printLayout) return;
+		const gestureScale = e.detail?.scale ?? 1;
+		const newScale = Number(Math.max(_printMinScale, Math.min(3, _pinchStartScale * gestureScale)).toFixed(4));
+		mobilePrintScale = newScale;
+		const targetLeft = _pinchFocalX * newScale - _pinchVP_X;
+		const targetTop  = _pinchFocalY * newScale - _pinchVP_Y;
+		requestAnimationFrame(() => {
+			if (scrollAreaEl) {
+				scrollAreaEl.scrollLeft = Math.max(0, targetLeft);
+				scrollAreaEl.scrollTop  = Math.max(0, targetTop);
+			}
+		});
+	}
+
+	// ── Android / non-iOS: touchstart/touchmove (standard touch events)
 	function _getPinchDist(touches: TouchList): number {
 		const dx = touches[0].clientX - touches[1].clientX;
 		const dy = touches[0].clientY - touches[1].clientY;
 		return Math.sqrt(dx * dx + dy * dy);
 	}
+	let _pinchStartDist = 0;
 
 	function handlePrintPinchStart(e: TouchEvent) {
 		if (!printLayout || e.touches.length !== 2) return;
@@ -317,24 +350,21 @@
 		const saRect = scrollAreaEl.getBoundingClientRect();
 		const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
 		const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-		_pinchMidVP_X = midX - saRect.left;
-		_pinchMidVP_Y = midY - saRect.top;
-		// Convert viewport midpoint to unscaled content coordinates
-		_pinchFocalX = (scrollAreaEl.scrollLeft + _pinchMidVP_X) / mobilePrintScale;
-		_pinchFocalY = (scrollAreaEl.scrollTop  + _pinchMidVP_Y) / mobilePrintScale;
+		_pinchVP_X = midX - saRect.left;
+		_pinchVP_Y = midY - saRect.top;
+		_pinchFocalX = (scrollAreaEl.scrollLeft + _pinchVP_X) / mobilePrintScale;
+		_pinchFocalY = (scrollAreaEl.scrollTop  + _pinchVP_Y) / mobilePrintScale;
 	}
 
 	function handlePrintPinchMove(e: TouchEvent) {
 		if (!printLayout || e.touches.length !== 2) return;
-		e.preventDefault(); // block browser scroll/gesture with 2 fingers
+		e.preventDefault();
 		if (_pinchStartDist === 0) return;
 		const ratio = _getPinchDist(e.touches) / _pinchStartDist;
 		const newScale = Number(Math.max(_printMinScale, Math.min(3, _pinchStartScale * ratio)).toFixed(4));
 		mobilePrintScale = newScale;
-		// After Svelte updates the DOM (new outer dimensions), adjust scroll so the
-		// focal point stays under the pinch midpoint.
-		const targetLeft = _pinchFocalX * newScale - _pinchMidVP_X;
-		const targetTop  = _pinchFocalY * newScale - _pinchMidVP_Y;
+		const targetLeft = _pinchFocalX * newScale - _pinchVP_X;
+		const targetTop  = _pinchFocalY * newScale - _pinchVP_Y;
 		requestAnimationFrame(() => {
 			if (scrollAreaEl) {
 				scrollAreaEl.scrollLeft = Math.max(0, targetLeft);
@@ -1667,8 +1697,12 @@
 		window.addEventListener('beforeprint', prepareFloatGroupsForPrint);
 		window.addEventListener('afterprint', restoreFloatGroupsAfterPrint);
 		// Pinch-zoom for print layout: non-passive so we can call preventDefault()
+		// Android: standard touch events (iOS compositor steals these for panning)
 		scrollAreaEl.addEventListener('touchstart', handlePrintPinchStart, { passive: true });
 		scrollAreaEl.addEventListener('touchmove', handlePrintPinchMove, { passive: false });
+		// iOS Safari: gesture events forwarded from +layout.svelte as custom window events
+		window.addEventListener('printGestureStart', handlePrintGestureStart as EventListener);
+		window.addEventListener('printGestureChange', handlePrintGestureChange as EventListener);
 		// Track natural (un-transformed) height of contentWrapEl for the scale wrapper sizing
 		_contentResizeObs = new ResizeObserver(([entry]) => {
 			_contentNaturalH = entry.contentRect.height;
@@ -1682,6 +1716,8 @@
 		window.removeEventListener('afterprint', restoreFloatGroupsAfterPrint);
 		scrollAreaEl?.removeEventListener('touchstart', handlePrintPinchStart);
 		scrollAreaEl?.removeEventListener('touchmove', handlePrintPinchMove);
+		window.removeEventListener('printGestureStart', handlePrintGestureStart as EventListener);
+		window.removeEventListener('printGestureChange', handlePrintGestureChange as EventListener);
 		_contentResizeObs?.disconnect();
 		editor?.destroy();
 	});
@@ -3619,7 +3655,7 @@
 	.editor-page.print-layout .editor-scroll-area {
 		overflow: auto;
 		overflow-x: auto;
-		touch-action: pan-x pan-y;
+		touch-action: manipulation;
 		overscroll-behavior: contain;
 		scrollbar-gutter: stable;
 	}
@@ -4870,6 +4906,7 @@
 	.print-layout .body-editor-wrap :global(.ProseMirror) {
 		padding: 40px 40px 40px;
 		min-height: 1123px;
+		font-family: 'Inter', sans-serif;
 		font-size: 12pt;  /* 12pt = 16px at 96dpi; matches @media print exactly */
 		line-height: 1.7;
 		-webkit-text-size-adjust: 100%;
@@ -5022,6 +5059,7 @@
 		.body-editor-wrap :global(.ProseMirror) {
 			padding: 0 10.5mm !important;
 			min-height: 0 !important;
+			font-family: 'Inter', sans-serif !important;
 			font-size: 12pt !important;
 			line-height: 1.7 !important;
 			color: black !important;

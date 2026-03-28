@@ -1,5 +1,14 @@
 @import 'tailwindcss';
 
+/* ─── Inter (variable font, used in print layout for cross-platform consistency) ─── */
+@font-face {
+	font-family: 'Inter';
+	src: url('/fonts/Inter-VariableFont_opsz,wght.ttf') format('truetype');
+	font-weight: 100 900;
+	font-style: normal;
+	font-display: swap;
+}
+
 /* ─── Design tokens ───────────────────────────────────────────── */
 :root {
 	--bg:          #16181f; /*#0f1117*/

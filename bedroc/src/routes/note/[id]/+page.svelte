@@ -2572,7 +2572,7 @@
 		     with min-width does not correctly reduce the layout footprint. -->
 		<div class="print-scale-outer"
 			style={printLayout && mobilePrintScale !== 1
-				? `width:${(A4_PAGE_W+48)*mobilePrintScale}px;${_contentNaturalH > 0 ? `height:${(_contentNaturalH*mobilePrintScale).toFixed(1)}px;overflow:hidden;` : ''}flex-shrink:0;align-self:flex-start;`
+				? `width:${(A4_PAGE_W+48)*mobilePrintScale}px;overflow:hidden;${_contentNaturalH > 0 ? `height:${(_contentNaturalH*mobilePrintScale).toFixed(1)}px;` : ''}flex:none;align-self:flex-start;`
 				: ''}
 		>
 			<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl}
@@ -2604,14 +2604,14 @@
 			</div>
 		{/if}
 
-		<!-- ── Word count footer ─────────────────────────────── -->
-		<div class="word-count" aria-live="polite" aria-atomic="true">
-			<span>{wordCount} word{wordCount === 1 ? '' : 's'}</span>
-			<span class="count-sep">·</span>
-			<span>{charCount} char{charCount === 1 ? '' : 's'}</span>
-			<span class="count-sep">·</span>
-			<span>{lineCount} line{lineCount === 1 ? '' : 's'}</span>
-		</div>
+	</div>
+	<!-- ── Word count footer ─────────────────────────────── -->
+	<div class="word-count" aria-live="polite" aria-atomic="true">
+		<span>{wordCount} word{wordCount === 1 ? '' : 's'}</span>
+		<span class="count-sep">·</span>
+		<span>{charCount} char{charCount === 1 ? '' : 's'}</span>
+		<span class="count-sep">·</span>
+		<span>{lineCount} line{lineCount === 1 ? '' : 's'}</span>
 	</div>
 </div>
 
@@ -4264,6 +4264,7 @@
 		color: var(--text-faint);
 		flex-shrink: 0;
 		user-select: none;
+		border-top: 1px solid var(--border);
 	}
 
 	.count-sep {
@@ -4959,12 +4960,21 @@
 			scrollbar-gutter: auto !important;
 		}
 
+		.print-scale-outer {
+			width: 100% !important;
+			height: auto !important;
+			overflow: visible !important;
+			flex: 1 !important;
+			align-self: auto !important;
+		}
+
 		.editor-content-wrap {
 			display: block !important;
 			overflow: visible !important;
 			width: 100% !important;
 			padding: 0 !important;
 			zoom: 1 !important;
+			transform: none !important;
 			min-width: 0 !important;
 		}
 

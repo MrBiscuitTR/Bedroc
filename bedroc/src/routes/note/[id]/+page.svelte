@@ -4806,15 +4806,7 @@
 		}
 
 		.title-input {
-			width: 794px !important;
-			max-width: 794px !important;
-			color: black !important;
-			font-size: 22px !important;
-			font-weight: 600 !important;
-			padding: 40px 40px 8px !important;
-			border-bottom: 1px solid #ccc !important;
-			margin-bottom: 0 !important;
-			box-sizing: border-box !important;
+			display: none !important;
 		}
 
 		/* Avoid page breaks inside block elements */

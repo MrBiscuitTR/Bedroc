@@ -276,6 +276,7 @@
 	const SPACER_H    = PAGE_MARGIN + PAGE_GAP + PAGE_MARGIN; // 112px total dead zone
 
 	let mobilePrintScale = $state(1);
+	let _printMinScale = 1;  // set by updateMobilePrintScale; pinch cannot zoom below this
 	let _contentNaturalH = $state(0);      // tracked by ResizeObserver on contentWrapEl
 	let _contentResizeObs: ResizeObserver | null = null;
 	let _pageBreakRaf: number | null = null;
@@ -289,6 +290,7 @@
 		// Zoom targets editor-content-wrap (794px paper + 24px padding each side = 842px).
 		const scale = Math.min(1, viewportW / (A4_PAGE_W + 48));
 		mobilePrintScale = Math.max(0.3, Number(scale.toFixed(4)));
+		_printMinScale = mobilePrintScale; // remember the fit-to-page scale as the zoom floor
 	}
 
 	// ── Custom pinch-zoom for print layout scroll area ───────────
@@ -297,6 +299,10 @@
 	// 2-finger touchmove here and update mobilePrintScale instead.
 	let _pinchStartDist = 0;
 	let _pinchStartScale = 1;
+	let _pinchFocalX = 0;   // unscaled content x under pinch midpoint
+	let _pinchFocalY = 0;   // unscaled content y under pinch midpoint
+	let _pinchMidVP_X = 0;  // pinch mid relative to scroll area left edge
+	let _pinchMidVP_Y = 0;  // pinch mid relative to scroll area top edge
 
 	function _getPinchDist(touches: TouchList): number {
 		const dx = touches[0].clientX - touches[1].clientX;
@@ -308,6 +314,14 @@
 		if (!printLayout || e.touches.length !== 2) return;
 		_pinchStartDist = _getPinchDist(e.touches);
 		_pinchStartScale = mobilePrintScale;
+		const saRect = scrollAreaEl.getBoundingClientRect();
+		const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+		const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+		_pinchMidVP_X = midX - saRect.left;
+		_pinchMidVP_Y = midY - saRect.top;
+		// Convert viewport midpoint to unscaled content coordinates
+		_pinchFocalX = (scrollAreaEl.scrollLeft + _pinchMidVP_X) / mobilePrintScale;
+		_pinchFocalY = (scrollAreaEl.scrollTop  + _pinchMidVP_Y) / mobilePrintScale;
 	}
 
 	function handlePrintPinchMove(e: TouchEvent) {
@@ -315,7 +329,18 @@
 		e.preventDefault(); // block browser scroll/gesture with 2 fingers
 		if (_pinchStartDist === 0) return;
 		const ratio = _getPinchDist(e.touches) / _pinchStartDist;
-		mobilePrintScale = Number(Math.max(0.3, Math.min(3, _pinchStartScale * ratio)).toFixed(4));
+		const newScale = Number(Math.max(_printMinScale, Math.min(3, _pinchStartScale * ratio)).toFixed(4));
+		mobilePrintScale = newScale;
+		// After Svelte updates the DOM (new outer dimensions), adjust scroll so the
+		// focal point stays under the pinch midpoint.
+		const targetLeft = _pinchFocalX * newScale - _pinchMidVP_X;
+		const targetTop  = _pinchFocalY * newScale - _pinchMidVP_Y;
+		requestAnimationFrame(() => {
+			if (scrollAreaEl) {
+				scrollAreaEl.scrollLeft = Math.max(0, targetLeft);
+				scrollAreaEl.scrollTop  = Math.max(0, targetTop);
+			}
+		});
 	}
 
 	// Remove all injected spacers from ProseMirror DOM

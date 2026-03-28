@@ -4729,7 +4729,22 @@
 	   The browser scales the content to fit the @page printable area.
 	   This gives true WYSIWYG printing. */
 	@media print {
-		/* Hide all chrome — only the title + editor body remain */
+		/* Force the page to exactly A4 at 96 CSS px/inch so 794px = 210mm everywhere */
+		@page {
+			size: 794px 1123px;
+			margin: 0;
+		}
+
+		/* Root must be exactly 794px wide — no browser scaling */
+		:global(html),
+		:global(body) {
+			width: 794px !important;
+			margin: 0 !important;
+			padding: 0 !important;
+			font-size: 16px !important;
+		}
+
+		/* Hide all chrome — only title + editor body remain */
 		.toolbar,
 		.format-bar,
 		.word-count,
@@ -4750,61 +4765,56 @@
 		.editor-page {
 			height: auto !important;
 			overflow: visible !important;
+			width: 794px !important;
 		}
 
 		.editor-scroll-area {
 			overflow: visible !important;
 			background: white !important;
+			width: 794px !important;
+			zoom: 1 !important;
 		}
 
 		.editor-content-wrap {
 			display: block !important;
 			overflow: visible !important;
+			width: 794px !important;
+			padding: 0 !important;
+			zoom: 1 !important;
 		}
 
-		/* Keep A4-width container if print layout is on; otherwise full width.
-		   Remove decorative styles (shadow, border-radius, bg-hover). */
+		/* A4 page: always 794px, no decorative styles */
 		.body-editor-wrap {
+			width: 794px !important;
+			min-width: 794px !important;
+			max-width: 794px !important;
+			margin: 0 !important;
 			box-shadow: none !important;
 			background: white !important;
 			overflow: visible !important;
 			border-radius: 0 !important;
 		}
-		/* When NOT in print layout, reset to full width for normal printing */
-		.editor-page:not(.print-layout) .body-editor-wrap {
-			width: 100% !important;
-			max-width: 100% !important;
-			min-width: 0 !important;
-			margin: 0 !important;
-		}
-		/* When in print layout, keep the A4 sizing but remove decorative margins */
-		.editor-page.print-layout .body-editor-wrap {
-			margin: 0 auto !important;
-		}
 
+		/* ProseMirror: same padding as print layout preview */
 		.body-editor-wrap :global(.ProseMirror) {
+			padding: 40px 40px 60px !important;
 			min-height: 0 !important;
+			font-size: 16px !important;
+			line-height: 1.7 !important;
 			color: black !important;
 			background: none !important;
-			background-image: none !important;
-		}
-		/* When NOT in print layout, use minimal padding */
-		.editor-page:not(.print-layout) .body-editor-wrap :global(.ProseMirror) {
-			padding: 0 !important;
 		}
 
 		.title-input {
+			width: 794px !important;
+			max-width: 794px !important;
 			color: black !important;
 			font-size: 22px !important;
 			font-weight: 600 !important;
-			padding: 0 0 8px !important;
+			padding: 40px 40px 8px !important;
 			border-bottom: 1px solid #ccc !important;
-			margin-bottom: 12px !important;
-		}
-		.editor-page.print-layout .title-input {
-			max-width: 794px !important;
-			margin-left: auto !important;
-			margin-right: auto !important;
+			margin-bottom: 0 !important;
+			box-sizing: border-box !important;
 		}
 
 		/* Avoid page breaks inside block elements */
@@ -4826,7 +4836,7 @@
 			page-break-after: avoid;
 		}
 
-		/* Constrain images and tables */
+		/* Images and tables constrained to content width */
 		.body-editor-wrap :global(.img-node-wrapper img) {
 			max-width: 100% !important;
 		}
@@ -4834,7 +4844,6 @@
 			max-width: 100%;
 			border-collapse: collapse;
 		}
-		/* Print-friendly table colors */
 		.body-editor-wrap :global(.ProseMirror td),
 		.body-editor-wrap :global(.ProseMirror th) {
 			border: 1px solid #ccc !important;
@@ -4846,16 +4855,13 @@
 			font-weight: 600;
 		}
 
-		/* Hide image alignment toolbars and resize handles */
+		/* Hide interactive chrome */
 		.body-editor-wrap :global(.img-align-toolbar),
 		.body-editor-wrap :global(.img-resize-handle-inline) {
 			display: none !important;
 		}
 
-		/* Print-friendly text colors */
-		.body-editor-wrap :global(.ProseMirror) {
-			color: black !important;
-		}
+		/* Print-friendly colors */
 		.body-editor-wrap :global(.ProseMirror h1),
 		.body-editor-wrap :global(.ProseMirror h2),
 		.body-editor-wrap :global(.ProseMirror h3),
@@ -4882,16 +4888,9 @@
 			color: #333 !important;
 			border-bottom: 1px solid #ddd !important;
 		}
-
-		/* Links: show URL after link text for printed copies */
 		.body-editor-wrap :global(.ProseMirror a) {
 			color: black !important;
 			text-decoration: underline !important;
-		}
-
-		@page {
-			size: A4;
-			margin: 0;
 		}
 	}
 </style>

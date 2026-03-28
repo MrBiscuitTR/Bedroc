@@ -29,20 +29,29 @@
 			});
 		}
 
-		// Block viewport pinch-zoom everywhere. The print layout scroll area
-		// implements its own pinch-zoom via touchmove that scales only the A4 content.
-		const blockGesture = (e: Event) => {
-			// Let gesture events through inside the print layout scroll area
-			// so the custom pinch-zoom handler on touchmove can fire.
-			const t = e.target as HTMLElement | null;
-			if (t?.closest?.('.editor-page.print-layout .editor-scroll-area')) return;
+		// Block viewport pinch-zoom everywhere.
+		// For print layout, forward gesture scale data via custom window events
+		// so the note page can implement custom content-only zoom.
+		const onGestureStart = (e: any) => {
 			e.preventDefault();
+			// Forward to print layout if active
+			const sa = document.querySelector('.editor-page.print-layout .editor-scroll-area');
+			if (sa) {
+				window.dispatchEvent(new CustomEvent('printGestureStart', { detail: { scale: e.scale ?? 1 } }));
+			}
 		};
-		document.addEventListener('gesturestart', blockGesture, { passive: false });
-		document.addEventListener('gesturechange', blockGesture, { passive: false });
+		const onGestureChange = (e: any) => {
+			e.preventDefault();
+			const sa = document.querySelector('.editor-page.print-layout .editor-scroll-area');
+			if (sa) {
+				window.dispatchEvent(new CustomEvent('printGestureChange', { detail: { scale: e.scale ?? 1 } }));
+			}
+		};
+		document.addEventListener('gesturestart', onGestureStart, { passive: false });
+		document.addEventListener('gesturechange', onGestureChange, { passive: false });
 		return () => {
-			document.removeEventListener('gesturestart', blockGesture);
-			document.removeEventListener('gesturechange', blockGesture);
+			document.removeEventListener('gesturestart', onGestureStart);
+			document.removeEventListener('gesturechange', onGestureChange);
 		};
 	});
 

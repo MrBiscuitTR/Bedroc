@@ -28,6 +28,16 @@
 				// Registration failure is non-fatal — app still works without SW
 			});
 		}
+
+		// Block viewport pinch-zoom everywhere. The print layout scroll area
+		// implements its own pinch-zoom via touchmove that scales only the A4 content.
+		const blockGesture = (e: Event) => e.preventDefault();
+		document.addEventListener('gesturestart', blockGesture, { passive: false });
+		document.addEventListener('gesturechange', blockGesture, { passive: false });
+		return () => {
+			document.removeEventListener('gesturestart', blockGesture);
+			document.removeEventListener('gesturechange', blockGesture);
+		};
 	});
 
 	// Detect if running inside a split-view iframe. Iframes share the same

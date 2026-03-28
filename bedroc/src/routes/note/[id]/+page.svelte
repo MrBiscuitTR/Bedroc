@@ -284,10 +284,36 @@
 			return;
 		}
 		const viewportW = scrollAreaEl?.clientWidth ?? window.innerWidth;
-		// Zoom targets body-editor-wrap (794px paper). Content-wrap has 24px padding
-		// each side, so available space for the paper = viewportW - 48.
-		const scale = Math.min(1, (viewportW - 48) / A4_PAGE_W);
+		// Zoom targets editor-content-wrap (794px paper + 24px padding each side = 842px).
+		const scale = Math.min(1, viewportW / (A4_PAGE_W + 48));
 		mobilePrintScale = Math.max(0.3, Number(scale.toFixed(4)));
+	}
+
+	// ── Custom pinch-zoom for print layout scroll area ───────────
+	// Viewport zoom is blocked globally (meta tag + gesturestart in layout.svelte).
+	// When the user pinches inside the print layout scroll area we intercept the
+	// 2-finger touchmove here and update mobilePrintScale instead.
+	let _pinchStartDist = 0;
+	let _pinchStartScale = 1;
+
+	function _getPinchDist(touches: TouchList): number {
+		const dx = touches[0].clientX - touches[1].clientX;
+		const dy = touches[0].clientY - touches[1].clientY;
+		return Math.sqrt(dx * dx + dy * dy);
+	}
+
+	function handlePrintPinchStart(e: TouchEvent) {
+		if (!printLayout || e.touches.length !== 2) return;
+		_pinchStartDist = _getPinchDist(e.touches);
+		_pinchStartScale = mobilePrintScale;
+	}
+
+	function handlePrintPinchMove(e: TouchEvent) {
+		if (!printLayout || e.touches.length !== 2) return;
+		e.preventDefault(); // block browser scroll/gesture with 2 fingers
+		if (_pinchStartDist === 0) return;
+		const ratio = _getPinchDist(e.touches) / _pinchStartDist;
+		mobilePrintScale = Number(Math.max(0.3, Math.min(3, _pinchStartScale * ratio)).toFixed(4));
 	}
 
 	// Remove all injected spacers from ProseMirror DOM
@@ -1613,12 +1639,17 @@
 		window.addEventListener('resize', handleViewportResize, { passive: true });
 		window.addEventListener('beforeprint', prepareFloatGroupsForPrint);
 		window.addEventListener('afterprint', restoreFloatGroupsAfterPrint);
+		// Pinch-zoom for print layout: non-passive so we can call preventDefault()
+		scrollAreaEl.addEventListener('touchstart', handlePrintPinchStart, { passive: true });
+		scrollAreaEl.addEventListener('touchmove', handlePrintPinchMove, { passive: false });
 	});
 
 	onDestroy(() => {
 		window.removeEventListener('resize', handleViewportResize);
 		window.removeEventListener('beforeprint', prepareFloatGroupsForPrint);
 		window.removeEventListener('afterprint', restoreFloatGroupsAfterPrint);
+		scrollAreaEl?.removeEventListener('touchstart', handlePrintPinchStart);
+		scrollAreaEl?.removeEventListener('touchmove', handlePrintPinchMove);
 		editor?.destroy();
 	});
 
@@ -2529,8 +2560,8 @@
 	<div class="editor-scroll-area" bind:this={scrollAreaEl}>
 		<!-- Print layout wrapper — position:relative container for page break
 		     lines. In normal mode this is just a pass-through flex child. -->
-		<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl} style={printLayout && mobilePrintScale !== 1 ? 'min-width:0' : ''}>
-			<div class="body-editor-wrap" bind:this={editorEl} style={printLayout && mobilePrintScale !== 1 ? `zoom:${mobilePrintScale}` : ''}></div>
+		<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl} style={printLayout && mobilePrintScale !== 1 ? `zoom:${mobilePrintScale}` : ''}>
+			<div class="body-editor-wrap" bind:this={editorEl}></div>
 		</div>
 
 		<!-- Link hover tooltip -->
@@ -3546,7 +3577,7 @@
 	.editor-page.print-layout .editor-scroll-area {
 		overflow: auto;
 		overflow-x: auto;
-		touch-action: pan-x pan-y pinch-zoom;
+		touch-action: pan-x pan-y;
 		overscroll-behavior: contain;
 		scrollbar-gutter: stable;
 	}

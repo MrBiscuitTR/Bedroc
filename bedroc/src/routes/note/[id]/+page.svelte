@@ -254,12 +254,22 @@
 		refreshFindMatches();
 	}
 
-	// ── Page break line computation ──────────────────────────────
-	// A4 at 96 CSS DPI.
-	const A4_PAGE_W = 794;
-	const A4_PAGE_H = 1123;
+	// ── Print layout ─────────────────────────────────────────────
+	// A4 at 96 CSS DPI: 794 × 1123px.
+	// PAGE_MARGIN = top/bottom margin per page (whitespace, no text).
+	// PAGE_GAP    = visible gap between pages (the --bg-hover strip).
+	// SPACER_H    = total dead zone per boundary = bottom margin + gap + top margin.
+	//
+	// Spacers are injected directly into the ProseMirror DOM as non-editable
+	// <div class="pm-page-spacer"> elements. They push content down so no text
+	// ever falls in the margin/gap zone. They are removed before saving and
+	// hidden in @media print.
+	const A4_PAGE_W  = 794;
+	const A4_PAGE_H  = 1123;
+	const PAGE_MARGIN = 40;  // top and bottom page margin (px)
+	const PAGE_GAP    = 32;  // visible gap strip between pages (px)
+	const SPACER_H    = PAGE_MARGIN + PAGE_GAP + PAGE_MARGIN; // 112px total dead zone
 
-	let pageBreakLines = $state<number[]>([]);
 	let mobilePrintScale = $state(1);
 	let _pageBreakRaf: number | null = null;
 
@@ -269,43 +279,86 @@
 			return;
 		}
 		const viewportW = scrollAreaEl?.clientWidth ?? window.innerWidth;
-		const scale = Math.min(1, viewportW / (A4_PAGE_W + 48)); // 48 = 24px side padding × 2
+		const scale = Math.min(1, viewportW / (A4_PAGE_W + 48));
 		mobilePrintScale = Math.max(0.3, Number(scale.toFixed(4)));
 	}
 
-	function computePageBreaks() {
-		if (!printLayout || !editorEl || !contentWrapEl) { pageBreakLines = []; return; }
-		const pm = editorEl.querySelector('.ProseMirror') as HTMLElement | null;
-		if (!pm) { pageBreakLines = []; return; }
+	// Remove all injected spacers from ProseMirror DOM
+	function removePageSpacers() {
+		const pm = editorEl?.querySelector('.ProseMirror') as HTMLElement | null;
+		if (!pm) return;
+		pm.querySelectorAll('.pm-page-spacer').forEach(el => el.remove());
+	}
 
-		// Use offsetTop for stable layout positions (unaffected by scroll)
-		// editorEl is inside contentWrapEl; pm is inside editorEl
-		const pmTop = editorEl.offsetTop + pm.offsetTop;
-		const pmHeight = pm.scrollHeight;
-		const lines: number[] = [];
-
-		for (let y = A4_PAGE_H; y < pmHeight; y += A4_PAGE_H) {
-			lines.push(pmTop + y);
+	// Return the offsetTop of el relative to ancestor (not necessarily offsetParent).
+	function offsetTopRelTo(el: HTMLElement, ancestor: HTMLElement): number {
+		let top = 0;
+		let cur: HTMLElement | null = el;
+		while (cur && cur !== ancestor) {
+			top += cur.offsetTop;
+			cur = cur.offsetParent as HTMLElement | null;
 		}
-		pageBreakLines = lines;
+		return top;
+	}
+
+	// Inject spacers into ProseMirror DOM at page boundaries.
+	// Each spacer pushes content down by SPACER_H px, so no text falls in
+	// the margin/gap zone.
+	function injectPageSpacers() {
+		const pm = editorEl?.querySelector('.ProseMirror') as HTMLElement | null;
+		if (!pm) return;
+
+		removePageSpacers();
+
+		// Content area per page: A4 height minus top and bottom page margins
+		const contentH = A4_PAGE_H - PAGE_MARGIN - PAGE_MARGIN; // 1043px
+
+		// boundary = top offset (relative to pm) where the current page's content ends.
+		// pm has padding-top = PAGE_MARGIN, so children start at PAGE_MARGIN.
+		// First boundary: PAGE_MARGIN + contentH = 1083px.
+		let boundary = PAGE_MARGIN + contentH;
+
+		let i = 0;
+		while (i < pm.children.length) {
+			const child = pm.children[i] as HTMLElement;
+			if (child.classList.contains('pm-page-spacer')) { i++; continue; }
+
+			// offsetTop relative to pm (not offsetParent, which may differ)
+			const childTop = offsetTopRelTo(child, pm);
+
+			if (childTop >= boundary - 2) {
+				const spacer = document.createElement('div');
+				spacer.className = 'pm-page-spacer';
+				spacer.contentEditable = 'false';
+				spacer.setAttribute('aria-hidden', 'true');
+				pm.insertBefore(spacer, child);
+				boundary += SPACER_H + contentH;
+				// Don't increment — re-check same child against updated boundary
+			} else {
+				i++;
+			}
+		}
 	}
 
 	function schedulePageBreakCompute() {
 		if (_pageBreakRaf) cancelAnimationFrame(_pageBreakRaf);
+		// Double rAF: first frame lets Svelte finish rendering,
+		// second frame lets the browser complete layout before we measure.
 		_pageBreakRaf = requestAnimationFrame(() => {
-			computePageBreaks();
-			_pageBreakRaf = null;
+			requestAnimationFrame(() => {
+				if (printLayout) injectPageSpacers();
+				_pageBreakRaf = null;
+			});
 		});
 	}
 
-	// Recompute page breaks when print layout toggles, content changes, or window resizes
 	$effect(() => {
 		if (printLayout && editorReady) {
 			updateMobilePrintScale();
 			schedulePageBreakCompute();
 		} else {
 			mobilePrintScale = 1;
-			pageBreakLines = [];
+			removePageSpacers();
 		}
 	});
 
@@ -1331,7 +1384,7 @@
 				scheduleAutosave();
 				updateFormatState();
 				if (printLayout) schedulePageBreakCompute();
-			},
+				},
 			onTransaction: () => {
 				// updateFormatState on every transaction so toolbar reflects mark
 				// toggles (bold/italic/underline etc.) immediately - onUpdate alone
@@ -2414,20 +2467,6 @@
 		     lines. In normal mode this is just a pass-through flex child. -->
 		<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl} style={printLayout && mobilePrintScale !== 1 ? `zoom:${mobilePrintScale}` : ''}>
 			<div class="body-editor-wrap" bind:this={editorEl}></div>
-
-			<!-- Page break lines (print layout only) — inside the content wrapper
-			     so they scroll with the editor content, not fixed on screen. -->
-			{#if printLayout && pageBreakLines.length > 0}
-				{#each pageBreakLines as y, i}
-					<div
-						class="page-break-line"
-						style="top: {y}px"
-						aria-hidden="true"
-					>
-						<span class="page-break-label">Page {i + 2}</span>
-					</div>
-				{/each}
-			{/if}
 		</div>
 
 		<!-- Link hover tooltip -->
@@ -3456,8 +3495,9 @@
 		position: relative;
 		display: block;
 		flex: 0 0 auto;
-		width: calc(794px + 48px); /* A4 + 24px side padding each side */
-		padding: 0 24px 40px;
+		width: 100%;          /* fill scroll area so body-editor-wrap can center */
+		min-width: calc(794px + 48px); /* never narrower than A4 + side padding */
+		padding: 24px 24px 40px;
 		box-sizing: border-box;
 	}
 
@@ -4670,14 +4710,14 @@
 		width: 794px;
 		min-width: 794px;
 		max-width: 794px;
-		margin: 24px auto;
+		margin: 0 auto;
 		background: var(--bg);
-		box-shadow: 0 1px 6px rgba(0,0,0,0.15), 0 0 0 1px var(--border);
+		box-shadow: 0 1px 8px rgba(0,0,0,0.18), 0 0 0 1px var(--border);
 		border-radius: 2px;
 	}
 
 	.print-layout .body-editor-wrap :global(.ProseMirror) {
-		padding: 40px 40px 60px;
+		padding: 40px 40px 40px;
 		min-height: 1123px;
 		font-size: 16px;
 		line-height: 1.7;
@@ -4688,7 +4728,7 @@
 		max-width: 100%;
 	}
 
-	/* Title in print layout - constrain to same width */
+	/* Title in print layout - constrain to page width */
 	.print-layout .title-input {
 		max-width: 794px;
 		margin-left: auto;
@@ -4697,30 +4737,37 @@
 		box-sizing: border-box;
 	}
 
-	/* ── Page break lines (content-aware, JS-positioned) ──── */
-	/* Positioned absolutely within .editor-content-wrap (position:relative).
-	   Constrained to 794px (A4 width) and centered to match the paper. */
-	.page-break-line {
-		position: absolute;
-		left: 50%;
-		transform: translateX(-50%);
-		width: 794px;
-		height: 0px;
-		border-top: 1.5px dashed color-mix(in srgb, var(--accent) 50%, transparent);
-		z-index: 4;
+	/* ── Page spacers (injected into ProseMirror DOM) ──────────── */
+	/* Non-editable divs injected at each page boundary to push content
+	   past the margin+gap zone. SPACER_H = 40px bottom margin + 32px gap
+	   + 40px top margin = 112px. The middle 32px shows --bg-hover (gap);
+	   the 40px zones above/below are plain --bg (page color, same as content). */
+	.print-layout .body-editor-wrap :global(.pm-page-spacer) {
+		display: block;
+		width: 100%;
+		height: 112px; /* must match SPACER_H in JS: PAGE_MARGIN*2 + PAGE_GAP */
+		background: linear-gradient(
+			to bottom,
+			var(--bg)       0px,
+			var(--bg)       40px,
+			var(--bg-hover) 40px,
+			var(--bg-hover) 72px,
+			var(--bg)       72px,
+			var(--bg)       112px
+		);
 		pointer-events: none;
-	}
-	.page-break-label {
-		position: absolute;
-		right: 0;
-		top: 4px;
-		font-size: 10px;
-		color: var(--text-faint);
-		background: var(--bg-hover);
-		padding: 1px 6px;
-		border-radius: 3px;
 		user-select: none;
-		letter-spacing: 0.03em;
+		-webkit-user-select: none;
+		cursor: default;
+		border: none;
+		outline: none;
+		margin: 0;
+		padding: 0;
+		flex-shrink: 0;
+		/* Thin border lines at the gap edges make pages look distinct */
+		border-top: 1px solid var(--border);
+		border-bottom: 1px solid var(--border);
+		box-sizing: border-box;
 	}
 
 	/* ── @media print — for actual printing ──────────────────── */
@@ -4729,13 +4776,13 @@
 	   The browser scales the content to fit the @page printable area.
 	   This gives true WYSIWYG printing. */
 	@media print {
-		/* Force the page to exactly A4 at 96 CSS px/inch so 794px = 210mm everywhere */
+		/* top/bottom 40px per page — browser repeats this on every page automatically.
+		   left/right = 0 so horizontal gutter comes from ProseMirror padding (keeps 794px). */
 		@page {
 			size: 794px 1123px;
-			margin: 0;
+			margin: 40px 0;
 		}
 
-		/* Root must be exactly 794px wide — no browser scaling */
 		:global(html),
 		:global(body) {
 			width: 794px !important;
@@ -4744,7 +4791,6 @@
 			font-size: 16px !important;
 		}
 
-		/* Hide all chrome — only title + editor body remain */
 		.toolbar,
 		.format-bar,
 		.word-count,
@@ -4758,7 +4804,11 @@
 		.preview-backdrop,
 		.print-layout-btn,
 		.print-btn,
-		.page-break-line {
+		.title-input {
+			display: none !important;
+		}
+
+		.pm-page-spacer {
 			display: none !important;
 		}
 
@@ -4783,21 +4833,21 @@
 			zoom: 1 !important;
 		}
 
-		/* A4 page: always 794px, no decorative styles */
 		.body-editor-wrap {
 			width: 794px !important;
 			min-width: 794px !important;
 			max-width: 794px !important;
 			margin: 0 !important;
-			box-shadow: none !important;
 			background: white !important;
+			background-image: none !important;
+			box-shadow: none !important;
 			overflow: visible !important;
 			border-radius: 0 !important;
 		}
 
-		/* ProseMirror: same padding as print layout preview */
+		/* Horizontal padding = gutter. Top/bottom = 0 — @page margin handles per-page spacing. */
 		.body-editor-wrap :global(.ProseMirror) {
-			padding: 40px 40px 60px !important;
+			padding: 0 40px !important;
 			min-height: 0 !important;
 			font-size: 16px !important;
 			line-height: 1.7 !important;
@@ -4805,12 +4855,16 @@
 			background: none !important;
 		}
 
-		.title-input {
-			display: none !important;
+		/* In print, reset floated images to block so break-inside can work on them.
+		   A floated image splits the flow; as block it's treated like any other element. */
+		.body-editor-wrap :global(.img-node-wrapper) {
+			float: none !important;
+			display: block !important;
+			break-inside: avoid;
+			page-break-inside: avoid;
 		}
 
-		/* Avoid page breaks inside block elements */
-		.body-editor-wrap :global(.img-node-wrapper),
+		/* All block content: avoid splitting across a page break */
 		.body-editor-wrap :global(.ProseMirror table),
 		.body-editor-wrap :global(.code-block-wrap),
 		.body-editor-wrap :global(.file-attachment-card),
@@ -4828,7 +4882,6 @@
 			page-break-after: avoid;
 		}
 
-		/* Images and tables constrained to content width */
 		.body-editor-wrap :global(.img-node-wrapper img) {
 			max-width: 100% !important;
 		}

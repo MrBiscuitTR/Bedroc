@@ -276,6 +276,8 @@
 	const SPACER_H    = PAGE_MARGIN + PAGE_GAP + PAGE_MARGIN; // 112px total dead zone
 
 	let mobilePrintScale = $state(1);
+	let _contentNaturalH = $state(0);      // tracked by ResizeObserver on contentWrapEl
+	let _contentResizeObs: ResizeObserver | null = null;
 	let _pageBreakRaf: number | null = null;
 
 	function updateMobilePrintScale() {
@@ -1642,6 +1644,11 @@
 		// Pinch-zoom for print layout: non-passive so we can call preventDefault()
 		scrollAreaEl.addEventListener('touchstart', handlePrintPinchStart, { passive: true });
 		scrollAreaEl.addEventListener('touchmove', handlePrintPinchMove, { passive: false });
+		// Track natural (un-transformed) height of contentWrapEl for the scale wrapper sizing
+		_contentResizeObs = new ResizeObserver(([entry]) => {
+			_contentNaturalH = entry.contentRect.height;
+		});
+		_contentResizeObs.observe(contentWrapEl);
 	});
 
 	onDestroy(() => {
@@ -1650,6 +1657,7 @@
 		window.removeEventListener('afterprint', restoreFloatGroupsAfterPrint);
 		scrollAreaEl?.removeEventListener('touchstart', handlePrintPinchStart);
 		scrollAreaEl?.removeEventListener('touchmove', handlePrintPinchMove);
+		_contentResizeObs?.disconnect();
 		editor?.destroy();
 	});
 
@@ -2558,10 +2566,19 @@
 
 	<!-- ── TipTap editor + image resize overlay wrapper ───────── -->
 	<div class="editor-scroll-area" bind:this={scrollAreaEl}>
-		<!-- Print layout wrapper — position:relative container for page break
-		     lines. In normal mode this is just a pass-through flex child. -->
-		<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl} style={printLayout && mobilePrintScale !== 1 ? `zoom:${mobilePrintScale}` : ''}>
-			<div class="body-editor-wrap" bind:this={editorEl}></div>
+		<!-- Print layout wrapper — outer sizes the scroll area to the scaled dimensions;
+		     inner renders at full A4 width and is visually scaled via transform.
+		     This pattern works on real iOS Safari where CSS zoom on flex children
+		     with min-width does not correctly reduce the layout footprint. -->
+		<div class="print-scale-outer"
+			style={printLayout && mobilePrintScale !== 1
+				? `width:${(A4_PAGE_W+48)*mobilePrintScale}px;${_contentNaturalH > 0 ? `height:${(_contentNaturalH*mobilePrintScale).toFixed(1)}px;overflow:hidden;` : ''}flex-shrink:0;align-self:flex-start;`
+				: ''}
+		>
+			<div class="editor-content-wrap" class:print-layout-wrap={printLayout} bind:this={contentWrapEl}
+				 style={printLayout && mobilePrintScale !== 1 ? `transform:scale(${mobilePrintScale});transform-origin:top left;` : ''}>
+				<div class="body-editor-wrap" bind:this={editorEl}></div>
+			</div>
 		</div>
 
 		<!-- Link hover tooltip -->
@@ -3580,6 +3597,14 @@
 		touch-action: pan-x pan-y;
 		overscroll-behavior: contain;
 		scrollbar-gutter: stable;
+	}
+
+	/* Default (non-print-scale) state: transparent pass-through flex child */
+	.print-scale-outer {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
 	}
 
 	.editor-content-wrap {

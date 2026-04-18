@@ -94,6 +94,7 @@ export const topicsMap = new SvelteMap<string, Topic>();
 export const foldersMap = new SvelteMap<string, Folder>();
 
 let _syncing = $state(false);
+let _consecutiveSyncFailures = 0; // reset to 0 on first success after failures → triggers full sync
 export const syncState = {
   get syncing() { return _syncing; },
   get isInitialSync() { return _syncing && (typeof localStorage === 'undefined' || localStorage.getItem(lastSyncKey()) === null); }
@@ -366,16 +367,21 @@ export async function syncFromServer(): Promise<void> {
     // missed by the subsequent pull (race: note created after last sync timestamp).
     await flushSyncQueue();
 
-    const since = getLastSync();
-    console.log('[sync] Starting syncFromServer', { userId, since, serverUrl: auth.serverUrl, hasAccessToken: !!auth.accessToken, tokenIsOffline: auth.accessToken === 'offline' });
+    // After any outage (1+ consecutive failures), do a full sync to ensure no
+    // notes are missed due to stale lastSync timestamp.
+    const wasOffline = _consecutiveSyncFailures > 0;
+    const since = wasOffline ? new Date(0).toISOString() : getLastSync();
+    console.log('[sync] Starting syncFromServer', { userId, since, wasOffline, serverUrl: auth.serverUrl, hasAccessToken: !!auth.accessToken, tokenIsOffline: auth.accessToken === 'offline' });
     const res = await apiFetch(`/api/notes/sync?since=${encodeURIComponent(since)}`);
     console.log('[sync] /api/notes/sync response', res.status, res.ok);
     reportSyncResult(res.ok);
     if (!res.ok) {
+      _consecutiveSyncFailures++;
       const body = await res.text().catch(() => '');
       console.warn('[sync] /api/notes/sync failed', res.status, body);
       return;
     }
+    _consecutiveSyncFailures = 0;
 
     const data = await res.json() as {
       notes: ServerNote[];
@@ -395,13 +401,38 @@ export async function syncFromServer(): Promise<void> {
     for (const sn of data.notes) {
       const serverUpdatedAt = new Date(sn.server_updated_at).getTime();
 
-      // Handle server-side deletes — always accept
+      // Handle server-side deletes
       if (sn.is_deleted) {
-        await idbMarkDeleted(sn.id);
-        notesToDelete.push(sn.id);
-        if (conflictsMap.has(sn.id)) {
-          conflictsToDelete.push(sn.id);
-          await deleteConflict(sn.id);
+        const existingForDelete = await idbGetNoteById(sn.id);
+        const hasUnsyncedEdits =
+          existingForDelete &&
+          !existingForDelete.synced &&
+          existingForDelete.clientUpdatedAt > (existingForDelete.serverUpdatedAt || 0);
+
+        if (hasUnsyncedEdits) {
+          // Never silently delete a note with local unsynced edits.
+          // Surface it as a conflict so the user can recover their work.
+          const conflict: ConflictRecord = {
+            noteId: sn.id,
+            userId,
+            localTitle: existingForDelete.title,
+            localBody: existingForDelete.body,
+            localUpdatedAt: existingForDelete.clientUpdatedAt,
+            serverTitle: '',
+            serverBody: '',
+            serverUpdatedAt: new Date(sn.server_updated_at).getTime(),
+            serverVersion: sn.version,
+            detectedAt: Date.now(),
+          };
+          await saveConflict(conflict);
+          conflictsToSet.push([sn.id, conflict]);
+        } else {
+          await idbMarkDeleted(sn.id);
+          notesToDelete.push(sn.id);
+          if (conflictsMap.has(sn.id)) {
+            conflictsToDelete.push(sn.id);
+            await deleteConflict(sn.id);
+          }
         }
         continue;
       }
@@ -498,6 +529,7 @@ export async function syncFromServer(): Promise<void> {
     console.log('[sync] syncFromServer complete');
 
   } catch (err) {
+    _consecutiveSyncFailures++;
     reportSyncResult(false);
     throw err;
   } finally {
@@ -528,6 +560,14 @@ export async function resolveConflict(
     title = conflict.localTitle;
     body = conflict.localBody;
   } else if (resolution === 'server') {
+    // If server deleted the note (empty title+body sentinel), accept the deletion
+    if (conflict.serverTitle === '' && conflict.serverBody === '') {
+      await idbMarkDeleted(noteId);
+      notesMap.delete(noteId);
+      conflictsMap.delete(noteId);
+      await deleteConflict(noteId);
+      return;
+    }
     title = conflict.serverTitle;
     body = conflict.serverBody;
   } else {

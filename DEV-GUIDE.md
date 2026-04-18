@@ -457,6 +457,43 @@ Rate limits are configured per-route in `server/src/routes/` and globally in `se
 
 To change a per-route limit, update `config: { rateLimit: { max: N, timeWindow: '1 minute' } }` on that route handler. To change the global fallback, update `max` in the `fastifyRateLimit` registration in `server/src/index.ts`.
 
+## Bumping the app version
+
+Use the version bump script whenever you cut a release or want to keep all version strings in sync.
+
+### What gets updated
+
+| File | Field |
+| --- | --- |
+| `bedroc/package.json` | `"version"` |
+| `desktop/package.json` | `"version"` — controls Electron installer/build filenames (e.g. `Bedroc-1.0.14-Setup.exe`) |
+| `server/package.json` | `"version"` |
+| `bedroc/static/sw.js` | `CACHE_NAME` and `SHELL_CACHE` constants — changing these forces all clients to re-download the service worker cache on next visit |
+
+`package-lock.json` files are auto-generated and do **not** need manual editing — they update themselves the next time `npm install` runs.
+
+### Running the script
+
+From the **repo root**:
+
+```bash
+node scripts/bump-version.js 1.0.14
+```
+
+From the **`bedroc/` directory**:
+
+```bash
+npm run bump-version -- 1.0.14
+```
+
+The script validates that the argument is a valid `major.minor.patch` semver string and exits with an error if not.
+
+### When to bump
+
+- Before every production release (commit the version bump as its own commit, e.g. `chore: bump version to 1.0.14`)
+- Before building an Electron installer — the version number appears in the installer filename and Windows Add/Remove Programs
+- Whenever you deploy a new service worker — the cache name change ensures stale caches are busted on all clients
+
 ## Desktop (Electron)
 
 The `desktop/` directory contains an Electron wrapper that ships the SvelteKit static build as a native desktop app.

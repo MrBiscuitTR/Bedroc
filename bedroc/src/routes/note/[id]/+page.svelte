@@ -2108,9 +2108,11 @@
 					</svg>
 				</div>
 				<div class="conflict-banner-text">
-					<span class="conflict-banner-title">Sync conflict</span>
+					<span class="conflict-banner-title">{conflict.serverTitle === '' && conflict.serverBody === '' ? 'Deletion conflict' : 'Sync conflict'}</span>
 					<span class="conflict-banner-desc">
-						This note was edited on another device while you were offline.
+						{conflict.serverTitle === '' && conflict.serverBody === ''
+							? 'This note was deleted on another device, but you have unsaved local changes.'
+							: 'This note was edited on another device while you were offline.'}
 					</span>
 				</div>
 				<div class="conflict-banner-actions">
@@ -2163,14 +2165,18 @@
 					<!-- Server version -->
 					<div class="conflict-version conflict-version-server">
 						<div class="conflict-version-label">
-							Server version
+							{conflict.serverTitle === '' && conflict.serverBody === '' ? 'Deleted on server' : 'Server version'}
 							<span class="conflict-version-time">
 								{relativeTime(conflict.serverUpdatedAt)}
 							</span>
 						</div>
+						{#if conflict.serverTitle === '' && conflict.serverBody === ''}
+							<div class="conflict-version-body"><em>This note was deleted.</em></div>
+						{:else}
 						<div class="conflict-version-title">{conflict.serverTitle || '(no title)'}</div>
 						<!-- eslint-disable-next-line svelte/no-at-html-tags -->
 						<div class="conflict-version-body">{@html conflict.serverBody || '<em>(empty)</em>'}</div>
+						{/if}
 						<button
 							class="conflict-pick-btn"
 							onclick={() => handleResolveConflict('server')}

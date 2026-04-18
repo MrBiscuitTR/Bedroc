@@ -1,124 +1,124 @@
 {
-  "name": "bedroc",
-  "version": "1.0.0",
-  "description": "Bedroc — private, encrypted notes",
-  "homepage": "https://github.com/MrBiscuitTR/Bedroc",
-  "author": "Cagan Calidag <contact@cagancalidag.com>",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/MrBiscuitTR/Bedroc.git"
-  },
-  "main": "main.js",
-  "private": true,
-  "scripts": {
-    "start": "electron .",
-    "build:frontend": "cd ../bedroc && npm run build",
-    "dist": "electron-builder --projectDir .",
-    "dist:win": "electron-builder --win --projectDir .",
-    "dist:win:zip": "electron-builder --win zip --projectDir .",
-    "dist:mac": "electron-builder --mac --projectDir .",
-    "dist:linux": "electron-builder --linux --projectDir .",
-    "dist:all": "electron-builder --win --mac --linux --projectDir ."
-  },
-  "devDependencies": {
-    "electron": "^33.0.0",
-    "electron-builder": "^25.0.0"
-  },
-  "dependencies": {},
-  "build": {
-    "appId": "com.bedroc.app",
-    "productName": "Bedroc",
-    "copyright": "Copyright © 2025",
-    "icon": "build-resources/icon.png",
-    "directories": {
-      "output": "dist",
-      "buildResources": "build-resources"
-    },
-    "files": [
-      "package.json",
-      "main.js",
-      "preload.js",
-      "node_modules/**/*"
-    ],
-    "extraResources": [
-      {
-        "from": "../bedroc/build",
-        "to": "app",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
-    "asarUnpack": [],
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "build-resources/icon.ico",
-      "signingHashAlgorithms": null,
-      "sign": null
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "Bedroc"
-    },
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ],
-      "icon": "build-resources/icon.png",
-      "category": "public.app-category.productivity",
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false
-    },
-    "linux": {
-      "target": [
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "deb",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "rpm",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "build-resources/icon.png",
-      "category": "Office",
-      "synopsis": "Private encrypted notes"
-    },
-    "deb": {
-      "packageCategory": "utils"
-    }
-  }
+	"name": "bedroc",
+	"version": "1.0.13",
+	"description": "Bedroc — private, encrypted notes",
+	"homepage": "https://github.com/MrBiscuitTR/Bedroc",
+	"author": "Cagan Calidag <contact@cagancalidag.com>",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/MrBiscuitTR/Bedroc.git"
+	},
+	"main": "main.js",
+	"private": true,
+	"scripts": {
+		"start": "electron .",
+		"build:frontend": "cd ../bedroc && npm run build",
+		"dist": "electron-builder --projectDir .",
+		"dist:win": "electron-builder --win --projectDir .",
+		"dist:win:zip": "electron-builder --win zip --projectDir .",
+		"dist:mac": "electron-builder --mac --projectDir .",
+		"dist:linux": "electron-builder --linux --projectDir .",
+		"dist:all": "electron-builder --win --mac --linux --projectDir ."
+	},
+	"devDependencies": {
+		"electron": "^33.0.0",
+		"electron-builder": "^25.0.0"
+	},
+	"dependencies": {},
+	"build": {
+		"appId": "com.bedroc.app",
+		"productName": "Bedroc",
+		"copyright": "Copyright © 2025",
+		"icon": "build-resources/icon.png",
+		"directories": {
+			"output": "dist",
+			"buildResources": "build-resources"
+		},
+		"files": [
+			"package.json",
+			"main.js",
+			"preload.js",
+			"node_modules/**/*"
+		],
+		"extraResources": [
+			{
+				"from": "../bedroc/build",
+				"to": "app",
+				"filter": [
+					"**/*"
+				]
+			}
+		],
+		"asarUnpack": [],
+		"win": {
+			"target": [
+				{
+					"target": "nsis",
+					"arch": [
+						"x64"
+					]
+				}
+			],
+			"icon": "build-resources/icon.ico",
+			"signingHashAlgorithms": null,
+			"sign": null
+		},
+		"nsis": {
+			"oneClick": false,
+			"allowToChangeInstallationDirectory": true,
+			"createDesktopShortcut": true,
+			"createStartMenuShortcut": true,
+			"shortcutName": "Bedroc"
+		},
+		"mac": {
+			"target": [
+				{
+					"target": "dmg",
+					"arch": [
+						"x64",
+						"arm64"
+					]
+				},
+				{
+					"target": "zip",
+					"arch": [
+						"x64",
+						"arm64"
+					]
+				}
+			],
+			"icon": "build-resources/icon.png",
+			"category": "public.app-category.productivity",
+			"hardenedRuntime": true,
+			"gatekeeperAssess": false
+		},
+		"linux": {
+			"target": [
+				{
+					"target": "AppImage",
+					"arch": [
+						"x64"
+					]
+				},
+				{
+					"target": "deb",
+					"arch": [
+						"x64"
+					]
+				},
+				{
+					"target": "rpm",
+					"arch": [
+						"x64"
+					]
+				}
+			],
+			"icon": "build-resources/icon.png",
+			"category": "Office",
+			"synopsis": "Private encrypted notes"
+		},
+		"deb": {
+			"packageCategory": "utils"
+		}
+	}
 }

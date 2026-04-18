@@ -1,7 +1,7 @@
 {
 	"name": "bedroc",
 	"private": true,
-	"version": "1.0.0",
+	"version": "1.0.13",
 	"type": "module",
 	"author": "Cagan Calidag <contact@cagancalidag.com>",
 	"scripts": {
@@ -10,7 +10,8 @@
 		"preview": "vite preview --host",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"bump-version": "node ../scripts/bump-version.js"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-static": "^3.0.10",

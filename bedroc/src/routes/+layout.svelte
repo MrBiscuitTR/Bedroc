@@ -33,6 +33,11 @@
 		// For print layout, forward gesture scale data via custom window events
 		// so the note page can implement custom content-only zoom.
 		const onGestureStart = (e: any) => {
+			// Never block gestures that originate on text inputs — iPadOS standalone
+			// routes keyboard events through the gesture pipeline; blocking them
+			// prevents typing in focused inputs.
+			const tag = (e.target as HTMLElement)?.tagName;
+			if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return;
 			e.preventDefault();
 			// Forward to print layout if active
 			const sa = document.querySelector('.editor-page.print-layout .editor-scroll-area');
@@ -41,6 +46,8 @@
 			}
 		};
 		const onGestureChange = (e: any) => {
+			const tag = (e.target as HTMLElement)?.tagName;
+			if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return;
 			e.preventDefault();
 			const sa = document.querySelector('.editor-page.print-layout .editor-scroll-area');
 			if (sa) {

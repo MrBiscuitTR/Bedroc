@@ -59,9 +59,7 @@
 					]
 				}
 			],
-			"icon": "build-resources/icon.ico",
-			"signingHashAlgorithms": null,
-			"sign": null
+			"icon": "build-resources/icon.ico"
 		},
 		"nsis": {
 			"oneClick": false,

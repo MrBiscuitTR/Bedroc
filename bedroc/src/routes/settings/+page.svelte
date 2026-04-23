@@ -568,7 +568,17 @@
 		</div>
 	</section>
 
-	<p class="version">Bedroc v0.1.0 — open source, E2EE</p>
+	<div class="version-block">
+		<p class="version">Bedroc v{__APP_VERSION__} — open source, E2EE</p>
+		<p class="version commit">commit <code>{__COMMIT_HASH__}</code></p>
+		<p class="version links">
+			<a href="/privacy.html" target="_blank" rel="noopener">Privacy Policy</a>
+			<span class="dot-sep">·</span>
+			<a href="/terms.html" target="_blank" rel="noopener">Terms of Service</a>
+			<span class="dot-sep">·</span>
+			<a href="mailto:contact@cagancalidag.com">Contact</a>
+		</p>
+	</div>
 </div><!-- end .page -->
 </div><!-- end .settings-layout -->
 
@@ -1049,11 +1059,36 @@
 	}
 
 	/* Version */
+	.version-block {
+		text-align: center;
+		padding-top: 8px;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
 	.version {
 		font-size: 11px;
 		color: var(--text-faint);
-		text-align: center;
-		padding-top: 8px;
+	}
+	.version.commit code {
+		font-family: ui-monospace, monospace;
+		font-size: 10px;
+		background: var(--bg-hover);
+		padding: 1px 4px;
+		border-radius: 3px;
+	}
+	.version.links a {
+		color: var(--text-faint);
+		text-decoration: none;
+		font-size: 11px;
+	}
+	@media (hover: hover) {
+		.version.links a:hover { color: var(--accent); }
+	}
+	.dot-sep {
+		color: var(--text-faint);
+		margin: 0 4px;
+		font-size: 11px;
 	}
 
 	/* Change password form */

@@ -307,6 +307,16 @@
 	<p class="auth-switch">
 		Already have an account? <a href="/login">Log in</a>
 	</p>
+
+	<div class="auth-footer">
+		<span>v{__APP_VERSION__} <code>{__COMMIT_HASH__}</code></span>
+		<span class="dot-sep">·</span>
+		<a href="/privacy.html" target="_blank" rel="noopener">Privacy</a>
+		<span class="dot-sep">·</span>
+		<a href="/terms.html" target="_blank" rel="noopener">Terms</a>
+		<span class="dot-sep">·</span>
+		<a href="mailto:contact@cagancalidag.com">Contact</a>
+	</div>
 </div>
 
 <style>
@@ -594,4 +604,25 @@
 	@media (hover: hover) { .corner-menu-danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); } }
 	.corner-menu-confirm-text { font-size: 12px; color: var(--text-muted); padding: 8px 10px 4px; line-height: 1.5; }
 	.corner-menu-confirm-btns { display: flex; gap: 4px; padding: 4px; }
+
+	.auth-footer {
+		text-align: center;
+		font-size: 10px;
+		color: var(--text-faint);
+		margin-top: 4px;
+	}
+	.auth-footer code {
+		font-family: ui-monospace, monospace;
+		background: var(--bg-hover);
+		padding: 1px 4px;
+		border-radius: 3px;
+	}
+	.auth-footer a {
+		color: var(--text-faint);
+		text-decoration: none;
+	}
+	@media (hover: hover) {
+		.auth-footer a:hover { color: var(--accent); }
+	}
+	.dot-sep { margin: 0 4px; }
 </style>

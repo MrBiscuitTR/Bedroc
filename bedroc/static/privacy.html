@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="robots" content="noindex"/>
+<title>Privacy Policy — Bedroc</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Helvetica Neue',Arial,sans-serif;background:#16181f;color:#e2e4ed;padding:40px 20px 80px;line-height:1.6}
+.content{max-width:680px;margin:0 auto}
+.back{display:inline-block;font-size:13px;color:#8b8fa8;text-decoration:none;margin-bottom:32px;background:none;border:none;padding:0;cursor:pointer;font-family:inherit}
+.back:hover{color:#6b8afd}
+h1{font-size:28px;font-weight:700;letter-spacing:-0.02em;margin-bottom:6px}
+.updated{font-size:12px;color:#4a4d5e;margin-bottom:40px}
+section{margin-bottom:36px}
+h2{font-size:15px;font-weight:600;margin-bottom:10px}
+p{font-size:14px;color:#8b8fa8;margin-bottom:10px}
+ul{margin:0 0 10px;padding-left:20px}
+li{font-size:14px;color:#8b8fa8;margin-bottom:4px}
+strong{color:#e2e4ed}
+code{font-family:ui-monospace,monospace;font-size:12px;background:#1e2028;padding:1px 5px;border-radius:3px}
+a{color:#6b8afd;text-decoration:none}
+a:hover{text-decoration:underline}
+.notice{background:#1e2028;border:1px solid #2a2d37;border-radius:8px;padding:14px 16px;font-size:13px;color:#8b8fa8;margin-bottom:10px}
+</style>
+</head>
+<body>
+<div class="content">
+<button class="back" onclick="window.close()">← Close</button>
+<h1>Privacy Policy</h1>
+<p class="updated">Last updated: April 2025</p>
+
+<section>
+<h2>Who we are</h2>
+<p>Bedroc is operated by <strong>Cagan Efe Calidag</strong>, an individual (not a registered company). Contact: <a href="mailto:contact@cagancalidag.com">contact@cagancalidag.com</a>.</p>
+<p>The frontend application is hosted at <strong>bedroc.cagancalidag.com</strong>. The default backend API is hosted at <strong>bedrocapi.cagancalidag.com</strong>. Both domains are proxied through Cloudflare.</p>
+</section>
+
+<section>
+<h2>The short version</h2>
+<div class="notice">Bedroc is end-to-end encrypted. Your notes are encrypted on your device before leaving it. We technically <strong>cannot</strong> read your notes — we never hold the keys. What we describe below is the minimal metadata we do handle.</div>
+</section>
+
+<section>
+<h2>What data we process</h2>
+<ul>
+<li><strong>Username</strong> — chosen by you, stored on the backend server in plain text to identify your account.</li>
+<li><strong>SRP verifier</strong> — a one-way cryptographic token derived from your password. Your actual password is never transmitted or stored anywhere.</li>
+<li><strong>Encrypted ciphertext</strong> — your note titles and bodies, encrypted with AES-256-GCM on your device. The server stores and syncs only ciphertext; content is never readable by the operator.</li>
+<li><strong>Timestamps</strong> — creation and last-modified timestamps, used for sync conflict resolution.</li>
+<li><strong>Session tokens</strong> — a short-lived access token (in memory only) and a refresh token stored in an <code>httpOnly</code> cookie, used to keep you logged in.</li>
+<li><strong>IP addresses</strong> — your requests pass through Cloudflare's network before reaching the server. The server receives Cloudflare's proxy IP, not your real IP address. Cloudflare may log your real IP per their own <a href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener">privacy policy</a>. The Bedroc application itself does not log IP addresses.</li>
+</ul>
+<p>We do not collect analytics, telemetry, device fingerprints, advertising identifiers, or any other data beyond what is listed above.</p>
+</section>
+
+<section>
+<h2>Legal basis for processing (GDPR)</h2>
+<p>If you are located in the European Economic Area, we process your data on the following bases:</p>
+<ul>
+<li><strong>Contract performance</strong> (Art. 6(1)(b) GDPR) — processing your username, verifier, and encrypted notes is necessary to provide the sync service you sign up for.</li>
+<li><strong>Legitimate interests</strong> (Art. 6(1)(f) GDPR) — session tokens are necessary to maintain authenticated sessions securely.</li>
+</ul>
+<p>Because note content is encrypted client-side and we hold no decryption keys, we cannot identify natural persons from the ciphertext we store. This significantly limits the personal data we actually process.</p>
+</section>
+
+<section>
+<h2>Self-hosted backends</h2>
+<p>Bedroc uses a "public frontend, self-hosted backend" model. If you configure the app to use your own backend server, your encrypted data is stored entirely on your own infrastructure and this privacy policy does not govern that data. This policy applies only to data processed through the operator-provided default backend.</p>
+</section>
+
+<section>
+<h2>Encryption details</h2>
+<ul>
+<li>Master key derivation: PBKDF2-SHA256, 600,000 iterations.</li>
+<li>Note encryption: AES-256-GCM with a per-account Data Encryption Key (DEK) wrapped by your master key.</li>
+<li>Authentication: SRP-6a zero-knowledge protocol — your password never leaves your device.</li>
+<li><strong>There is no password reset.</strong> If you lose your password, your encrypted data cannot be recovered by anyone, including the operator.</li>
+</ul>
+</section>
+
+<section>
+<h2>Data retention</h2>
+<p>Your data is retained for as long as your account exists. You may permanently delete your account and all associated data at any time from the Settings page. Deletion is immediate and irreversible at the application level. However, as noted above, infrastructure-level backups held by the VPS provider (IONOS) may retain encrypted traces for a period outside the operator's control. All such residual data is encrypted ciphertext for which no decryption key is held by the operator or the provider.</p>
+</section>
+
+<section>
+<h2>Third-party services</h2>
+<ul>
+<li><strong>Cloudflare</strong> — both domains are proxied through Cloudflare for DDoS protection and TLS termination. Cloudflare may process connection metadata (IP addresses, request headers) per their privacy policy.</li>
+<li><strong>Vercel</strong> — the frontend static files are served via Vercel. Vercel may log access requests per their privacy policy. No user data is processed by Vercel as the frontend is a static SPA.</li>
+<li><strong>IONOS</strong> — the backend server runs on an IONOS VPS. As with all infrastructure providers, IONOS may take periodic snapshots or backups of the underlying host at the infrastructure level as part of their standard operations. This means that even after you delete your account and data, encrypted traces may persist in infrastructure-level backups outside the operator's control. All such data remains encrypted ciphertext — IONOS does not hold decryption keys.</li>
+</ul>
+<p>No advertising networks, analytics platforms, or tracking scripts are used.</p>
+</section>
+
+<section>
+<h2>Your rights</h2>
+<p>If you are in the EEA or UK, you have the right to access, rectify, or erase your personal data. Given the encrypted nature of the service, the most meaningful way to exercise these rights is through the app itself (export notes, delete account). For other requests, contact <a href="mailto:contact@cagancalidag.com">contact@cagancalidag.com</a>.</p>
+<p>You also have the right to lodge a complaint with a supervisory authority. If you are in France, this is the <a href="https://www.cnil.fr" target="_blank" rel="noopener">CNIL</a>.</p>
+</section>
+
+<section>
+<h2>Cookies</h2>
+<p>Bedroc uses one cookie: a <code>httpOnly; Secure; SameSite=None</code> cookie containing your refresh token, necessary for cross-origin authenticated sessions. No tracking, advertising, or analytics cookies are used.</p>
+</section>
+
+<section>
+<h2>Changes to this policy</h2>
+<p>This policy may be updated from time to time. Material changes will be indicated by updating the "Last updated" date above.</p>
+</section>
+
+<section>
+<h2>Contact</h2>
+<p>For privacy questions or data requests: <a href="mailto:contact@cagancalidag.com">contact@cagancalidag.com</a></p>
+<p>For law enforcement or legal inquiries: contact the same address. Note that due to end-to-end encryption, we are technically unable to provide note content even if compelled — we do not hold decryption keys.</p>
+</section>
+</div>
+</body>
+</html>

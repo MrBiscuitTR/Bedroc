@@ -452,7 +452,7 @@ export async function syncFromServer(): Promise<void> {
       if (hasLocalUnsyncedEdits && serverIsNewer) {
         // --- CONFLICT ---
         const { title: serverTitle, body: serverBodyRaw } = await decryptNote(
-          sn.encrypted_title, sn.encrypted_body, dek
+          sn.id, sn.encrypted_title, sn.encrypted_body, dek
         );
         const serverBody = await rehydrateAttachments(serverBodyRaw, userId, dek);
 
@@ -476,7 +476,7 @@ export async function syncFromServer(): Promise<void> {
       }
 
       // --- Fast-forward (no conflict) ---
-      const { title, body: rawBody } = await decryptNote(sn.encrypted_title, sn.encrypted_body, dek);
+      const { title, body: rawBody } = await decryptNote(sn.id, sn.encrypted_title, sn.encrypted_body, dek);
       // Restore attachment placeholders → data URIs before storing locally
       const body = await rehydrateAttachments(rawBody, userId, dek);
 
@@ -601,7 +601,7 @@ export async function resolveConflict(
 
   // Push the resolved version to the server (extract attachments before encrypting)
   const syncBody = await extractAttachments(body, userId, dek);
-  const { encryptedTitle, encryptedBody } = await encryptNote(title, syncBody, dek);
+  const { encryptedTitle, encryptedBody } = await encryptNote(noteId, title, syncBody, dek);
   await queueNoteUpsert(noteId, userId, local.topicId, encryptedTitle, encryptedBody, local.customOrder, now, local.version);
   await tryServerUpsertNote(noteId, userId, local.topicId, encryptedTitle, encryptedBody, local.customOrder, now, local.version);
 }
@@ -775,7 +775,7 @@ export async function createNote(topicId: string | null = null): Promise<string>
   notesMap.set(id, note);
 
   // Encrypt and queue for server
-  const { encryptedTitle, encryptedBody } = await encryptNote('', '', dek);
+  const { encryptedTitle, encryptedBody } = await encryptNote(id, '', '', dek);
   await queueNoteUpsert(id, userId, topicId, encryptedTitle, encryptedBody, nextOrder, now, 1);
   await tryServerUpsertNote(id, userId, topicId, encryptedTitle, encryptedBody, nextOrder, now, 1);
 
@@ -808,7 +808,7 @@ export async function saveNote(note: Note): Promise<void> {
   // Extract image attachments from body before encrypting — replaces data: URIs with
   // `attachment:<hash>` placeholders so large blobs are not re-uploaded every save.
   const syncBody = await extractAttachments(note.body, userId, dek);
-  const { encryptedTitle, encryptedBody } = await encryptNote(note.title, syncBody, dek);
+  const { encryptedTitle, encryptedBody } = await encryptNote(note.id, note.title, syncBody, dek);
   await queueNoteUpsert(note.id, userId, note.topicId, encryptedTitle, encryptedBody, note.customOrder, now, version);
   await tryServerUpsertNote(note.id, userId, note.topicId, encryptedTitle, encryptedBody, note.customOrder, now, version);
 }
@@ -848,7 +848,7 @@ export async function reorderNote(id: string, afterId: string | null): Promise<v
       const dek = auth.dek!;
       const userId = auth.userId!;
       const syncBody = await extractAttachments(n.body, userId, dek);
-      const { encryptedTitle, encryptedBody } = await encryptNote(n.title, syncBody, dek);
+      const { encryptedTitle, encryptedBody } = await encryptNote(n.id, n.title, syncBody, dek);
       const existing = await idbGetNoteById(n.id);
       const serverUpdatedAt = existing?.serverUpdatedAt ?? 0;
       const version = existing?.version ?? 1;

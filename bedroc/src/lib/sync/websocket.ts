@@ -29,6 +29,7 @@ import { syncFromServer } from '$lib/stores/notes.svelte.js';
 
 type ServerMessage =
   | { type: 'pong' }
+  | { type: 'auth:ok' }
   | { type: 'note:updated'; noteId: string }
   | { type: 'note:deleted'; noteId: string };
 
@@ -59,9 +60,11 @@ export function connect(): void {
   // 'offline' is the sentinel for a locked/offline session — no real token yet
   if (!token || token === 'offline' || !serverUrl) return;
 
-  // Build the WebSocket URL: replace http(s) with ws(s)
+  // Build the WebSocket URL: replace http(s) with ws(s).
+  // The token is NOT put in the URL (it would end up in proxy access logs);
+  // it is sent as the first message once the socket opens.
   const wsBase = serverUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
-  const wsUrl = `${wsBase}/ws?token=${encodeURIComponent(token)}`;
+  const wsUrl = `${wsBase}/ws`;
 
   intentionallyClosed = false;
   _open(wsUrl);
@@ -104,6 +107,14 @@ function _open(wsUrl: string): void {
 
   socket.onopen = () => {
     connecting = false;
+    // Always use the CURRENT access token (it rotates every few minutes, and
+    // reconnects reuse this function).
+    const current = auth.accessToken;
+    if (!current || current === 'offline') {
+      socket?.close(1000, 'no token');
+      return;
+    }
+    socket?.send(JSON.stringify({ type: 'auth', token: current }));
     reconnectDelay = 1000; // reset backoff on successful connect
     _startPing();
   };

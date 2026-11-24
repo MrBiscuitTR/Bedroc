@@ -41,6 +41,8 @@ const TopicUpsertSchema = z.object({
   sortOrder: z.number().int().min(0),
 });
 
+const IdSchema = z.string().uuid();
+
 const FolderUpsertSchema = z.object({
   id:        z.string().uuid(),
   name:      z.string().min(1).max(80),
@@ -94,6 +96,7 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
     await verifyAuth(req, reply);
     if (reply.sent) return;
     const { id } = req.params as { id: string };
+    if (!IdSchema.safeParse(id).success) return reply.code(400).send({ error: 'Invalid id' });
     const note = await getNoteById(id, uid(req));
     if (!note) return reply.code(404).send({ error: 'Not found' });
     return reply.code(200).send({ note });
@@ -102,6 +105,8 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
   // ── PUT /api/notes/:id — upsert (create or update) ───────────────────────
   // High limit: rapid typing with short autosave + instant sync intervals.
   fastify.put('/api/notes/:id', {
+    // Schema allows a 2 MB encrypted body; Fastify's default bodyLimit is 1 MB.
+    bodyLimit: 2_200_000,
     config: { rateLimit: { max: 200, timeWindow: '1 minute' } },
   }, async (req: FastifyRequest, reply: FastifyReply) => {
     await verifyAuth(req, reply);
@@ -119,6 +124,7 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
       encryptedBody:  parse.data.encryptedBody,
       clientUpdatedAt: new Date(parse.data.clientUpdatedAt),
     });
+    if (!note) return reply.code(409).send({ error: 'Note id conflict' });
 
     // Push real-time notification to other connected sessions for this user
     await notifyClients(uid(req), { type: 'note:updated', noteId: id });
@@ -133,6 +139,7 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
     await verifyAuth(req, reply);
     if (reply.sent) return;
     const { id } = req.params as { id: string };
+    if (!IdSchema.safeParse(id).success) return reply.code(400).send({ error: 'Invalid id' });
     await softDeleteNote(id, uid(req));
     await notifyClients(uid(req), { type: 'note:deleted', noteId: id });
     return reply.code(200).send({ ok: true });
@@ -159,6 +166,7 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
     const parse = TopicUpsertSchema.safeParse({ ...(req.body as object), id });
     if (!parse.success) return reply.code(400).send({ error: 'Invalid topic' });
     const topic = await upsertTopic({ ...parse.data, userId: uid(req) });
+    if (!topic) return reply.code(409).send({ error: 'Topic id conflict' });
     return reply.code(200).send({ topic });
   });
 
@@ -167,6 +175,7 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
     await verifyAuth(req, reply);
     if (reply.sent) return;
     const { id } = req.params as { id: string };
+    if (!IdSchema.safeParse(id).success) return reply.code(400).send({ error: 'Invalid id' });
     await deleteTopic(id, uid(req));
     return reply.code(200).send({ ok: true });
   });
@@ -189,6 +198,7 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
     const parse = FolderUpsertSchema.safeParse({ ...(req.body as object), id });
     if (!parse.success) return reply.code(400).send({ error: 'Invalid folder' });
     const folder = await upsertFolder({ ...parse.data, userId: uid(req) });
+    if (!folder) return reply.code(409).send({ error: 'Folder id conflict' });
     return reply.code(200).send({ folder });
   });
 
@@ -197,6 +207,7 @@ export default async function notesRoutes(fastify: FastifyInstance): Promise<voi
     await verifyAuth(req, reply);
     if (reply.sent) return;
     const { id } = req.params as { id: string };
+    if (!IdSchema.safeParse(id).success) return reply.code(400).send({ error: 'Invalid id' });
     await deleteFolder(id, uid(req));
     return reply.code(200).send({ ok: true });
   });

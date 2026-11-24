@@ -246,17 +246,108 @@ function createWindow(port) {
     `).catch(() => {});
   });
 
+  // Only our own origin may open in-app windows. Everything else goes to the
+  // system browser — and only for safe schemes (openExternal with arbitrary
+  // schemes such as file:, smb: or custom protocol handlers can execute code).
+  const appOrigin = `http://localhost:${port}`;
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (!url.startsWith(`http://localhost:${port}`)) {
-      shell.openExternal(url);
-      return { action: 'deny' };
-    }
-    return { action: 'allow' };
+    if (isAppUrl(url, appOrigin)) return { action: 'allow' };
+    openExternalSafe(url);
+    return { action: 'deny' };
+  });
+
+  // Never navigate the main window away from the app (e.g. a clicked link).
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (isAppUrl(url, appOrigin)) return;
+    event.preventDefault();
+    openExternalSafe(url);
   });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+}
+
+/** True if `url` has exactly the app's origin (not just the same prefix). */
+function isAppUrl(url, appOrigin) {
+  try {
+    return new URL(url).origin === appOrigin;
+  } catch {
+    return false;
+  }
+}
+
+/** Open a URL in the system browser — http(s) and mailto only. */
+function openExternalSafe(url) {
+  try {
+    const { protocol } = new URL(url);
+    if (protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:') {
+      shell.openExternal(url);
+    }
+  } catch {
+    // malformed URL — ignore
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Self-signed certificates for private hosts: trust on first use (TOFU)
+// ---------------------------------------------------------------------------
+//
+// Self-hosted servers on WireGuard/LAN/Tailscale IPs usually have self-signed
+// certificates. Accepting ANY certificate for those addresses would let anyone
+// on the same network impersonate the server. Instead, the first certificate
+// seen for a private host is remembered and every later connection must
+// present the same one. If you rotate the certificate, use
+// "View → Forget trusted server certificates".
+
+let certPins = null;
+function pinFile() {
+  return path.join(app.getPath('userData'), 'trusted-certificates.json');
+}
+function loadPins() {
+  if (certPins) return certPins;
+  try {
+    certPins = JSON.parse(fs.readFileSync(pinFile(), 'utf8'));
+  } catch {
+    certPins = {};
+  }
+  return certPins;
+}
+function savePins() {
+  try {
+    fs.writeFileSync(pinFile(), JSON.stringify(certPins, null, 2), 'utf8');
+  } catch {
+    // non-fatal
+  }
+}
+function resetPins() {
+  certPins = {};
+  savePins();
+}
+
+const warnedHosts = new Set();
+/** Returns true if this (host, fingerprint) is trusted; pins it on first use. */
+function checkPin(hostname, fingerprint) {
+  if (!fingerprint) return false;
+  const pins = loadPins();
+  if (!pins[hostname]) {
+    pins[hostname] = fingerprint;
+    savePins();
+    return true;
+  }
+  if (pins[hostname] === fingerprint) return true;
+  if (!warnedHosts.has(hostname)) {
+    warnedHosts.add(hostname);
+    const { dialog } = require('electron');
+    dialog.showErrorBox(
+      'Bedroc — server certificate changed',
+      `The TLS certificate presented by ${hostname} is different from the one trusted earlier.\n\n` +
+      'This can mean someone on your network is intercepting the connection. ' +
+      'If you replaced the server certificate yourself, choose ' +
+      '"View → Forget trusted server certificates" and reconnect.'
+    );
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +394,14 @@ function buildMenu() {
         { role: 'zoomOut' },
         { type: 'separator' },
         { role: 'togglefullscreen' },
+        { type: 'separator' },
+        {
+          label: 'Forget trusted server certificates',
+          click: () => {
+            resetPins();
+            warnedHosts.clear();
+          },
+        },
         ...(DEV_MODE ? [{ type: 'separator' }, { role: 'toggleDevTools' }] : []),
       ],
     },
@@ -343,13 +442,13 @@ ipcMain.handle('print', async (event) => {
 });
 
 app.whenReady().then(async () => {
-  // Allow self-signed TLS certificates for private/local IP addresses.
-  // Covers ALL network requests (fetch, WebSocket, navigation) for WireGuard IPs,
-  // RFC-1918, Tailscale, and loopback. Public internet addresses remain fully verified.
+  // Self-signed TLS certificates on private/local IP addresses (WireGuard,
+  // RFC-1918, Tailscale, loopback) are accepted on a trust-on-first-use basis:
+  // the first certificate seen is pinned and must not change afterwards
+  // (see checkPin). Public addresses always get full Chromium verification.
   //
   // setCertificateVerifyProc covers renderer fetch() / XHR / WebSocket.
   // certificate-error covers navigation-level cert errors.
-  // Both are needed — they handle different Chromium code paths.
   function isPrivateHost(hostname) {
     return (
       hostname === 'localhost' ||
@@ -365,20 +464,26 @@ app.whenReady().then(async () => {
   // Covers fetch(), XHR, WebSocket — the primary path for API calls
   const { session } = require('electron');
   session.defaultSession.setCertificateVerifyProc((request, callback) => {
+    // Publicly valid certificates: normal Chromium verification.
+    if (request.errorCode === 0) {
+      callback(-3); // -3 = use Chromium's verification result
+      return;
+    }
     try {
       if (isPrivateHost(request.hostname)) {
-        callback(0); // 0 = OK, bypass verification
+        // 0 = accept, -2 = reject
+        callback(checkPin(request.hostname, request.certificate && request.certificate.fingerprint) ? 0 : -2);
         return;
       }
     } catch {}
-    callback(-3); // -3 = use default Chromium verification
+    callback(-3);
   });
 
   // Covers page navigation cert errors (secondary, belt-and-suspenders)
   app.on('certificate-error', (event, webContents, url, error, certificate, callback) => {
     try {
       const { hostname } = new URL(url);
-      if (isPrivateHost(hostname)) {
+      if (isPrivateHost(hostname) && checkPin(hostname, certificate && certificate.fingerprint)) {
         event.preventDefault();
         callback(true);
         return;

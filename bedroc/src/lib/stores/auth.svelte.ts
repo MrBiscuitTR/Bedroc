@@ -35,6 +35,8 @@ import {
   srpClientEphemeral,
   srpClientProof,
   srpVerifyServer,
+  SRP_KDF_VERSION,
+  type SrpKdfVersion,
 } from '$lib/crypto/srp.js';
 import {
   saveKeyMaterial,
@@ -196,6 +198,11 @@ async function tryHealthFetch(target: string): Promise<boolean> {
       cache: 'no-store',
     });
     clearTimeout(timer);
+    if (res.status === 403) {
+      // Server is up but this frontend's origin is not in its CORS_ORIGIN list.
+      const body = await res.json().catch(() => ({})) as { message?: string };
+      _error = body.message ?? `This server does not accept requests from ${location.origin}.`;
+    }
     return res.ok;
   } catch {
     clearTimeout(timer);
@@ -302,9 +309,15 @@ export async function apiFetch(
  * Decode the exp claim from a JWT without verifying the signature.
  * Returns the expiry time in milliseconds, or 0 if not decodable.
  */
+/** Decode a JWT payload segment (base64url -> JSON) without verifying it. */
+function decodeJwtPayload<T>(token: string): T {
+  const b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+  return JSON.parse(atob(b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), '='))) as T;
+}
+
 function getTokenExpMs(token: string): number {
   try {
-    const payload = JSON.parse(atob(token.split('.')[1])) as { exp?: number };
+    const payload = decodeJwtPayload<{ exp?: number }>(token);
     return payload.exp ? payload.exp * 1000 : 0;
   } catch {
     return 0;
@@ -342,7 +355,30 @@ export function scheduleProactiveRefresh(): void {
  *   'expired' — server responded (401/403) — cookie missing or token revoked
  *   'offline' — network error / server unreachable
  */
+let _refreshInFlight: Promise<'ok' | 'expired' | 'offline'> | null = null;
+
 async function tryRefreshToken(): Promise<'ok' | 'expired' | 'offline'> {
+  // De-duplicate concurrent refreshes within this page: refresh tokens are
+  // single-use, so two parallel requests would race each other.
+  if (_refreshInFlight) return _refreshInFlight;
+  _refreshInFlight = (async () => {
+    // 409 = another tab rotated the token a moment ago; the cookie jar will
+    // hold the new one shortly, so retry with a small backoff.
+    for (const delay of [0, 300, 800, 1500]) {
+      if (delay) await new Promise((r) => setTimeout(r, delay));
+      const result = await refreshOnce();
+      if (result !== 'race') return result;
+    }
+    return 'offline' as const; // still racing - transient, don't log out
+  })();
+  try {
+    return await _refreshInFlight;
+  } finally {
+    _refreshInFlight = null;
+  }
+}
+
+async function refreshOnce(): Promise<'ok' | 'expired' | 'offline' | 'race'> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 4000); // 4s timeout so slow networks don't block layout
 
@@ -352,6 +388,7 @@ async function tryRefreshToken(): Promise<'ok' | 'expired' | 'offline'> {
       credentials: 'include',
       signal: controller.signal,
     });
+    if (res.status === 409) return 'race';
     if (!res.ok) {
       if (res.status >= 500) {
         return 'offline'; // Backend is down, but not a token expiration
@@ -400,8 +437,8 @@ export async function register(username: string, password: string): Promise<void
     const { dek, dekRaw } = await generateDek();
     const encryptedDek = await wrapDek(dekRaw, masterKey);
 
-    // SRP verifier
-    const { salt: srpSalt, verifier } = await srpRegister(username, password);
+    // SRP verifier (stretched x - see srp.ts)
+    const { salt: srpSalt, verifier, kdfVersion } = await srpRegister(username, password, SRP_KDF_VERSION);
 
     // POST to server
     const res = await fetchWithTimeout(`${_serverUrl}/api/auth/register`, {
@@ -412,6 +449,7 @@ export async function register(username: string, password: string): Promise<void
         username,
         srpSalt,
         srpVerifier: verifier,
+        srpKdfVersion: kdfVersion,
         encryptedDek,
         dekSalt: dekSaltHex,
       }),
@@ -420,6 +458,8 @@ export async function register(username: string, password: string): Promise<void
     if (!res.ok) {
       const body = await res.json().catch(() => ({})) as { error?: string; message?: string; details?: Record<string, unknown> };
       if (res.status === 409) throw new Error('Username already taken. Choose a different one.');
+      if (res.status === 403) throw new Error(body.message ?? body.error ?? 'Registration is not allowed on this server.');
+      if (res.status === 429) throw new Error('Too many attempts. Please wait a minute and try again.');
       if (res.status === 400) {
         const detail = body.details ? ` (${JSON.stringify(body.details)})` : '';
         throw new Error((body.error ?? body.message ?? 'Invalid registration details.') + detail);
@@ -481,49 +521,23 @@ export async function login(username: string, password: string): Promise<void> {
   _error = null;
 
   try {
-    // --- Step 1: Client ephemeral ---
-    const { a, A } = srpClientEphemeral();
+    // --- Steps 1–2: challenge + client proof ---
+    const { challenge, A, M1, sessionKey } = await srpProve(username, password);
 
-    const initRes = await fetchWithTimeout(`${_serverUrl}/api/auth/login/init`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, A }),
-    });
-
-    if (!initRes.ok) {
-      if (initRes.status === 429) throw new Error('Too many login attempts. Please wait a minute and try again.');
-      if (initRes.status >= 500) throw new Error('Server error. Please try again later.');
-      // Intentionally vague for 400/404 — don't reveal whether username exists
-      throw new Error('Invalid username or password.');
-    }
-
-    const initData = await initRes.json() as {
-      salt: string;
-      B: string;
-    };
-
-    // --- Step 2: Client proof ---
-    const { M1, sessionKey } = await srpClientProof({
-      username,
-      password,
-      saltHex: initData.salt,
-      AHex: A,
-      BHex: initData.B,
-      a,
-    });
+    // Legacy account (unstretched verifier)? Upgrade it in the same request
+    // that proves the password. The server only applies it if M1 verifies.
+    const upgrade = challenge.kdf < SRP_KDF_VERSION
+      ? await srpRegister(username, password, SRP_KDF_VERSION).then((r) => ({ srpSalt: r.salt, srpVerifier: r.verifier }))
+      : undefined;
 
     const verifyRes = await fetchWithTimeout(`${_serverUrl}/api/auth/login/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include', // receive httpOnly refresh cookie
-      body: JSON.stringify({ username, A, M1 }),
+      body: JSON.stringify({ challengeId: challenge.challengeId, username, A, M1, upgrade }),
     });
 
-    if (!verifyRes.ok) {
-      if (verifyRes.status === 429) throw new Error('Too many login attempts. Please wait a minute and try again.');
-      if (verifyRes.status >= 500) throw new Error('Server error. Please try again later.');
-      throw new Error('Invalid username or password.');
-    }
+    if (!verifyRes.ok) throw await authError(verifyRes);
 
     const verifyData = await verifyRes.json() as {
       accessToken: string;
@@ -573,6 +587,63 @@ export async function login(username: string, password: string): Promise<void> {
   }
 }
 
+/** Map a failed auth response to a user-facing error (never reveals whether the user exists). */
+async function authError(res: Response): Promise<Error> {
+  const body = await res.json().catch(() => ({})) as { error?: string; message?: string };
+  if (res.status === 429) {
+    return new Error(body.message ?? 'Too many login attempts. Please wait a few minutes and try again.');
+  }
+  if (res.status === 403 && body.error === 'origin_not_allowed') {
+    return new Error(body.message ?? 'This server does not accept requests from this app.');
+  }
+  if (res.status >= 500) return new Error('Server error. Please try again later.');
+  return new Error('Invalid username or password.');
+}
+
+interface SrpChallenge { challengeId: string; salt: string; B: string; kdf: SrpKdfVersion }
+
+/**
+ * Run SRP steps 1–2: request a challenge for `username` and compute the proof
+ * for `password`. Used for login and for re-authenticating sensitive actions
+ * (change password, delete account).
+ */
+async function srpProve(username: string, password: string): Promise<{
+  challenge: SrpChallenge; A: string; M1: string; sessionKey: Uint8Array;
+}> {
+  const { a, A } = srpClientEphemeral();
+
+  const initRes = await fetchWithTimeout(`${_serverUrl}/api/auth/login/init`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username }),
+  });
+  if (!initRes.ok) throw await authError(initRes);
+
+  const challenge = await initRes.json() as SrpChallenge;
+  if (!challenge.challengeId) {
+    throw new Error('This server runs an older Bedroc version. Please update the server.');
+  }
+
+  const { M1, sessionKey } = await srpClientProof({
+    username,
+    password,
+    saltHex: challenge.salt,
+    AHex: A,
+    BHex: challenge.B,
+    a,
+    kdfVersion: challenge.kdf === 2 ? 2 : 1,
+  });
+
+  return { challenge, A, M1, sessionKey };
+}
+
+/** Fresh SRP proof of the current password, for sensitive endpoints. */
+async function reauthProof(password: string): Promise<{ challengeId: string; A: string; M1: string }> {
+  if (!_username) throw new Error('Not logged in.');
+  const { challenge, A, M1 } = await srpProve(_username, password);
+  return { challengeId: challenge.challengeId, A, M1 };
+}
+
 // ---------------------------------------------------------------------------
 // Logout
 // ---------------------------------------------------------------------------
@@ -595,6 +666,7 @@ export function lockVault(): void {
 
 export async function logout(): Promise<void> {
   const userId = _userId;
+  const token = _accessToken && _accessToken !== 'offline' ? _accessToken : null;
 
   // Cancel any pending proactive refresh
   if (_proactiveRefreshTimer) {
@@ -618,9 +690,12 @@ export async function logout(): Promise<void> {
   try {
       const controller = new AbortController();
       const logoutTimer = setTimeout(() => controller.abort(), 2000);
+      // Send the access token too: the server revokes the session by either
+      // credential (bearer token or refresh cookie).
       await fetch(`${_serverUrl}/api/auth/logout`, {
         method: 'POST',
         credentials: 'include',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         signal: controller.signal,
       }).finally(() => clearTimeout(logoutTimer));
   } catch {
@@ -676,7 +751,7 @@ export async function restoreSession(): Promise<void> {
     // Decode userId from the access token (no verify needed — already verified by server)
     if (_accessToken && _accessToken !== 'offline') {
       try {
-        const payload = JSON.parse(atob(_accessToken.split('.')[1])) as { sub: string };
+        const payload = decodeJwtPayload<{ sub: string }>(_accessToken);
         _userId = payload.sub;
       } catch {
         _accessToken = null;
@@ -797,23 +872,28 @@ export async function changePassword(currentPassword: string, newPassword: strin
     // Step 3: Re-wrap the same DEK bytes with new master key
     const newEncryptedDek = await wrapDek(dekRaw, newMasterKey);
 
-    // Step 4: New SRP verifier for new password
-    const { salt: newSrpSalt, verifier: newSrpVerifier } = await srpRegister(_username, newPassword);
+    // Step 4: New SRP verifier for new password (stretched v2)
+    const { salt: newSrpSalt, verifier: newSrpVerifier, kdfVersion } =
+      await srpRegister(_username, newPassword, SRP_KDF_VERSION);
 
-    // Step 5: Send to server
+    // Step 5: Prove the CURRENT password to the server (SRP), then send the
+    // new material in the same request. The server revokes all other sessions.
+    const proof = await reauthProof(currentPassword);
     const res = await apiFetch('/api/auth/change-password', {
       method: 'POST',
       body: JSON.stringify({
-        srpSalt:      newSrpSalt,
-        srpVerifier:  newSrpVerifier,
-        encryptedDek: newEncryptedDek,
-        dekSalt:      newDekSaltHex,
+        proof,
+        srpSalt:       newSrpSalt,
+        srpVerifier:   newSrpVerifier,
+        srpKdfVersion: kdfVersion,
+        encryptedDek:  newEncryptedDek,
+        dekSalt:       newDekSaltHex,
       }),
     });
 
     if (!res.ok) {
-      const body = await res.json().catch(() => ({})) as { error?: string };
-      throw new Error(body.error ?? 'Failed to change password. Please try again.');
+      const body = await res.json().catch(() => ({})) as { error?: string; message?: string };
+      throw new Error(body.message ?? body.error ?? 'Failed to change password. Please try again.');
     }
 
     // Step 6: Update in-memory DEK + IndexedDB
@@ -834,5 +914,28 @@ export async function changePassword(currentPassword: string, newPassword: strin
     throw err;
   } finally {
     _loading = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Delete account
+// ---------------------------------------------------------------------------
+
+/**
+ * Permanently delete the account on the server. Requires the password: the
+ * server verifies a fresh SRP proof, so a stolen access token alone cannot
+ * destroy an account. Does NOT wipe local data — call logout() afterwards.
+ *
+ * @throws if the password is wrong or the server request fails.
+ */
+export async function deleteAccount(password: string): Promise<void> {
+  const proof = await reauthProof(password);
+  const res = await apiFetch('/api/auth/account', {
+    method: 'DELETE',
+    body: JSON.stringify({ proof }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as { error?: string; message?: string };
+    throw new Error(body.message ?? body.error ?? 'Failed to delete account.');
   }
 }

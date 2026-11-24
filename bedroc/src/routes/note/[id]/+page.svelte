@@ -36,6 +36,12 @@
 	import { TaskItem } from '@tiptap/extension-task-item';
 	import { CharacterCount } from '@tiptap/extension-character-count';
 	import { uploadFileAttachment, loadFileAttachment as loadAttachment, retryAttachmentUpload } from '$lib/attachments.js';
+	import DOMPurify from 'dompurify';
+
+	/** Sanitise note HTML before rendering it raw (conflict view). An XSS here would expose the DEK. */
+	function safeHtml(html: string): string {
+		return html ? DOMPurify.sanitize(html, { USE_PROFILES: { html: true } }) : '';
+	}
 
 	// Highlight extension patched to emit --hl-color CSS custom property
 	// instead of inline background-color so our CSS can apply color-mix transparency.
@@ -2152,7 +2158,7 @@
 						</div>
 						<div class="conflict-version-title">{conflict.localTitle || '(no title)'}</div>
 						<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-						<div class="conflict-version-body">{@html conflict.localBody || '<em>(empty)</em>'}</div>
+						<div class="conflict-version-body">{@html safeHtml(conflict.localBody) || '<em>(empty)</em>'}</div>
 						<button
 							class="conflict-pick-btn"
 							onclick={() => handleResolveConflict('local')}
@@ -2175,7 +2181,7 @@
 						{:else}
 						<div class="conflict-version-title">{conflict.serverTitle || '(no title)'}</div>
 						<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-						<div class="conflict-version-body">{@html conflict.serverBody || '<em>(empty)</em>'}</div>
+						<div class="conflict-version-body">{@html safeHtml(conflict.serverBody) || '<em>(empty)</em>'}</div>
 						{/if}
 						<button
 							class="conflict-pick-btn"
@@ -2204,7 +2210,7 @@
 						aria-label="Merge body"
 						aria-multiline="true"
 						data-placeholder="Merge content…"
-						oninput={(e) => { mergeBody = (e.currentTarget as HTMLElement).innerHTML; mergeDirty = true; }}
+						oninput={(e) => { mergeBody = safeHtml((e.currentTarget as HTMLElement).innerHTML); mergeDirty = true; }}
 					></div>
 					<button
 						class="conflict-pick-btn conflict-pick-btn-merge"

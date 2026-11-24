@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { autosave, syncIntervalStore, liveSyncStore, notesMap, topicsMap, foldersMap, inactivityLockStore, getTopics, getFolders, toggleFolderCollapsed, type Topic, type Folder } from '$lib/stores/notes.svelte';
-	import { auth, logout, apiFetch, changePassword, serverStatus } from '$lib/stores/auth.svelte.js';
+	import { auth, logout, apiFetch, changePassword, deleteAccount, serverStatus } from '$lib/stores/auth.svelte.js';
 	import { clearStore } from '$lib/stores/notes.svelte.js';
 	import { theme, toggleTheme } from '$lib/stores/theme.svelte.js';
 
@@ -22,6 +22,9 @@
 
 	let confirmLogout = $state(false);
 	let confirmDelete = $state(false);
+	let deletePassword = $state('');
+	let deleteError = $state<string | null>(null);
+	let deleteLoading = $state(false);
 
 	// ── Sessions ──────────────────────────────────────────────────
 	interface Session {
@@ -69,9 +72,19 @@
 	}
 
 	async function handleDeleteAccount() {
+		deleteError = null;
+		if (!deletePassword) { deleteError = 'Enter your password to confirm.'; return; }
+		deleteLoading = true;
 		try {
-			await apiFetch('/api/auth/account', { method: 'DELETE' });
-		} catch { /* ignore */ }
+			// Server requires a fresh password proof. Only wipe local data once
+			// the server has actually deleted the account.
+			await deleteAccount(deletePassword);
+		} catch (err) {
+			deleteError = (err as Error).message;
+			deleteLoading = false;
+			return;
+		}
+		deletePassword = '';
 		clearStore();
 		await logout();
 		goto('/login');
@@ -558,10 +571,24 @@
 						Delete
 					</button>
 				{:else}
-					<div class="confirm-row">
-						<span class="confirm-text">Sure?</span>
-						<button class="btn-danger confirm-yes" onclick={handleDeleteAccount}>Delete forever</button>
-						<button class="btn-ghost" onclick={() => (confirmDelete = false)}>Cancel</button>
+					<div class="change-pw-form delete-confirm">
+						{#if deleteError}
+							<p class="cp-error">{deleteError}</p>
+						{/if}
+						<input
+							type="password"
+							placeholder="Password"
+							bind:value={deletePassword}
+							autocomplete="current-password"
+							disabled={deleteLoading}
+							onkeydown={(e) => { if (e.key === 'Enter') handleDeleteAccount(); }}
+						/>
+						<div class="cp-actions">
+							<button class="btn-ghost" onclick={() => { confirmDelete = false; deletePassword = ''; deleteError = null; }} disabled={deleteLoading}>Cancel</button>
+							<button class="btn-danger confirm-yes" onclick={handleDeleteAccount} disabled={deleteLoading}>
+								{deleteLoading ? 'Deleting…' : 'Delete forever'}
+							</button>
+						</div>
 					</div>
 				{/if}
 			</div>
@@ -1101,6 +1128,11 @@
 
 	.change-pw-form input {
 		width: 100%;
+	}
+
+	.delete-confirm {
+		padding: 0;
+		min-width: 220px;
 	}
 
 	.cp-actions {

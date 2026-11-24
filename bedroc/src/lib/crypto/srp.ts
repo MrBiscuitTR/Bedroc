@@ -9,9 +9,15 @@
  * This implementation uses the same 3072-bit MODP group (RFC 3526) as the
  * server. All BigInt math is pure browser JS — no external libraries.
  *
+ * Private key x — two versions (the server says which one an account uses):
+ *   v1 (legacy) x = H(salt | H(username | ':' | password))          — unstretched
+ *   v2          x = PBKDF2-SHA256(username ':' password, salt, 600k) — stretched
+ * v2 makes a stolen verifier as expensive to brute-force as the wrapped DEK.
+ * Legacy accounts are upgraded transparently on their next login.
+ *
  * Registration flow:
  *   1. Client generates salt (random 32 bytes)
- *   2. x  = H(salt | H(username | ':' | password))
+ *   2. x  = KDF_v2(username, password, salt)
  *   3. v  = g^x mod N  ← sent to server along with username and salt
  *   4. Server stores (username, salt, verifier=v)
  *
@@ -27,11 +33,16 @@
  *      K  = H(S)               (session key)
  *      M1 = H(H(N) XOR H(g) | H(username) | salt | A | B | K)
  *   4. Client → Server: A, M1
- *   5. Server verifies M1; if valid, responds with M2 = H(A | M1 | K)
+ *   5. Server verifies M1; if valid, responds with M2 = H(PAD(A) | M1 | K)
  *   6. Client verifies M2 (proves server also knows the password)
  */
 
-import { toBase64, fromBase64, toHex, fromHex, randomBytes } from './keys.js';
+import { toHex, fromHex, randomBytes } from './keys.js';
+
+/** Latest SRP private-key derivation version. */
+export const SRP_KDF_VERSION = 2;
+export type SrpKdfVersion = 1 | 2;
+const SRP_PBKDF2_ITERATIONS = 600_000;
 
 // ---------------------------------------------------------------------------
 // 3072-bit MODP group (RFC 3526, Section 2)
@@ -104,6 +115,35 @@ async function srpK(): Promise<bigint> {
   return BigInt('0x' + toHex(h));
 }
 
+/** Derive the SRP private key x for the given KDF version. */
+async function computeX(
+  username: string,
+  password: string,
+  saltBytes: Uint8Array,
+  version: SrpKdfVersion
+): Promise<bigint> {
+  const identity = new TextEncoder().encode(`${username}:${password}`);
+  if (version === 1) {
+    const identityHash = await sha256(identity);
+    return BigInt('0x' + toHex(await sha256(concat(saltBytes, identityHash))));
+  }
+  const keyMaterial = await crypto.subtle.importKey('raw', identity, 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: saltBytes, iterations: SRP_PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    keyMaterial,
+    256
+  );
+  return BigInt('0x' + toHex(new Uint8Array(bits)));
+}
+
+/** Constant-time comparison of two byte arrays. */
+function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -120,23 +160,19 @@ async function srpK(): Promise<bigint> {
  */
 export async function srpRegister(
   username: string,
-  password: string
-): Promise<{ salt: string; verifier: string }> {
+  password: string,
+  version: SrpKdfVersion = SRP_KDF_VERSION
+): Promise<{ salt: string; verifier: string; kdfVersion: SrpKdfVersion }> {
   const saltBytes = randomBytes(32);
   const salt = toHex(saltBytes);
 
-  // x = H(salt | H(username:password))
-  const identityHash = await sha256(new TextEncoder().encode(`${username}:${password}`));
-  const x = BigInt(
-    '0x' +
-      toHex(await sha256(concat(saltBytes, identityHash)))
-  );
+  const x = await computeX(username, password, saltBytes, version);
 
   // v = g^x mod N
   const v = modpow(g, x, N);
   const verifier = toHex(pad(v));
 
-  return { salt, verifier };
+  return { salt, verifier, kdfVersion: version };
 }
 
 // ---------------------------------------------------------------------------
@@ -181,15 +217,20 @@ export async function srpClientProof(params: {
   AHex: string;
   BHex: string;
   a: bigint;
+  kdfVersion?: SrpKdfVersion;
 }): Promise<{ M1: string; sessionKey: Uint8Array }> {
   const { username, password, saltHex, AHex, BHex, a } = params;
+  const kdfVersion = params.kdfVersion ?? 1;
+  if (!/^[0-9a-fA-F]+$/.test(saltHex) || !/^[0-9a-fA-F]+$/.test(BHex)) {
+    throw new Error('SRP: malformed server response');
+  }
 
   const saltBytes = fromHex(saltHex);
   const A = BigInt('0x' + AHex);
   const B = BigInt('0x' + BHex);
 
-  // Validate B != 0 mod N (SRP abort condition)
-  if (B % N === 0n) throw new Error('SRP: invalid server public key B');
+  // Validate B != 0 mod N and B < N (SRP abort conditions)
+  if (B % N === 0n || B >= N) throw new Error('SRP: invalid server public key B');
 
   const k = await srpK();
 
@@ -197,10 +238,7 @@ export async function srpClientProof(params: {
   const u = BigInt('0x' + toHex(await sha256(concat(pad(A), pad(B)))));
   if (u === 0n) throw new Error('SRP: u = 0, aborting');
 
-  // x = H(salt | H(username:password))
-  const identityHash = await sha256(new TextEncoder().encode(`${username}:${password}`));
-  const xHash = await sha256(concat(saltBytes, identityHash));
-  const x = BigInt('0x' + toHex(xHash));
+  const x = await computeX(username, password, saltBytes, kdfVersion);
 
   // Client session premaster: S = (B - k*g^x)^(a + u*x) mod N
   const kgx = (k * modpow(g, x, N)) % N;
@@ -241,14 +279,14 @@ export async function srpVerifyServer(
   sessionKey: Uint8Array,
   serverM2: string
 ): Promise<void> {
-  const A = fromHex(AHex);
+  // A is always padded to len(N) — must match the server's PAD(A).
+  const A = pad(BigInt('0x' + AHex));
   const M1 = fromHex(M1Hex);
 
-  // Expected M2 = H(A | M1 | K)
+  // Expected M2 = H(PAD(A) | M1 | K)
   const expectedM2 = await sha256(concat(A, M1, sessionKey));
-  const expectedHex = toHex(expectedM2);
 
-  if (expectedHex !== serverM2) {
+  if (!/^[0-9a-fA-F]{64}$/.test(serverM2 ?? '') || !constantTimeEqual(expectedM2, fromHex(serverM2))) {
     throw new Error('SRP: server proof verification failed — possible MITM or wrong password');
   }
 }

@@ -56,7 +56,13 @@ export async function runMigrations(): Promise<void> {
   const migrationClient = new pg.Client({ connectionString: migrationUrl });
   await migrationClient.connect();
 
-  const migrations = ['001_init.sql', '002_session_refresh_hash.sql', '003_session_metadata.sql', '004_attachments.sql'];
+  const migrations = [
+    '001_init.sql',
+    '002_session_refresh_hash.sql',
+    '003_session_metadata.sql',
+    '004_attachments.sql',
+    '005_security_hardening.sql',
+  ];
   try {
     for (const file of migrations) {
       const sqlPath = join(__dir, 'migrations', file);
@@ -86,4 +92,20 @@ export async function query<T extends pg.QueryResultRow = pg.QueryResultRow>(
   params?: unknown[]
 ): Promise<pg.QueryResult<T>> {
   return pool.query<T>(text, params);
+}
+
+/** Run `fn` inside a single transaction on a dedicated pooled connection. */
+export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }

@@ -142,7 +142,7 @@ When Cloudflare is proxied, your server sees Cloudflare's IP in the TCP connecti
 
 - Cloudflare sets `CF-Connecting-IP` and `X-Forwarded-For` headers with the real client IP
 - Caddy passes these headers through to the backend
-- Fastify has `trustProxy: true`, so `req.ip` and rate limiting use the real client IP from `X-Forwarded-For`
+- The server trusts exactly `TRUST_PROXY` proxy hops (default `1` = Caddy). With Cloudflare in front, configure Caddy with `trusted_proxies` set to Cloudflare's IP ranges (so Caddy keeps Cloudflare's `X-Forwarded-For`) and set `TRUST_PROXY=2`. Otherwise every user appears to come from a Cloudflare edge IP and shares one rate-limit bucket
 - The access log (`logs/access.log`) records the real client IP correctly
 
 ---

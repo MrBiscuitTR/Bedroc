@@ -107,8 +107,11 @@ services:
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
       JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
-      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-7d}
-      CORS_ORIGIN: ${CORS_ORIGIN}
+      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-30d}
+      # Required — the server refuses to start without it (see .env.example)
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN must be set in your env file (see .env.example)}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
 
     networks:
       - internal

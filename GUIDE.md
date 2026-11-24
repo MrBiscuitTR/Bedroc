@@ -371,9 +371,9 @@ Open `.env` in a text editor and fill in:
 | `DATABASE_URL` | Replace `CHANGE_THIS_DB_PASSWORD` with the same string you put in `POSTGRES_PASSWORD` |
 | `JWT_ACCESS_SECRET` | Run `openssl rand -hex 32` and paste the output |
 | `JWT_REFRESH_SECRET` | Run `openssl rand -hex 32` **again** (must be different from above) |
-| `CORS_ORIGIN` | Leave **empty** to accept any frontend (recommended), or set to your specific frontend URL for strict mode |
+| `CORS_ORIGIN` | **Required.** Comma-separated list of every frontend origin you use, e.g. `https://bedroc.cagancalidag.com,https://10.66.66.1,http://localhost:*` |
 
-**Leave `CORS_ORIGIN` empty** if you want to use the public Bedroc frontend (`https://bedroc.cagancalidag.com`) or any other frontend with your server. Set it to a specific URL only if you want to restrict access to one frontend.
+**`CORS_ORIGIN` is required and must not be `*`.** The login cookie is sent cross-site, so allowing every origin would let any website you visit take over your session. List exactly the places you open Bedroc from: the public frontend (`https://bedroc.cagancalidag.com`), the address you browse to when this stack serves the UI itself (e.g. `https://10.66.66.1`), and `http://localhost:*` for the desktop app. If a frontend is missing, the app shows *"This server does not accept requests from …"* — add that origin and restart the server.
 
 **How to generate secrets:**
 
@@ -605,7 +605,7 @@ Current defaults:
 | `GET /api/topics`, `GET /api/folders` | 120 req/min |
 | `DELETE /api/notes/:id` | 60 req/min |
 | `POST /api/auth/register` | 5 req/min |
-| `POST /api/auth/login/init` and `/verify` | 10 req/min |
+| `POST /api/auth/login/init` and `/verify` | 10 req/min per IP, plus a per-account lock after 10 failed passwords in 15 min |
 
 After changing limits, rebuild the server container:
 
@@ -698,5 +698,6 @@ Bedroc supports embedding images and file attachments (PDF, code files, zip, etc
 - WireGuard means no attack surface on the public internet — the server is literally unreachable without a valid VPN peer key.
 - Back up your WireGuard private key (`/etc/wireguard/server_private.key`) separately from the server. If you lose it, connected devices can no longer reach the server until you regenerate and redistribute keys.
 - **Password loss = data loss.** The encryption key is derived from your password. There is no account recovery. Use a password manager.
-- **CORS:** By default, `CORS_ORIGIN` is empty — any frontend (including the public hosted one) can connect to your server. Security is enforced by JWT tokens, not CORS. Set `CORS_ORIGIN` to a specific URL to restrict to one frontend only.
-- You can change your password in Settings → Security → Change Password. This re-derives the master key and re-wraps the encryption key. To invalidate all existing sessions after a password change, also use "Revoke all sessions" in Settings.
+- **CORS:** `CORS_ORIGIN` must list the exact frontend origins allowed to use your server (no `*`). Requests from any other website are rejected before they reach the API.
+- **Registration:** set `ALLOW_REGISTRATION=false` once your account(s) exist so strangers cannot sign up on your server.
+- You can change your password in Settings → Security → Change Password. The server requires proof of your current password, and every other session is signed out automatically.

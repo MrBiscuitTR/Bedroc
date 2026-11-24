@@ -60,7 +60,7 @@ export async function upsertNote(params: {
   customOrder: number;
   clientUpdatedAt: Date;
   version: number;
-}): Promise<NoteRow> {
+}): Promise<NoteRow | null> {
   // Optimistic lock: only update if incoming version >= stored version.
   // On conflict (same id), update only when the client has a newer timestamp.
   const { rows } = await query<NoteRow>(
@@ -77,7 +77,8 @@ export async function upsertNote(params: {
        server_updated_at = now(),
        version           = notes.version + 1,
        is_deleted        = false
-     WHERE notes.client_updated_at < EXCLUDED.client_updated_at
+     WHERE notes.user_id = EXCLUDED.user_id
+       AND notes.client_updated_at < EXCLUDED.client_updated_at
      RETURNING *`,
     [
       params.id,
@@ -89,11 +90,11 @@ export async function upsertNote(params: {
       params.clientUpdatedAt,
     ]
   );
-  // If WHERE clause failed (stale write), rows will be empty — fetch current
+  // If WHERE clause failed, rows will be empty: either a stale write (return the
+  // current row) or the id belongs to ANOTHER user (return null → 409; never
+  // touch or reveal the other user's row).
   if (rows.length === 0) {
-    const existing = await getNoteById(params.id, params.userId);
-    if (!existing) throw new Error('Note not found after upsert conflict');
-    return existing;
+    return getNoteById(params.id, params.userId);
   }
   return rows[0];
 }
@@ -151,7 +152,7 @@ export async function upsertTopic(params: {
   color: string;
   folderId: string | null;
   sortOrder: number;
-}): Promise<TopicRow> {
+}): Promise<TopicRow | null> {
   const { rows } = await query<TopicRow>(
     `INSERT INTO topics (id, user_id, name, color, folder_id, sort_order)
      VALUES ($1, $2, $3, $4, $5, $6)
@@ -161,10 +162,11 @@ export async function upsertTopic(params: {
        folder_id  = EXCLUDED.folder_id,
        sort_order = EXCLUDED.sort_order,
        updated_at = now()
+     WHERE topics.user_id = EXCLUDED.user_id
      RETURNING *`,
     [params.id, params.userId, params.name, params.color, params.folderId, params.sortOrder]
   );
-  return rows[0];
+  return rows[0] ?? null;  // null → id owned by another user
 }
 
 export async function getTopicsByUser(userId: string): Promise<TopicRow[]> {
@@ -192,7 +194,7 @@ export async function upsertFolder(params: {
   parentId: string | null;
   sortOrder: number;
   collapsed: boolean;
-}): Promise<FolderRow> {
+}): Promise<FolderRow | null> {
   const { rows } = await query<FolderRow>(
     `INSERT INTO folders (id, user_id, name, parent_id, sort_order, collapsed)
      VALUES ($1, $2, $3, $4, $5, $6)
@@ -202,10 +204,11 @@ export async function upsertFolder(params: {
        sort_order = EXCLUDED.sort_order,
        collapsed  = EXCLUDED.collapsed,
        updated_at = now()
+     WHERE folders.user_id = EXCLUDED.user_id
      RETURNING *`,
     [params.id, params.userId, params.name, params.parentId, params.sortOrder, params.collapsed]
   );
-  return rows[0];
+  return rows[0] ?? null;  // null → id owned by another user
 }
 
 export async function getFoldersByUser(userId: string): Promise<FolderRow[]> {

@@ -1,0 +1,54 @@
+# Throwaway stack for the integration tests. Nothing is persisted.
+#   docker compose -f server/test/docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from tests
+#   docker compose -f server/test/docker-compose.test.yml down -v
+name: bedroc-test
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: bedroc
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: testpw
+      DATABASE_URL: postgres://bedroc_app:apppw@postgres:5432/bedroc
+    volumes:
+      - ../../docker/postgres/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    tmpfs: [/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d bedroc"]
+      interval: 2s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+
+  server:
+    build: { context: .., dockerfile: Dockerfile }
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      NODE_ENV: production
+      DATABASE_URL: postgres://bedroc_app:apppw@postgres:5432/bedroc
+      POSTGRES_URL: postgresql://postgres:testpw@postgres:5432/bedroc
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: test-access-secret-0123456789abcdef0123456789
+      JWT_REFRESH_SECRET: test-refresh-secret-0123456789abcdef012345678
+      CORS_ORIGIN: https://app.example.com,http://localhost:*
+      REFRESH_REUSE_GRACE_SECONDS: "2"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  tests:
+    image: node:22-alpine
+    working_dir: /repo/server
+    volumes:
+      - ../..:/repo
+    environment:
+      BASE_URL: http://server:3000
+    command: ["sh", "-c", "until wget -qO- http://server:3000/health >/dev/null 2>&1; do sleep 1; done; node --import tsx --test --test-concurrency=1 test/integration.test.ts"]
+    depends_on: [server]

@@ -25,10 +25,24 @@
 
 import { toBase64, fromBase64, randomBytes } from './keys.js';
 
-/** Wire format stored in the database (and IndexedDB). */
+/**
+ * Wire format stored in the database (and IndexedDB).
+ *
+ * v2 ciphertexts are bound to a context string via AES-GCM additional data
+ * (e.g. "bedroc:note:<id>:title"), so a malicious or compromised server cannot
+ * swap ciphertexts between notes or between the title and body fields — the
+ * GCM tag will not verify. Fields without `v` are legacy (no AAD) and are
+ * re-encrypted as v2 the next time the note is saved.
+ */
 export interface EncryptedField {
+  v?: 2;
   iv: string;  // base64-encoded 12-byte IV
   ct: string;  // base64-encoded AES-GCM ciphertext + 16-byte auth tag
+}
+
+/** AAD context string for a note field. */
+export function noteFieldContext(noteId: string, field: 'title' | 'body'): string {
+  return `bedroc:note:${noteId}:${field}`;
 }
 
 /**
@@ -40,21 +54,22 @@ export interface EncryptedField {
  */
 export async function encryptField(
   plaintext: string,
-  dek: CryptoKey
+  dek: CryptoKey,
+  context?: string
 ): Promise<EncryptedField> {
   const iv = randomBytes(12); // 96-bit IV
   const encoded = new TextEncoder().encode(plaintext);
 
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    dek,
-    encoded
-  );
+  const params: AesGcmParams = { name: 'AES-GCM', iv };
+  if (context) params.additionalData = new TextEncoder().encode(context);
+  const ciphertext = await crypto.subtle.encrypt(params, dek, encoded);
 
-  return {
+  const out: EncryptedField = {
     iv: toBase64(iv),
     ct: toBase64(new Uint8Array(ciphertext)),
   };
+  if (context) out.v = 2;
+  return out;
 }
 
 /**
@@ -67,16 +82,19 @@ export async function encryptField(
  */
 export async function decryptField(
   field: EncryptedField,
-  dek: CryptoKey
+  dek: CryptoKey,
+  context?: string
 ): Promise<string> {
   const iv = fromBase64(field.iv);
   const ct = fromBase64(field.ct);
 
-  const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv },
-    dek,
-    ct
-  );
+  const params: AesGcmParams = { name: 'AES-GCM', iv };
+  if (field.v === 2) {
+    // A v2 field is only valid in the context it was encrypted for.
+    if (!context) throw new Error('decryptField: context required for v2 ciphertext');
+    params.additionalData = new TextEncoder().encode(context);
+  }
+  const plaintext = await crypto.subtle.decrypt(params, dek, ct);
 
   return new TextDecoder().decode(plaintext);
 }
@@ -96,7 +114,9 @@ export function serialiseField(field: EncryptedField): string {
 export function parseField(json: string): EncryptedField | null {
   if (!json || json === '{}') return null;
   try {
-    return JSON.parse(json) as EncryptedField;
+    const f = JSON.parse(json) as EncryptedField;
+    if (typeof f?.iv !== 'string' || typeof f?.ct !== 'string') return null;
+    return f;
   } catch {
     return null;
   }
@@ -107,13 +127,14 @@ export function parseField(json: string): EncryptedField | null {
  * Returns serialised JSON strings ready to send to the server.
  */
 export async function encryptNote(
+  noteId: string,
   title: string,
   body: string,
   dek: CryptoKey
 ): Promise<{ encryptedTitle: string; encryptedBody: string }> {
   const [titleField, bodyField] = await Promise.all([
-    encryptField(title, dek),
-    encryptField(body, dek),
+    encryptField(title, dek, noteFieldContext(noteId, 'title')),
+    encryptField(body, dek, noteFieldContext(noteId, 'body')),
   ]);
   return {
     encryptedTitle: serialiseField(titleField),
@@ -127,6 +148,7 @@ export async function encryptNote(
  * Returns empty strings for fields that are missing or not yet written.
  */
 export async function decryptNote(
+  noteId: string,
   encryptedTitle: string,
   encryptedBody: string,
   dek: CryptoKey
@@ -135,8 +157,8 @@ export async function decryptNote(
   const bodyField = parseField(encryptedBody);
 
   const [title, body] = await Promise.all([
-    titleField ? decryptField(titleField, dek) : Promise.resolve(''),
-    bodyField ? decryptField(bodyField, dek) : Promise.resolve(''),
+    titleField ? decryptField(titleField, dek, noteFieldContext(noteId, 'title')) : Promise.resolve(''),
+    bodyField ? decryptField(bodyField, dek, noteFieldContext(noteId, 'body')) : Promise.resolve(''),
   ]);
 
   return { title, body };

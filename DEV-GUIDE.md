@@ -281,15 +281,15 @@ All endpoints are at `/api/...`.
 | --- | --- | --- | --- |
 | `GET` | `/health` | None | Health check (nginx proxies this to Fastify — used by the frontend to confirm backend is alive) |
 | `POST` | `/api/auth/register` | None | Create account |
-| `POST` | `/api/auth/login/init` | None | SRP step 1 |
-| `POST` | `/api/auth/login/verify` | None | SRP step 2 + issue JWT |
-| `POST` | `/api/auth/refresh` | Cookie | Refresh access token |
-| `POST` | `/api/auth/logout` | JWT | Revoke session |
-| `POST` | `/api/auth/change-password` | JWT | Change password + re-encrypt DEK |
+| `POST` | `/api/auth/login/init` | None | SRP step 1 → `{ challengeId, salt, B, kdf }` |
+| `POST` | `/api/auth/login/verify` | None | SRP step 2 `{ challengeId, A, M1, upgrade? }` → JWT + `M2` |
+| `POST` | `/api/auth/refresh` | Cookie | Rotate refresh token, issue access token (409 = concurrent-tab race, retry) |
+| `POST` | `/api/auth/logout` | JWT or cookie | Revoke session |
+| `POST` | `/api/auth/change-password` | JWT + SRP proof | Change password + re-wrap DEK; revokes all other sessions |
 | `GET` | `/api/auth/sessions` | JWT | List active sessions |
 | `DELETE` | `/api/auth/sessions/:id` | JWT | Revoke specific session |
 | `POST` | `/api/auth/sessions/revoke-all` | JWT | Revoke all sessions |
-| `DELETE` | `/api/auth/account` | JWT | Delete account + all data |
+| `DELETE` | `/api/auth/account` | JWT + SRP proof | Delete account + all data (body `{ proof: { challengeId, A, M1 } }`) |
 | `GET` | `/api/notes` | JWT | Get all notes (encrypted) |
 | `GET` | `/api/notes/sync` | JWT | Delta sync (notes updated since timestamp) |
 | `PUT` | `/api/notes/:id` | JWT | Create/update note |
@@ -303,7 +303,7 @@ All endpoints are at `/api/...`.
 | `PUT` | `/api/attachments/:hash` | JWT | Upload encrypted attachment (idempotent, `ON CONFLICT DO NOTHING`) |
 | `GET` | `/api/attachments/:hash` | JWT | Download encrypted attachment |
 | `DELETE` | `/api/attachments/:hash` | JWT | Delete attachment |
-| `GET` | `/ws` | JWT (query param) | WebSocket real-time sync |
+| `GET` | `/ws` | JWT (first message) | WebSocket real-time sync |
 
 ---
 
@@ -324,10 +324,7 @@ This means:
 
 ### CORS on the backend
 
-`CORS_ORIGIN` in `.env` controls this:
-
-- Empty/unset → accept any origin (recommended for public self-hosting)
-- Specific URL → restrict to that frontend only (recommended for private servers)
+`CORS_ORIGIN` in `.env` is **required**: a comma-separated list of exact origins (`http://localhost:*` is allowed as a port wildcard for the desktop app). The server refuses to boot with `*`. Besides CORS, an `onRequest` hook in `server/src/index.ts` rejects any request whose `Origin` is not on the list with `403 origin_not_allowed`. That matters because "simple" cross-site POSTs (e.g. `/api/auth/refresh`) would otherwise still run even when CORS blocks the response. The 403 is readable by the blocked page, so the frontend can tell the user which origin to add.
 
 ---
 
@@ -335,7 +332,7 @@ This means:
 
 Multi-device real-time sync is implemented end-to-end:
 
-- **Server** (`server/src/routes/sync.ts`): WebSocket route at `GET /ws`. JWT auth via `?token=` query param. Broadcasts `note:updated` / `note:deleted` messages to all other connections for the same user.
+- **Server** (`server/src/routes/sync.ts`): WebSocket route at `GET /ws`. The client authenticates by sending `{ type: 'auth', token }` as its first message within 10 s (`?token=` is still accepted for old clients but keeps the token out of logs only when unused). Sessions are re-checked every 60 s and revoked sessions are disconnected. Broadcasts `note:updated` / `note:deleted` messages to all other connections for the same user.
 - **Client** (`bedroc/src/lib/sync/websocket.ts`): connects on login, disconnects on logout. Auto-reconnects with exponential backoff (1s → 2s → 4s → … → 60s max). Sends a keepalive ping every 30s. Wired into `+layout.svelte` via `wsConnect()` / `wsDisconnect()`.
 - **On message**: `note:updated` or `note:deleted` triggers `syncFromServer()`, which pulls and merges the delta from the server.
 
@@ -431,7 +428,12 @@ When making changes:
 - **Refresh token cookie** uses `sameSite: 'none'; Secure: true` so it is sent cross-origin from any frontend (e.g. `bedroc.cagancalidag.com` → `https://10.66.66.1`). This is required for the public-frontend / self-hosted-backend model.
 - **Session lifetime** defaults to 30 days (`JWT_REFRESH_EXPIRY=30d`). Configure via env var. The access token refreshes silently every 15 minutes (`JWT_ACCESS_EXPIRY=15m`).
 - **Offline unlock**: when the server is unreachable (network error, not 401), the app shows an unlock prompt so users can access local IndexedDB notes without connectivity.
-- **Session metadata**: each session records `login_ip` (from `X-Forwarded-For` or direct IP) and `last_used_at` (updated on every token refresh). The Settings page shows "This device" next to the current session, login timestamp, IP, and expiry. Older sessions without these fields show gracefully without errors.
+- **SRP**: server math lives in `server/src/crypto/srp.ts` (unit-tested against the client in `server/test/srp.test.ts`). `x` is derived with PBKDF2-SHA256 (600k) for `srp_kdf_version = 2`; legacy v1 accounts are upgraded during their next successful login (`upgrade` field in `/login/verify`). Unknown usernames get a deterministic fake salt and a real challenge, so responses are indistinguishable. Challenges are keyed by a random `challengeId` and are single-use (`GETDEL`).
+- **Refresh rotation**: each refresh rotates the token and stores the previous hash. Replaying the previous token within `REFRESH_REUSE_GRACE_SECONDS` (default 30) returns 409 (multi-tab race, client retries). Replaying it later revokes the whole session (theft detection). Revoked or unknown tokens are never re-issued.
+- **Refresh cookie path** is `/api/auth` (so logout receives it); the legacy `/api/auth/refresh` cookie is cleared whenever a new one is set.
+- **Note ciphertexts** are bound to `bedroc:note:<id>:title|body` via AES-GCM additional data (`v: 2` fields). Legacy fields without `v` still decrypt and are upgraded on the next save.
+- **Attachments** fetched from the server must decrypt under the DEK *and* hash to their id, or they are discarded; plaintext is never uploaded.
+- **Session metadata**: each session records `login_ip` (`req.ip`, resolved via `TRUST_PROXY` hops) and `last_used_at` (updated on every token refresh). The Settings page shows "This device" next to the current session, login timestamp, IP, and expiry. Older sessions without these fields show gracefully without errors.
 - **Device detection**: `parseDeviceInfo()` in `server/src/routes/auth.ts` parses the User-Agent string into a human-readable label. Handles: Edge (desktop `Edg/`, mobile `EdgA/`), Chrome/CrOS, Firefox, Safari, Opera, Samsung Browser, Electron. CrOS is detected before Mac/Linux to avoid false-positive "Linux" labels.
 
 ## Rate limits
@@ -454,6 +456,20 @@ Rate limits are configured per-route in `server/src/routes/` and globally in `se
 | `POST /api/auth/register` | 5 req/min | Anti-spam |
 | `POST /api/auth/login/init` | 10 req/min | Brute-force protection |
 | `POST /api/auth/login/verify` | 10 req/min | Brute-force protection |
+| `POST /api/auth/refresh` | 60 req/min | Token rotation |
+| `POST /api/auth/change-password`, `DELETE /api/auth/account` | 5 req/min | Sensitive, password-gated |
+| Per account (Redis `srp:fail:*`) | 10 failed proofs / 15 min | Lockout that does not depend on the attacker's IP |
+
+Client IPs come from `req.ip`, which honours exactly `TRUST_PROXY` proxy hops (default 1). Never use `trustProxy: true`: nginx appends to a client-supplied `X-Forwarded-For`, so trusting every hop lets clients spoof their IP and bypass the limits.
+
+### Tests
+
+```bash
+cd server && npm test                       # SRP + AES-GCM unit tests (client code vs server code)
+docker build -t bedroc-test-server server   # then the integration suite against real Postgres + Redis:
+docker compose -f server/test/docker-compose.test.yml up --abort-on-container-exit --exit-code-from tests
+docker compose -f server/test/docker-compose.test.yml down -v
+```
 
 To change a per-route limit, update `config: { rateLimit: { max: N, timeWindow: '1 minute' } }` on that route handler. To change the global fallback, update `max` in the `fastifyRateLimit` registration in `server/src/index.ts`.
 

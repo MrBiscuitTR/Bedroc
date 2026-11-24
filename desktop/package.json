@@ -1,7 +1,7 @@
 {
 	"name": "bedroc",
 	"version": "1.0.14",
-	"description": "Bedroc — private, encrypted notes",
+	"description": "Bedroc \u00e2\u20ac\u201d private, encrypted notes",
 	"homepage": "https://github.com/MrBiscuitTR/Bedroc",
 	"author": "Cagan Calidag <contact@cagancalidag.com>",
 	"repository": {
@@ -21,14 +21,14 @@
 		"dist:all": "electron-builder --win --mac --linux --projectDir ."
 	},
 	"devDependencies": {
-		"electron": "^41.2.1",
-		"electron-builder": "^26.8.1"
+		"electron": "^45.3.1",
+		"electron-builder": "^26.18.0"
 	},
 	"dependencies": {},
 	"build": {
 		"appId": "com.bedroc.app",
 		"productName": "Bedroc",
-		"copyright": "Copyright © 2025",
+		"copyright": "Copyright \u00c2\u00a9 2025",
 		"icon": "build-resources/icon.png",
 		"directories": {
 			"output": "dist",
@@ -118,5 +118,8 @@
 		"deb": {
 			"packageCategory": "utils"
 		}
+	},
+	"overrides": {
+		"undici": "^7.30.2"
 	}
 }

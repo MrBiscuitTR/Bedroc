@@ -10,10 +10,10 @@
  *   6. Run DB migrations (idempotent; safe to run every boot).
  *   7. Verify Redis connectivity.
  *   8. Register route plugins.
- *   9. Listen on the WireGuard interface only (default: 10.66.66.1).
+ *   9. Listen on HOST:PORT (default 127.0.0.1:3000; Docker sets HOST=0.0.0.0).
  *
  * Environment variables (see .env.example):
- *   HOST                 — bind address (default: 10.66.66.1)
+ *   HOST                 — bind address (default: 127.0.0.1)
  *   PORT                 — listen port (default: 3000)
  *   NODE_ENV             — 'production' | 'development'
  *   DATABASE_URL         — postgres connection string
@@ -21,10 +21,15 @@
  *   JWT_ACCESS_SECRET    — secret for signing access JWTs (min 32 chars)
  *   JWT_REFRESH_SECRET   — secret for signing refresh JWTs (min 32 chars)
  *   JWT_ACCESS_EXPIRY    — e.g. '15m'
- *   JWT_REFRESH_EXPIRY   — e.g. '7d'
- *   CORS_ORIGIN          — allowed origin (e.g. https://notes.example.com)
+ *   JWT_REFRESH_EXPIRY   — e.g. '30d'
+ *   CORS_ORIGIN          — REQUIRED. Allowed frontend origins, comma-separated
+ *   TRUST_PROXY          — reverse-proxy hops to trust (default 1)
+ *   ALLOW_REGISTRATION   — 'false' disables sign-up (default true)
  */
 
+// config.ts MUST be imported first: it validates the environment and exits on
+// insecure configuration before anything else is initialised.
+import { HOST, PORT, IS_PROD, TRUST_PROXY, isOriginAllowed } from './config.js';
 import Fastify from 'fastify';
 import fastifyHelmet from '@fastify/helmet';
 import fastifyCors from '@fastify/cors';
@@ -40,21 +45,6 @@ import syncRoutes from './routes/sync.js';
 import attachmentRoutes from './routes/attachments.js';
 
 // ---------------------------------------------------------------------------
-// Validate required env vars early so failures are obvious
-// ---------------------------------------------------------------------------
-const REQUIRED_ENV = ['DATABASE_URL', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'];
-for (const key of REQUIRED_ENV) {
-  if (!process.env[key]) {
-    console.error(`[fatal] Missing required environment variable: ${key}`);
-    process.exit(1);
-  }
-}
-
-const HOST = process.env.HOST ?? '10.66.66.1'; // WireGuard interface only
-const PORT = parseInt(process.env.PORT ?? '3000', 10);
-const IS_PROD = process.env.NODE_ENV === 'production';
-
-// ---------------------------------------------------------------------------
 // Build app
 // ---------------------------------------------------------------------------
 const app = Fastify({
@@ -65,10 +55,16 @@ const app = Fastify({
     transport: IS_PROD
       ? undefined
       : { target: 'pino-pretty', options: { colorize: true } },
+    // Never log query strings (legacy WebSocket clients put the token there).
+    serializers: {
+      req: (req: { method: string; url: string }) => ({ method: req.method, url: req.url.split('?')[0] }),
+    },
   },
-  // Trust the nginx reverse-proxy's X-Forwarded-For header for real IPs.
-  // This matters for rate limiting to work correctly behind a proxy.
-  trustProxy: true,
+  // How many reverse-proxy hops to trust for X-Forwarded-For (see config.ts).
+  // (A hop count n is expressed as "trust the n nearest hops".)
+  trustProxy: typeof TRUST_PROXY === 'number'
+    ? (_addr: string, hop: number) => hop < (TRUST_PROXY as number)
+    : TRUST_PROXY,
 });
 
 // ---------------------------------------------------------------------------
@@ -101,32 +97,43 @@ await app.register(fastifyHelmet, {
 // The frontend is served from any origin (hosted, Vercel, Electron, PWA),
 // and users point it at their own backend URL.
 //
-// CORS_ORIGIN in .env controls the policy:
-//   - Set to a specific URL (e.g. https://bedroc.cagancalidag.com) to allow
-//     only that frontend (strictest — recommended for single-user servers).
-//   - Set to '*' to allow any origin (needed if you want any frontend to work).
-//   - Unset: defaults to allow any origin (open self-hosting model).
+// CORS_ORIGIN (required) lists the exact frontend origins allowed to talk to
+// this backend, comma-separated. '*' is rejected at boot — see config.ts.
 //
-// Note: credentials:true + origin:'*' is not allowed by browsers, so we use
-// an origin callback that returns true for all origins instead.
-//
-// Security note: CORS is a browser protection, not a server auth mechanism.
-// All endpoints that need auth require a valid JWT — CORS only prevents
-// drive-by browser attacks, not API abuse from non-browser clients.
-const rawCorsOrigin = process.env.CORS_ORIGIN;
-// Support comma-separated list: CORS_ORIGIN=https://bedroc.cagancalidag.com,http://localhost:5173
-const corsOriginList = rawCorsOrigin
-  ? rawCorsOrigin.split(',').map((o) => o.trim()).filter(Boolean)
-  : [];
+// CORS alone is not enough: "simple" cross-site requests (e.g. a POST with no
+// custom headers) still reach the handler even when CORS blocks the response.
+// So we also reject any request whose Origin is not on the allowlist before
+// routing (this covers /api/auth/refresh, logout, and WebSocket upgrades).
+app.addHook('onRequest', async (req, reply) => {
+  const origin = req.headers.origin;
+  if (origin && !isOriginAllowed(origin)) {
+    // Let the blocked page READ this error (no credentials are ever allowed), so
+    // the frontend can show "add this origin to CORS_ORIGIN" instead of a
+    // generic "cannot reach server".
+    reply.header('Access-Control-Allow-Origin', origin).header('Vary', 'Origin');
+    if (req.method === 'OPTIONS') {
+      return reply
+        .header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE')
+        .header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        .code(204).send();
+    }
+    return reply.code(403).send({
+      error: 'origin_not_allowed',
+      message: `This server does not accept requests from ${origin}. Add it to CORS_ORIGIN in the server's .env file.`,
+    });
+  }
+  // Browsers always send Origin on cross-site POSTs, but belt-and-braces:
+  if (!origin && req.headers['sec-fetch-site'] === 'cross-site' && req.method !== 'GET') {
+    return reply.code(403).send({ error: 'Cross-site request blocked' });
+  }
+});
+
 await app.register(fastifyCors, {
-  origin: corsOriginList.length === 0 || corsOriginList.includes('*')
-    ? (_origin, cb) => cb(null, true)       // allow any origin
-    : (origin, cb) => {
-        // Always allow requests with no Origin header (server-to-server, curl, etc.)
-        if (!origin) return cb(null, true);
-        if (corsOriginList.includes(origin)) return cb(null, true);
-        cb(new Error(`Origin ${origin} not allowed by CORS`), false);
-      },
+  origin: (origin, cb) => {
+    // No Origin header: same-origin navigation or non-browser client (curl, health checks).
+    if (!origin) return cb(null, true);
+    cb(null, isOriginAllowed(origin));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 });
@@ -173,7 +180,8 @@ await app.register(fastifyCookie);
 // ---------------------------------------------------------------------------
 // WebSocket
 // ---------------------------------------------------------------------------
-await app.register(fastifyWebsocket);
+// maxPayload: clients only ever send tiny JSON control messages.
+await app.register(fastifyWebsocket, { options: { maxPayload: 16 * 1024 } });
 
 // ---------------------------------------------------------------------------
 // Database migrations (idempotent; safe to run every startup)
@@ -202,6 +210,18 @@ await app.register(attachmentRoutes);
 // Health check (unauthenticated — used by Docker healthcheck)
 // ---------------------------------------------------------------------------
 app.get('/health', async () => ({ ok: true }));
+
+// ---------------------------------------------------------------------------
+// Error handler — never leak internal error messages (SQL, stack details)
+// ---------------------------------------------------------------------------
+app.setErrorHandler((err: Error & { statusCode?: number }, req, reply) => {
+  const status = err.statusCode && err.statusCode >= 400 ? err.statusCode : 500;
+  if (status >= 500) {
+    req.log.error(err);
+    return reply.code(status).send({ error: 'Internal server error' });
+  }
+  return reply.code(status).send({ error: err.message });
+});
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown

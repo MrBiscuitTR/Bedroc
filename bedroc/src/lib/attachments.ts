@@ -40,8 +40,34 @@ async function sha256Hex(str: string): Promise<string> {
     .join('');
 }
 
+/** A data URI safe to substitute into an HTML attribute (no quote/markup chars). */
+const SAFE_DATA_URI = /^data:[^"'<>`\s]*$/;
+
+/**
+ * Decrypt a stored `enc:` blob and verify it really is the attachment `hash`
+ * refers to. The hash comes from the (authenticated) note body, so this stops
+ * a malicious server from substituting a different attachment, and the
+ * character check stops anything that could break out of an HTML attribute.
+ */
+async function decryptAndVerify(stored: string, hash: string, dek: CryptoKey): Promise<string | null> {
+  if (!stored.startsWith('enc:')) return null;
+  const field = JSON.parse(stored.slice(4));
+  const dataUri = await decryptField(field, dek);
+  if (!SAFE_DATA_URI.test(dataUri)) return null;
+  if ((await sha256Hex(dataUri)) !== hash) return null;
+  return dataUri;
+}
+
+/** Verify a locally stored plaintext data URI (legacy / vault-locked saves). */
+async function verifyPlain(dataUri: string, hash: string): Promise<string | null> {
+  if (!SAFE_DATA_URI.test(dataUri)) return null;
+  if ((await sha256Hex(dataUri)) !== hash) return null;
+  return dataUri;
+}
+
 /**
  * Upload a single attachment to the server if the server doesn't have it yet.
+ * Only ever uploads ciphertext (`enc:` prefix) — plaintext is refused.
  * Silently swallows network errors — offline is fine, it will upload next time.
  */
 async function uploadToServer(
@@ -50,6 +76,10 @@ async function uploadToServer(
   mimeType: string,
   sizeBytes: number
 ): Promise<void> {
+  if (!encryptedData.startsWith('enc:')) {
+    console.warn(`[attachments] Refusing to upload unencrypted attachment ${hash.slice(0, 8)}`);
+    return;
+  }
   try {
     const res = await apiFetch(`/api/attachments/${hash}`, {
       method: 'PUT',
@@ -79,24 +109,22 @@ async function fetchFromServer(
     if (!res.ok) return null;
 
     const json = await res.json() as { encryptedData: string; mimeType: string; sizeBytes: number };
-    const { encryptedData, mimeType, sizeBytes } = json;
+    const { encryptedData } = json;
+    if (typeof encryptedData !== 'string') return null;
 
-    // Cache in IndexedDB for offline use
-    const record: AttachmentRecord = {
-      hash,
-      userId,
-      dataUri: encryptedData,
-      mimeType,
-      createdAt: Date.now(),
-    };
-    await saveAttachment(record);
-
-    // Decrypt and return
-    if (encryptedData.startsWith('enc:')) {
-      const field = JSON.parse(encryptedData.slice(4));
-      return await decryptField(field, dek);
+    // The server is untrusted: only accept ciphertext that decrypts under our
+    // DEK AND hashes to the requested id. Anything else is discarded.
+    const dataUri = await decryptAndVerify(encryptedData, hash, dek);
+    if (!dataUri) {
+      console.warn(`[attachments] Server returned invalid data for ${hash.slice(0, 8)} — ignored`);
+      return null;
     }
-    return encryptedData; // plaintext fallback (shouldn't happen from server)
+
+    // Cache in IndexedDB for offline use (mime derived from the verified data URI)
+    const mimeType = dataUri.slice(5, dataUri.search(/[;,]/)) || 'application/octet-stream';
+    const record: AttachmentRecord = { hash, userId, dataUri: encryptedData, mimeType, createdAt: Date.now() };
+    await saveAttachment(record);
+    return dataUri;
   } catch {
     return null;
   }
@@ -209,18 +237,19 @@ export async function rehydrateAttachments(
 
       if (!record) return { hash, dataUri: null };
 
-      let dataUri: string | null = record.dataUri;
+      let dataUri: string | null;
 
-      if (dataUri.startsWith('enc:')) {
+      if (record.dataUri.startsWith('enc:')) {
         if (!dek) return { hash, dataUri: null }; // vault locked
         try {
-          const field = JSON.parse(dataUri.slice(4));
-          dataUri = await decryptField(field, dek);
+          dataUri = await decryptAndVerify(record.dataUri, hash, dek);
         } catch {
-          // Corrupted or wrong key — try server as fallback
-          if (dek) dataUri = await fetchFromServer(hash, userId, dek);
-          else dataUri = null;
+          dataUri = null;
         }
+        // Corrupted or wrong key — try server as fallback
+        if (!dataUri) dataUri = await fetchFromServer(hash, userId, dek);
+      } else {
+        dataUri = await verifyPlain(record.dataUri, hash);
       }
 
       return { hash, dataUri };
@@ -278,14 +307,20 @@ export async function uploadFileAttachment(
  * Called on every save and on note load to ensure attachments reach the server
  * even if the original upload silently failed. Server ignores duplicates (ON CONFLICT DO NOTHING).
  */
-export function retryAttachmentUpload(hash: string, _userId: string, _dek: CryptoKey): void {
-  getAttachment(hash).then((rec) => {
-    if (rec && rec.dataUri) {
-      const comma = rec.dataUri.indexOf(',');
-      const approxBytes = comma >= 0 ? Math.round((rec.dataUri.length - comma - 1) * 0.75) : 0;
-      uploadToServer(hash, rec.dataUri, rec.mimeType, approxBytes);
+export function retryAttachmentUpload(hash: string, _userId: string, dek: CryptoKey | null): void {
+  getAttachment(hash).then(async (rec) => {
+    if (!rec || !rec.dataUri) return;
+    let stored = rec.dataUri;
+    if (!stored.startsWith('enc:')) {
+      // Saved while the vault was locked → plaintext in IndexedDB. Encrypt it
+      // locally first; NEVER send plaintext to the server.
+      if (!dek || !(await verifyPlain(stored, hash))) return;
+      stored = `enc:${JSON.stringify(await encryptField(stored, dek))}`;
+      await saveAttachment({ ...rec, dataUri: stored });
     }
-  });
+    const approxBytes = Math.round(stored.length * 0.7);
+    uploadToServer(hash, stored, rec.mimeType, approxBytes);
+  }).catch(() => {});
 }
 
 /**
@@ -303,11 +338,12 @@ export async function loadFileAttachment(
     if (record.dataUri.startsWith('enc:')) {
       if (!dek) return null;
       try {
-        const field = JSON.parse(record.dataUri.slice(4));
-        return await decryptField(field, dek);
-      } catch { return null; }
+        const verified = await decryptAndVerify(record.dataUri, hash, dek);
+        if (verified) return verified;
+      } catch { /* fall through to server */ }
+      return fetchFromServer(hash, userId, dek);
     }
-    return record.dataUri;
+    return verifyPlain(record.dataUri, hash);
   }
 
   // Not local — fetch from server

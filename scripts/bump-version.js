@@ -10,6 +10,7 @@
 //   bedroc/static/sw.js          — service worker CACHE_NAME (bedroc-v<VERSION>)
 //   desktop/package.json         — electron app version (controls installer/build filenames)
 //   server/package.json          — backend npm package version
+//   */package-lock.json          — the packages' own version entries
 
 import { readFileSync, writeFileSync } from 'fs';
 import { resolve, dirname } from 'path';
@@ -57,6 +58,15 @@ bumpJson('desktop/package.json', j => { j.version = newVersion; });
 
 // server/package.json
 bumpJson('server/package.json', j => { j.version = newVersion; });
+
+// Lockfiles carry the package's own version too (top level + packages[""]);
+// keep them in sync so `npm ci` and diffs stay clean.
+for (const lock of ['bedroc/package-lock.json', 'desktop/package-lock.json', 'server/package-lock.json']) {
+  bumpJson(lock, j => {
+    j.version = newVersion;
+    if (j.packages && j.packages['']) j.packages[''].version = newVersion;
+  });
+}
 
 // bedroc/static/sw.js — update CACHE_NAME and SHELL_CACHE constants
 bumpText(

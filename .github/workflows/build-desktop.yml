@@ -1,83 +1,102 @@
 name: Build Desktop Apps
 
+# Builds the Electron app for Windows, macOS and Linux on GitHub's runners and
+# uploads the installers as workflow artifacts (no release is published here).
+#
+#   - Manually: Actions → "Build Desktop Apps" → Run workflow (any branch)
+#   - On a pushed v* tag
+#   - Called by release.yml, which then publishes a GitHub Release
+#
+# Security: read-only token, no secrets, every action pinned to a commit SHA,
+# installs strictly from the committed lockfiles (npm ci).
+
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref (tag/branch/SHA) to build
+        type: string
+        required: false
+        default: ''
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+permissions:
+  contents: read
 
 jobs:
-  build-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            script: dist:win
+            files: |
+              desktop/dist/*.exe
+          - name: macos
+            os: macos-latest
+            script: dist:mac
+            files: |
+              desktop/dist/*.dmg
+              desktop/dist/*.zip
+          - name: linux
+            os: ubuntu-latest
+            script: dist:linux
+            files: |
+              desktop/dist/*.AppImage
+              desktop/dist/*.deb
+              desktop/dist/*.rpm
 
-      - uses: actions/setup-node@v4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
 
-      - name: Install frontend deps and build
+      - name: Install rpm tooling
+        if: matrix.name == 'linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q rpm
+
+      - name: Build frontend
         working-directory: bedroc
-        run: npm install && npm run build
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
 
-      - name: Install desktop deps
+      # Electron's own postinstall downloads the Electron binary, so scripts stay on here.
+      - name: Install desktop dependencies
         working-directory: desktop
-        run: npm install
+        run: npm ci --no-audit --no-fund
 
-      - name: Fix app-builder-bin permissions
+      - name: Fix app-builder permissions (Linux)
+        if: matrix.name == 'linux'
         working-directory: desktop
-        run: chmod +x ./node_modules/app-builder-bin/linux/x64/app-builder
+        run: |
+          if [ -f node_modules/app-builder-bin/linux/x64/app-builder ]; then
+            chmod +x node_modules/app-builder-bin/linux/x64/app-builder
+          fi
 
-      - name: Build Linux (AppImage + deb + rpm)
+      - name: Build installers
         working-directory: desktop
-        run: npm run dist:linux
+        # --publish never: this job only builds; release.yml publishes.
+        run: npm run ${{ matrix.script }} -- --publish never
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-builds
-          path: |
-            desktop/dist/*.AppImage
-            desktop/dist/*.deb
-            desktop/dist/*.rpm
-          if-no-files-found: warn
-
-  build-mac:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install frontend deps and build
-        working-directory: bedroc
-        run: npm install && npm run build
-
-      - name: Install desktop deps
-        working-directory: desktop
-        run: npm install
-
-      - name: Build macOS (dmg + zip)
-        working-directory: desktop
-        run: npm run dist:mac
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Code signing is skipped (no Apple Developer cert in CI).
-          # Users will need to right-click → Open the first time on macOS.
+          # No Apple Developer certificate: build unsigned (users right-click → Open once).
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: mac-builds
-          path: |
-            desktop/dist/*.dmg
-            desktop/dist/*.zip
-          if-no-files-found: warn
+          name: desktop-${{ matrix.name }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+          retention-days: 14

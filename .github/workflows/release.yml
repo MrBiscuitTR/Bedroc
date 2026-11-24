@@ -1,0 +1,129 @@
+name: Release
+
+# One-click release. GitHub → Actions → "Release" → Run workflow → pick the bump:
+#   patch  1.1.0 → 1.1.1   fixes
+#   minor  1.1.0 → 1.2.0   new features / protocol changes
+#   major  1.1.0 → 2.0.0   breaking changes
+#
+# What it does:
+#   1. Bumps the version in every package (+ lockfiles, + service-worker cache
+#      name), commits "Release vX.Y.Z" to main and tags it.
+#      → Vercel redeploys main, so the web app shows the new version.
+#   2. Builds the desktop app on Windows, macOS and Linux (build-desktop.yml).
+#   3. Publishes a GitHub Release with all installers and generated notes.
+#
+# If a build fails after step 1, fix the cause and use "Re-run failed jobs" on
+# that run — the version commit/tag already exist and are reused.
+# Requires that github-actions may push to main (no PR-only branch protection).
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Bump version, commit and tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      tag: ${{ steps.next.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Compute next version
+        id: next
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          current=$(node -p "require('./bedroc/package.json').version")
+          next=$(node -e '
+            const [maj, min, pat] = process.argv[1].split(".").map(Number);
+            const b = process.env.BUMP;
+            const v = b === "major" ? [maj + 1, 0, 0] : b === "minor" ? [maj, min + 1, 0] : [maj, min, pat + 1];
+            console.log(v.join("."));
+          ' "$current")
+          tag="v$next"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::Tag $tag already exists. Pick a bigger bump, or delete the tag if it was a failed attempt."
+            exit 1
+          fi
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "### Releasing $current → $next" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Bump version everywhere
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+        run: node scripts/bump-version.js "$VERSION"
+
+      - name: Commit, tag and push
+        env:
+          TAG: ${{ steps.next.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bedroc/package.json bedroc/package-lock.json bedroc/static/sw.js \
+                  desktop/package.json desktop/package-lock.json \
+                  server/package.json server/package-lock.json
+          git commit -m "Release $TAG"
+          git tag -a "$TAG" -m "Bedroc $TAG"
+          # Atomic: either both the commit and the tag land, or neither does
+          # (fails safely if main moved in the meantime).
+          git push --atomic origin HEAD:main "refs/tags/$TAG"
+
+  build:
+    name: Build desktop apps
+    needs: version
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-desktop.yml
+    with:
+      ref: ${{ needs.version.outputs.tag }}
+
+  publish:
+    name: Publish GitHub Release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          ls -la dist
+          gh release create "$TAG" dist/* \
+            --repo "$REPO" \
+            --title "Bedroc $TAG" \
+            --generate-notes \
+            --verify-tag
+          echo "### Published [Bedroc $TAG](https://github.com/$REPO/releases/tag/$TAG)" >> "$GITHUB_STEP_SUMMARY"

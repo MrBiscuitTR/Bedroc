@@ -7,6 +7,29 @@ like on the web app.
 
 ---
 
+## Releasing — the automatic way (recommended, no local tools needed)
+
+1. On GitHub: **Actions → Release → Run workflow**, choose the bump and click **Run workflow**:
+   - `patch` (1.1.0 → 1.1.1) for fixes
+   - `minor` (1.1.0 → 1.2.0) for new features or protocol changes
+   - `major` (1.1.0 → 2.0.0) for breaking changes
+2. Wait about 15 minutes. The workflow:
+   - bumps the version everywhere (`bedroc/`, `desktop/`, `server/` package files and lockfiles, plus the service-worker cache name), commits `Release vX.Y.Z` to `main` and tags it. Vercel redeploys `main`, so the web app shows the new version (**Settings → version line**, and the login page).
+   - builds the desktop app on **Windows, macOS and Linux** runners.
+   - publishes a **GitHub Release** `vX.Y.Z` with all installers and auto-generated notes.
+
+Files in the release: `Bedroc Setup X.Y.Z.exe` (Windows installer), `.dmg`/`.zip` for Intel and Apple Silicon Macs, and `.AppImage`, `.deb`, `.rpm` for Linux. All are unsigned: Windows SmartScreen shows "More info → Run anyway" once, and macOS needs right-click → Open the first time.
+
+**Test builds without releasing:** Actions → **Build Desktop Apps** → Run workflow (pick any branch). The installers appear as downloadable artifacts on the run page (kept for 14 days).
+
+**If the release run fails** after the version commit (e.g. a flaky runner), fix the cause if there is one and click **Re-run failed jobs** on that run. The commit and tag already exist and are reused. Starting a new Release run instead would bump the version again.
+
+**Requirements:** `main` must allow pushes from `github-actions[bot]` (no rule that requires every change to go through a pull request). The workflows use only GitHub's official actions, pinned to exact commits, with read-only permissions except where a job must push the version commit or create the release.
+
+The manual steps below remain for building on your own machine.
+
+---
+
 ## Prerequisites
 
 | Tool | Version | Install |
@@ -199,83 +222,16 @@ Recommended naming convention on the download page:
 
 ## Automating builds with GitHub Actions
 
-Create `.github/workflows/desktop-release.yml` to build on all three platforms
-in parallel when you push a version tag:
+Already set up; see "Releasing — the automatic way" at the top:
 
-```yaml
-name: Desktop Release
-
-on:
-  push:
-    tags:
-      - 'v*'
-
-jobs:
-  build:
-    strategy:
-      matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Build frontend
-        run: cd bedroc && npm install && npm run build
-
-      - name: Install desktop deps
-        run: cd desktop && npm install
-
-      - name: Build installers
-        run: cd desktop && npm run dist
-        env:
-          # macOS signing (optional — set in GitHub repo secrets)
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ matrix.os }}
-          path: desktop/dist/
-          retention-days: 7
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/**/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
-
-Push a tag to trigger it:
-```bash
-git tag v0.0.1 && git push origin v0.0.1
-```
+- `.github/workflows/build-desktop.yml`: builds Windows + macOS + Linux. Runs manually, on pushed `v*` tags, or when called by the release workflow.
+- `.github/workflows/release.yml`: version bump → commit + tag → build → GitHub Release.
 
 ---
 
 ## Updating the version number
 
-The app version is read from `desktop/package.json` → `"version"`.
-Update it there before building a new release. The installer filenames
-will pick it up automatically.
-
-If you want the web app and desktop app to share the same version, also
-update `bedroc/package.json` → `"version"` to match.
+Don't edit versions by hand: the Release workflow does it. For a local build, run `node scripts/bump-version.js X.Y.Z`. It keeps `bedroc/`, `desktop/` and `server/` (package files and lockfiles) plus the service-worker cache name in sync. The web app shows this version together with the git commit hash.
 
 ---
 

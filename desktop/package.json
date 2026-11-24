@@ -1,7 +1,7 @@
 {
 	"name": "bedroc",
 	"version": "1.0.14",
-	"description": "Bedroc \u00e2\u20ac\u201d private, encrypted notes",
+	"description": "Bedroc — private, encrypted notes",
 	"homepage": "https://github.com/MrBiscuitTR/Bedroc",
 	"author": "Cagan Calidag <contact@cagancalidag.com>",
 	"repository": {
@@ -28,7 +28,7 @@
 	"build": {
 		"appId": "com.bedroc.app",
 		"productName": "Bedroc",
-		"copyright": "Copyright \u00c2\u00a9 2025",
+		"copyright": "Copyright © 2025",
 		"icon": "build-resources/icon.png",
 		"directories": {
 			"output": "dist",

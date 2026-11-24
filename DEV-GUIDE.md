@@ -500,7 +500,9 @@ To change a per-route limit, update `config: { rateLimit: { max: N, timeWindow: 
 
 ## Bumping the app version
 
-Use the version bump script whenever you cut a release or want to keep all version strings in sync.
+**Normally you don't run this yourself.** GitHub → Actions → **Release** → Run workflow (patch/minor/major) runs the script, commits `Release vX.Y.Z` to `main`, tags it, builds the desktop apps for all three OSes and publishes the GitHub Release (see DESKTOP-RELEASE.md). Vercel then redeploys with the new version. The UI shows `v<package.json version> <commit hash>`, so the version only changes when a release is cut.
+
+Use the script directly only for local builds.
 
 ### What gets updated
 
@@ -511,7 +513,7 @@ Use the version bump script whenever you cut a release or want to keep all versi
 | `server/package.json` | `"version"` |
 | `bedroc/static/sw.js` | `CACHE_NAME` and `SHELL_CACHE` constants — changing these forces all clients to re-download the service worker cache on next visit |
 
-`package-lock.json` files are auto-generated and do **not** need manual editing — they update themselves the next time `npm install` runs.
+| `*/package-lock.json` | the package's own `"version"` (top level and `packages[""]`), kept in sync so `npm ci` stays clean |
 
 ### Running the script
 

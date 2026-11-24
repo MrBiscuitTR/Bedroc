@@ -72,8 +72,15 @@ web_modules/
 # Yarn Integrity file
 .yarn-integrity
 
-# dotenv environment variable files
+# dotenv environment variable files — every env file holds secrets.
+# Only the documented template (.env.example) is tracked.
 .env
+.env.*
+!.env.example
+*.bak-*
+
+# Database backups made by bedroc.sh (contain user data)
+backups/
 .env.development.local
 .env.test.local
 .env.production.local

@@ -38,7 +38,7 @@ import {
 import { hashToken, verifyAuth, type AuthedRequest } from '../middleware/auth.js';
 import { getRedis } from '../plugins/redis.js';
 import { writeAccessLog } from '../plugins/accessLog.js';
-import { ALLOW_REGISTRATION, JWT_REFRESH_SECRET } from '../config.js';
+import { ALLOW_REGISTRATION, JWT_REFRESH_SECRET, RECORD_LOGIN_IP } from '../config.js';
 import {
   isValidVerifier, serverEphemeral, fakeServerEphemeral,
   fakeSalt, encodeB, verifyProof, dummyProofWork,
@@ -166,7 +166,7 @@ async function startSession(
     tokenHash:        hashToken(t.accessToken),
     refreshTokenHash: hashToken(t.refreshToken),
     deviceInfo:       deviceInfoOf(req) || null,
-    loginIp:          getClientIp(req),
+    loginIp:          RECORD_LOGIN_IP ? getClientIp(req) : null,
     expiresAt:        t.refreshExpiresAt,
   });
   setRefreshCookie(reply, t.refreshToken, t.refreshMaxAge);

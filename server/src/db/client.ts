@@ -44,27 +44,49 @@ pool.on('error', (err) => {
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
+const MIGRATIONS = [
+  '001_init.sql',
+  '002_session_refresh_hash.sql',
+  '003_session_metadata.sql',
+  '004_attachments.sql',
+  '005_security_hardening.sql',
+];
+
+/** Postgres error codes meaning "this role may not do that" (not owner / no privilege). */
+const PRIVILEGE_ERRORS = new Set(['42501']);
+
 /**
- * Run all SQL migrations in order on startup.
- * Idempotent: each migration uses IF NOT EXISTS / CREATE OR REPLACE.
+ * Run all SQL migrations in order. Idempotent: each migration uses
+ * IF NOT EXISTS / CREATE OR REPLACE, so running them on every deploy is safe.
  *
- * Uses POSTGRES_URL (superuser) if available so migrations can CREATE EXTENSION,
- * CREATE TABLE etc. without requiring elevated grants on bedroc_app.
+ * Least privilege: migrations first run as the application role (DATABASE_URL).
+ * Only if that role lacks the privilege (e.g. older installs where the tables
+ * are owned by the `postgres` superuser) are they retried with POSTGRES_URL.
+ * In Docker this runs in the short-lived `migrate` container, so the
+ * long-running API server never holds the superuser password.
  */
 export async function runMigrations(): Promise<void> {
-  const migrationUrl = process.env.POSTGRES_URL ?? process.env.DATABASE_URL;
-  const migrationClient = new pg.Client({ connectionString: migrationUrl });
+  const appUrl = process.env.DATABASE_URL;
+  const superUrl = process.env.POSTGRES_URL;
+  try {
+    await runMigrationsAs(appUrl);
+  } catch (err) {
+    const code = (err as { code?: string }).code ?? '';
+    if (superUrl && superUrl !== appUrl && PRIVILEGE_ERRORS.has(code)) {
+      console.log('[db] Application role lacks privileges for this migration; retrying as the database owner.');
+      await runMigrationsAs(superUrl);
+      return;
+    }
+    throw err;
+  }
+}
+
+async function runMigrationsAs(connectionString: string | undefined): Promise<void> {
+  const migrationClient = new pg.Client({ connectionString });
   await migrationClient.connect();
 
-  const migrations = [
-    '001_init.sql',
-    '002_session_refresh_hash.sql',
-    '003_session_metadata.sql',
-    '004_attachments.sql',
-    '005_security_hardening.sql',
-  ];
   try {
-    for (const file of migrations) {
+    for (const file of MIGRATIONS) {
       const sqlPath = join(__dir, 'migrations', file);
       const sql = readFileSync(sqlPath, 'utf8');
       await migrationClient.query('BEGIN');

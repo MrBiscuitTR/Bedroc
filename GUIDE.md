@@ -87,15 +87,15 @@ echo \
 sudo apt-get update
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-# Allow running docker without sudo (log out and back in after this)
-sudo usermod -aG docker $USER
 ```
 
-Log out and log back in, then verify:
+Verify:
 ```bash
-docker --version
-docker compose version
+sudo docker --version
+sudo docker compose version
 ```
+
+> **You don't need to join the `docker` group.** `bash bedroc.sh` detects when Docker needs root and re-runs itself with `sudo` (one password prompt). Membership in the `docker` group is equivalent to root access, so on a server it's safer to leave it out.
 
 ### Linux (Fedora / RHEL / CentOS)
 
@@ -104,14 +104,9 @@ sudo dnf -y install dnf-plugins-core
 sudo dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
 sudo dnf install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo systemctl enable --now docker
-sudo usermod -aG docker $USER
 ```
 
-Log out and back in, then verify:
-```bash
-docker --version
-docker compose version
-```
+Verify with `sudo docker compose version`. As on Debian/Ubuntu, you don't need to join the `docker` group.
 
 ---
 
@@ -195,22 +190,14 @@ openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
 
 > **Tailscale HTTPS (optional):** If you enable [Tailscale HTTPS](https://tailscale.com/kb/1153/enabling-https/) (`tailscale serve`), you get a real Let's Encrypt certificate for a `*.ts.net` domain. You can then use that domain instead of the raw IP — browsers will trust it without a warning. This is the cleanest option if you want it. See the Tailscale docs for setup.
 
-#### 5. Update docker-compose.yml to bind to the Tailscale IP
+#### 5. Set up Bedroc on the Tailscale IP
 
-Open `docker-compose.yml` and change the `nginx` ports section:
-
-```yaml
-ports:
-  - "100.64.X.X:80:80"     # replace with your actual Tailscale IP
-  - "100.64.X.X:443:443"
-```
-
-If you enabled Tailscale HTTPS and are using `tailscale serve`, you can skip the nginx binding change and use Tailscale as the TLS terminator instead.
+Run `bash bedroc.sh setup` (see Part 3), choose **wireguard**, and enter your Tailscale IP (`100.x.y.z`) as the address to listen on. No compose file edits are needed: the address lives in `.env` as `BIND_IP`.
 
 #### 6. Start the server
 
 ```bash
-docker compose up -d
+bash bedroc.sh up
 ```
 
 #### 7. Connect from your devices
@@ -342,64 +329,41 @@ cd Bedroc
 
 Or download and extract the ZIP from GitHub.
 
-### Create the SSL certificate
-
-Even with WireGuard, the app needs HTTPS so the browser allows access to encrypted storage and service workers (required for offline/PWA functionality). A self-signed certificate is fine — WireGuard peers trust it because they're connecting over an already-encrypted tunnel.
+### Run the setup
 
 ```bash
-mkdir -p docker/ssl
-openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
-  -keyout docker/ssl/key.pem \
-  -out docker/ssl/cert.pem \
-  -subj "/CN=bedroc" \
-  -addext "subjectAltName=IP:10.66.66.1"
+bash bedroc.sh setup
 ```
 
-> If you're using a public domain instead of WireGuard, generate a real certificate with [Let's Encrypt / Certbot](https://certbot.eff.org/) and place `fullchain.pem` → `cert.pem` and `privkey.pem` → `key.pem`.
+Choose **2) wireguard**, enter your WireGuard/Tailscale/LAN IP (default `10.66.66.1`), and accept the suggested origins. The script:
 
-### Create your `.env` file
+- creates `.env` (mode 600) with **freshly generated secrets**. Nothing needs to be copied or pasted, and every secret is unique.
+- offers to create a self-signed TLS certificate for that IP in `docker/ssl/`. Even inside a VPN the browser needs HTTPS for encrypted storage, service workers and installing as an app; a self-signed certificate is fine over an already-encrypted tunnel.
+- never overwrites an existing env file.
 
-```bash
-cp .env.example .env
-```
+> Prefer to do it by hand? Copy `.env.example` to `.env`, fill in every `CHANGE_THIS` value (`openssl rand -hex 32`), set `BIND_IP`, run `chmod 600 .env`, and put `cert.pem` + `key.pem` into `docker/ssl/`.
 
-Open `.env` in a text editor and fill in:
-
-| Variable | What to put |
-|---|---|
-| `POSTGRES_PASSWORD` | Any long random string — this is the database admin password |
-| `DATABASE_URL` | Replace `CHANGE_THIS_DB_PASSWORD` with the same string you put in `POSTGRES_PASSWORD` |
-| `JWT_ACCESS_SECRET` | Run `openssl rand -hex 32` and paste the output |
-| `JWT_REFRESH_SECRET` | Run `openssl rand -hex 32` **again** (must be different from above) |
-| `CORS_ORIGIN` | **Required.** Comma-separated list of every frontend origin you use, e.g. `https://bedroc.cagancalidag.com,https://10.66.66.1,http://localhost:*` |
-
-**`CORS_ORIGIN` is required and must not be `*`.** The login cookie is sent cross-site, so allowing every origin would let any website you visit take over your session. List exactly the places you open Bedroc from: the public frontend (`https://bedroc.cagancalidag.com`), the address you browse to when this stack serves the UI itself (e.g. `https://10.66.66.1`), and `http://localhost:*` for the desktop app. If a frontend is missing, the app shows *"This server does not accept requests from …"* — add that origin and restart the server.
-
-**How to generate secrets:**
-
-```bash
-openssl rand -hex 32
-```
-Run this twice to get two different secrets for `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET`.
+**About `CORS_ORIGIN`:** it is required and must not be `*`. The login cookie is sent cross-site, so allowing every origin would let any website you visit take over your session. It must list every place you open Bedroc from: this server's own address (`https://10.66.66.1`, plus `:port` if not 443), the public frontend (`https://bedroc.cagancalidag.com`) if you use it, and `http://localhost:*` for the desktop app. If an origin is missing, the app shows *"This server does not accept requests from …"*. Add it and run `bash bedroc.sh up`.
 
 ### Start the server
 
 ```bash
-docker compose up -d
+bash bedroc.sh up
 ```
 
-Docker will download all required images (this takes a few minutes the first time), build the containers, and start everything. To check that all services are healthy:
+The script first checks everything: Docker access, env file, that `BIND_IP` exists on this machine, free ports, certificate, disk space. Then it builds the images (a few minutes the first time), starts the stack and waits until every service is healthy. If something is wrong it says what and how to fix it. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for details.
 
-```bash
-docker compose ps
-```
+What runs, and how it's locked down:
 
-All services should show `healthy` or `running`. If any show `unhealthy`, check the logs:
+| Container | Role | Reachable from |
+| --- | --- | --- |
+| `nginx` | TLS, serves the app, proxies `/api` | **only** `BIND_IP:80/443` |
+| `bedroc` | static frontend (unprivileged nginx) | nginx only |
+| `server` | API | nginx only |
+| `postgres`, `redis` | database, login challenges | the API only, no internet access |
+| `migrate` | runs database migrations, then exits | — |
 
-```bash
-docker compose logs server
-docker compose logs postgres
-```
+Every container runs with a read-only filesystem, no Linux capabilities (except the few nginx/Postgres need to drop to their own users), `no-new-privileges`, process limits and size-capped logs. The API server never receives the database superuser password, and Redis is password-protected.
 
 ---
 
@@ -417,17 +381,7 @@ docker compose logs postgres
 
 ### If using a public domain
 
-1. Point your domain's DNS A record to your VPS IP
-2. Generate a real SSL certificate with Certbot:
-   ```bash
-   sudo apt-get install -y certbot
-   sudo certbot certonly --standalone -d api.yourdomain.com
-   sudo cp /etc/letsencrypt/live/api.yourdomain.com/fullchain.pem docker/ssl/cert.pem
-   sudo cp /etc/letsencrypt/live/api.yourdomain.com/privkey.pem docker/ssl/key.pem
-   ```
-3. Update `docker/nginx/nginx.conf` — change `10.66.66.1` to `0.0.0.0` in the `listen` directives, and set the `server_name` to your domain
-4. Run `docker compose up -d --build`
-5. Open `https://bedroc.cagancalidag.com`, tap **Server**, and enter `https://api.yourdomain.com`
+Use the **public** stack instead: it runs only the API on `127.0.0.1` behind a reverse proxy such as Caddy, which handles certificates automatically. Follow [VPS-DEPLOY.md](VPS-DEPLOY.md). Don't bind the WireGuard stack to `0.0.0.0`.
 
 ### Entering your server URL
 
@@ -458,40 +412,26 @@ Once installed, the app works offline and loads instantly from cache. Notes you'
 
 ## Managing the server
 
-### Stopping and starting
+Everything goes through `bash bedroc.sh` (run `bash bedroc.sh help` for the full list):
 
 ```bash
-# Stop all services
-docker compose down
-
-# Start again
-docker compose up -d
-
-# Restart a single service
-docker compose restart server
-```
-
-### Viewing logs
-
-```bash
-# All services
-docker compose logs -f
-
-# Just the backend
-docker compose logs -f server
-
-# Last 50 lines
-docker compose logs --tail=50 server
+bash bedroc.sh status            # containers, health, data volume, latest backup
+bash bedroc.sh logs server -f    # follow the API log (also: nginx, postgres, redis, migrate, bedroc)
+bash bedroc.sh restart server    # restart one service
+bash bedroc.sh down              # stop everything (data is kept)
+bash bedroc.sh up                # start again / apply env changes
+bash bedroc.sh admin start       # Adminer DB GUI on BIND_IP:8080 (stop with: admin stop)
+bash bedroc.sh compose <args>    # any docker compose command with the right project + env file
 ```
 
 ### Updating to a new version
 
 ```bash
 git pull
-docker compose up -d --build
+bash bedroc.sh update
 ```
 
-Docker rebuilds only what changed. Your data is untouched (it lives in Docker volumes, not in the container).
+It takes a verified backup, rebuilds, restarts and health-checks; if anything fails, it stops and tells you how to roll back. Details and the one-time notes for older installs are in [UPGRADING.md](UPGRADING.md).
 
 ### Changing the maximum attachment size
 
@@ -521,52 +461,28 @@ The relationship between these numbers:
 - `MAX_ENCRYPTED_DATA_LENGTH` ≈ `sizeBytes * 1.37` (base64 overhead) + a few hundred bytes for the JSON envelope.
 - `bodyLimit` = `MAX_ENCRYPTED_DATA_LENGTH` + ~1 MB safety margin.
 
-After changing, rebuild and restart the server:
-
-```bash
-docker compose up -d --build server
-```
+After changing, rebuild and restart: `bash bedroc.sh up`.
 
 ---
 
 ## Backing up your data
 
-All note data is stored in a Docker volume called `bedroc_postgres_data`. To back it up:
+All data lives in the Docker volume `<project>_postgres_data` (`bash bedroc.sh status` shows the name).
 
 ```bash
-# Create a backup file (timestamped)
-docker compose exec postgres pg_dump -U postgres bedroc \
-  | gzip > bedroc-backup-$(date +%Y%m%d-%H%M%S).sql.gz
+bash bedroc.sh backup                        # verified dump into ./backups/ (mode 600)
+bash bedroc.sh restore backups/<file>.dump   # replaces the database; asks you to type the project name
 ```
 
-The file can be large if you have many notes, but the data is already encrypted — the backup file is safe to store in the cloud (Dropbox, S3, etc.).
+Restore first takes a backup of the current state, so it can be undone. It also accepts `.sql` / `.sql.gz` files from older `pg_dump` cron jobs.
 
-### Restoring a backup
+The dump contains encrypted notes, but also usernames, password verifiers and plaintext topic/folder names. Keep backups private, and **keep a copy of your `.env` separately**: a restored database is useless without its secrets.
 
-```bash
-# Stop the server first
-docker compose stop server
+Nightly backups (cron, as root):
 
-# Drop and recreate the database
-docker compose exec postgres dropdb -U postgres bedroc
-docker compose exec postgres createdb -U postgres bedroc
-
-# Restore
-gunzip -c bedroc-backup-TIMESTAMP.sql.gz | docker compose exec -T postgres psql -U postgres bedroc
-
-# Start again
-docker compose start server
-```
-
-### Automating backups (Linux — cron)
-
-```bash
-crontab -e
-```
-
-Add this line to back up every day at 3am:
-```
-0 3 * * * cd /path/to/Bedroc && docker compose exec -T postgres pg_dump -U postgres bedroc | gzip > /backups/bedroc-$(date +\%Y\%m\%d).sql.gz
+```cron
+# /etc/cron.d/bedroc-backup
+15 3 * * * root cd /path/to/Bedroc && bash bedroc.sh backup >> /var/log/bedroc-backup.log 2>&1
 ```
 
 ### Adjusting rate limits
@@ -607,11 +523,7 @@ Current defaults:
 | `POST /api/auth/register` | 5 req/min |
 | `POST /api/auth/login/init` and `/verify` | 10 req/min per IP, plus a per-account lock after 10 failed passwords in 15 min |
 
-After changing limits, rebuild the server container:
-
-```bash
-docker compose up -d --build server
-```
+After changing limits, rebuild: `bash bedroc.sh up`.
 
 ---
 
@@ -628,9 +540,9 @@ docker compose up -d --build server
 
 1. Check that the server field shows the correct URL (tap it on the login page)
 2. Make sure you're connected to WireGuard (if using VPN setup)
-3. Check that all Docker containers are running: `docker compose ps` — all should show `healthy`
-4. Test the health endpoint from the server itself: `curl -k https://10.66.66.1/health` (or `curl http://localhost:3000/health` inside the server container)
-5. Check the server logs: `docker compose logs server`
+3. Check the stack: `bash bedroc.sh status` (all should show `healthy`)
+4. Test the health endpoint from the server itself: `curl -k https://10.66.66.1/health`
+5. Check the server logs: `bash bedroc.sh logs server`
 
 ### "Certificate error" / browser warning
 
@@ -658,25 +570,9 @@ If you edited the same note on two devices while offline, the app will detect th
 
 The server field is on the login page. Tap the "Server: ..." line to see or change it.
 
-### Database won't start
+### Database won't start, ports in use, permission errors, …
 
-Check logs: `docker compose logs postgres`. The most common cause is a permissions issue on the data volume. Try:
-```bash
-docker compose down -v   # WARNING: this deletes the database
-docker compose up -d
-```
-
-> Only use `-v` if you don't have data you care about, or have a backup.
-
-### Port conflict: something else is already on port 443 or 80
-
-Edit `docker-compose.yml` and change the host port:
-```yaml
-ports:
-  - "10.66.66.1:8443:443"
-  - "10.66.66.1:8080:80"
-```
-Then connect to `https://10.66.66.1:8443` instead.
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md). It covers Docker permissions, port conflicts, missing `BIND_IP`, umask and SELinux, and database password mismatches. Don't use `docker compose down -v` to "fix" a database problem: it deletes all data.
 
 ---
 

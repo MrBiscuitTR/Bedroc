@@ -186,9 +186,13 @@ await app.register(fastifyWebsocket, { options: { maxPayload: 16 * 1024 } });
 // ---------------------------------------------------------------------------
 // Database migrations (idempotent; safe to run every startup)
 // ---------------------------------------------------------------------------
-app.log.info('Running database migrations…');
-await runMigrations();
-app.log.info('Migrations complete.');
+// In Docker the separate `migrate` service runs these first (RUN_MIGRATIONS=false
+// here), so the API server never needs the superuser password.
+if (process.env.RUN_MIGRATIONS !== 'false') {
+  app.log.info('Running database migrations…');
+  await runMigrations();
+  app.log.info('Migrations complete.');
+}
 
 // ---------------------------------------------------------------------------
 // Redis connectivity check

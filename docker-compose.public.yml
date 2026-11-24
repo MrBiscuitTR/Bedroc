@@ -1,114 +1,217 @@
 # =============================================================================
-# docker-compose.public.yml — Bedroc public VPS stack
+# docker-compose.public.yml — Bedroc public VPS stack (API only)
 # =============================================================================
 #
-# Use this on a public VPS (DigitalOcean, Hetzner, Vultr, etc.) where Caddy
-# (installed on the host) handles TLS termination and proxies to this stack.
+# For a VPS where a reverse proxy on the HOST (Caddy, nginx, …) terminates TLS
+# and forwards to 127.0.0.1:${BEDROC_PORT:-3000}. The frontend is served
+# elsewhere (e.g. the hosted frontend on Vercel).
 #
-# Differences from docker-compose.yml (WireGuard/private):
-#   - No nginx container — Caddy on the host handles TLS
-#   - No bedroc container — frontend is served from Vercel (bedroc.cagancalidag.com)
-#   - Server binds to 127.0.0.1:3000 (localhost only, Caddy proxies to it)
-#   - ENABLE_ACCESS_LOG=true — writes login/register events to logs/access.log
-#   - logs/ volume mounted to host for persistent, readable log files
+# Manage it with the helper script (recommended — adds safety checks, backups):
+#   bash bedroc.sh setup      # first time: creates .env.public with fresh secrets
+#   bash bedroc.sh up         # start / apply changes
+#   bash bedroc.sh update     # after `git pull`: backup → rebuild → restart
 #
-# Usage:
-#   cp .env.example .env.public
-#   # Edit .env.public — fill in all secrets (see VPS-DEPLOY.md)
-#   docker compose -f docker-compose.public.yml --env-file .env.public up -d
+# Or directly (always with the same project name — it selects your data volume):
+#   docker compose -p bedroc-public -f docker-compose.public.yml --env-file .env.public up -d --build
 #
+# Hardening applied to every container:
+#   - no-new-privileges, ALL Linux capabilities dropped (a few added back only
+#     where the official image's entrypoint needs them to drop to its own user)
+#   - read-only root filesystem (writable tmpfs only where required)
+#   - process-count limits, bounded log files
+#   - PostgreSQL and Redis sit on an `internal` network: no host ports, no
+#     internet access. Only the API server is reachable, and only on 127.0.0.1.
+#   - Database migrations run in a short-lived `migrate` container, so the
+#     long-running API server never holds the PostgreSQL superuser password.
+#
+# DO NOT rename the services or the `postgres_data` volume: the volume name
+# (bedroc-public_postgres_data) is where your existing data lives.
 # =============================================================================
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
 
 services:
 
   # ── PostgreSQL 16 ───────────────────────────────────────────────────────────
   postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
+    <<: *hardening
+    build:
+      context: ./docker/postgres
+    # The official entrypoint starts as root only to fix data-dir ownership,
+    # then switches to the postgres user. These are the capabilities it needs.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    read_only: true
+    tmpfs:
+      - /var/run/postgresql
+      - /tmp
+    shm_size: 128mb
+    pids_limit: 256
     environment:
       POSTGRES_DB: bedroc
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      DATABASE_URL: ${DATABASE_URL}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set in your env file}
+      # Read by the first-boot init script to create the least-privilege app user
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is not set in your env file}
+      # Only affects a brand-new database (ignored for existing data)
+      POSTGRES_INITDB_ARGS: --data-checksums
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./docker/postgres/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
     networks:
-      - internal
-    # NOT exposed on any host port — internal Docker network only
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d bedroc"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 6
       start_period: 30s
 
-  # ── Redis 7 ─────────────────────────────────────────────────────────────────
+  # ── Redis 7 (password-protected, memory only) ───────────────────────────────
+  # Holds only short-lived login challenges and failed-login counters, so it
+  # keeps nothing on disk. The password is written to a tmpfs config file so it
+  # never appears in the process list.
   redis:
+    <<: *hardening
     image: redis:7.4-alpine
-    restart: unless-stopped
-    command: redis-server --save 60 1 --loglevel warning
-    volumes:
-      - redis_data:/data
+    user: redis
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m,mode=1777
+    pids_limit: 64
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is not set in your env file — run "bash bedroc.sh check" to add one}
+    command:
+      - sh
+      - -c
+      - |
+        umask 077
+        {
+          printf 'requirepass %s\n' "$$REDIS_PASSWORD"
+          printf 'save ""\nappendonly no\nprotected-mode yes\nloglevel warning\n'
+          printf 'rename-command CONFIG ""\nrename-command DEBUG ""\nrename-command MODULE ""\n'
+          printf 'rename-command REPLICAOF ""\nrename-command SLAVEOF ""\n'
+        } > /tmp/redis.conf
+        exec redis-server /tmp/redis.conf
     networks:
-      - internal
-    # NOT exposed on any host port — internal Docker network only
+      - backend
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 5
 
-  # ── Fastify backend ──────────────────────────────────────────────────────────
-  server:
+  # ── One-shot database migrations ────────────────────────────────────────────
+  # Runs before every start of the API server, then exits. Tries the app role
+  # first and only falls back to the superuser when an old install needs it.
+  migrate:
+    <<: *hardening
+    restart: "no"
     build:
       context: ./server
-      dockerfile: Dockerfile
-    restart: unless-stopped
+    entrypoint: ["node", "dist/migrate.js"]
+    read_only: true
+    tmpfs:
+      - /tmp
     environment:
-      HOST: 0.0.0.0        # Bind inside the container; port mapping locks to 127.0.0.1 below
-      PORT: 3000
       NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL}
-      # POSTGRES_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/bedroc
-      REDIS_URL: ${REDIS_URL}
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      POSTGRES_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/bedroc
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Fastify API server ──────────────────────────────────────────────────────
+  server:
+    <<: *hardening
+    build:
+      context: ./server
+    read_only: true
+    tmpfs:
+      - /tmp
+    pids_limit: 256
+    environment:
+      HOST: 0.0.0.0        # inside the container; the port mapping below limits exposure
+      PORT: 3000
+      NODE_ENV: production
+      RUN_MIGRATIONS: "false"   # done by the migrate service
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is not set in your env file}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is not set in your env file}
       JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
       JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-30d}
       # Required — the server refuses to start without it (see .env.example)
       CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN must be set in your env file (see .env.example)}
       TRUST_PROXY: ${TRUST_PROXY:-1}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
-      ENABLE_ACCESS_LOG: "true"
+      RECORD_LOGIN_IP: ${RECORD_LOGIN_IP:-true}
+      # Off unless enabled in the env file (records username + IP per login)
+      ENABLE_ACCESS_LOG: ${ENABLE_ACCESS_LOG:-false}
     ports:
-      # Exposed on localhost ONLY — Caddy on the host proxies to this.
-      # NEVER change to 0.0.0.0:3000 — that would expose the API directly.
-      - "127.0.0.1:3000:3000"
+      # Localhost ONLY — the host's reverse proxy forwards to this.
+      # Never change to 0.0.0.0. Change BEDROC_PORT if 3000 is taken.
+      - "127.0.0.1:${BEDROC_PORT:-3000}:3000"
     volumes:
-      # Mount the logs directory so access.log persists and is readable on the host.
-      # On the host: ./logs/access.log
+      # Access log (only written when ENABLE_ACCESS_LOG=true). Must be writable
+      # by uid 1001 — `bash bedroc.sh check` verifies this and tells you how.
       - ./logs:/app/logs
     networks:
-      - internal
+      - backend
+      - edge
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health >/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 30s
 
-# ── Networks ───────────────────────────────────────────────────────────────────
-networks:
-  internal:
-    driver: bridge
+  # ── Adminer (optional DB GUI — NOT started by default) ──────────────────────
+  # bash bedroc.sh admin start   → http://127.0.0.1:${ADMINER_PORT:-8081} (use an SSH tunnel)
+  # bash bedroc.sh admin stop
+  adminer:
+    <<: *hardening
+    restart: "no"
+    profiles: ["admin"]
+    image: adminer:5.4.1
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    ports:
+      - "127.0.0.1:${ADMINER_PORT:-8081}:8080"
+    networks:
+      - backend
+      - edge
+    depends_on:
+      - postgres
 
-# ── Volumes ───────────────────────────────────────────────────────────────────
+networks:
+  # No internet access, no host ports: database + cache live here.
+  backend:
+    internal: true
+  # Only used so the API server (and Adminer, when started) can publish a
+  # localhost port.
+  edge: {}
+
 volumes:
   postgres_data:
-  redis_data:
+    # All user data. Back up with `bash bedroc.sh backup`.

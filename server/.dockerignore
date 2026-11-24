@@ -1,0 +1,13 @@
+# Never send local dependencies, build output, secrets or VCS data to the Docker build
+node_modules
+build
+dist
+.svelte-kit
+.env
+.env.*
+*.pem
+*.key
+logs
+backups
+.git
+test

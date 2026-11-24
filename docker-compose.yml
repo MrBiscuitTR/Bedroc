@@ -1,235 +1,247 @@
 # =============================================================================
-# docker-compose.yml — Bedroc production stack
+# docker-compose.yml — Bedroc self-contained stack (frontend + API + TLS proxy)
 # =============================================================================
 #
-# Services:
-#   postgres   — PostgreSQL 16 (encrypted note storage)
-#   redis      — Redis 7 (rate limiting, SRP challenge storage)
-#   server     — Fastify backend (Node.js 22)
-#   bedroc     — SvelteKit frontend (nginx static)
-#   nginx      — Reverse proxy (TLS termination, WireGuard-only binding)
-#   adminer    — Database management GUI (WireGuard-only, port 8080)
+# For a private server reached over WireGuard / Tailscale / LAN. nginx
+# terminates TLS and listens ONLY on BIND_IP (default 10.66.66.1, the
+# WireGuard interface), so nothing is exposed on the public internet.
 #
-# Usage:
-#   cp .env.example .env
-#   # Fill in all values in .env (generate secrets with: openssl rand -hex 32)
-#   docker compose up -d
+# Manage it with the helper script (recommended — adds safety checks, backups):
+#   bash bedroc.sh setup      # first time: creates .env with fresh secrets + cert
+#   bash bedroc.sh up         # start / apply changes
+#   bash bedroc.sh update     # after `git pull`: backup → rebuild → restart
 #
-# WireGuard-only access:
-#   nginx binds ONLY to 10.66.66.1 (the WireGuard VPN interface).
-#   No ports are exposed on the public internet.
-#   Connect to WireGuard first, then browse to https://10.66.66.1
+# Or directly:  docker compose --env-file .env up -d --build
 #
-# SSL certificates:
-#   Mount your certs at docker/ssl/ before first boot:
-#     docker/ssl/cert.pem  — full chain PEM
-#     docker/ssl/key.pem   — private key PEM
-#   Generate self-signed (works fine with WireGuard):
-#     mkdir -p docker/ssl
-#     openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
-#       -keyout docker/ssl/key.pem -out docker/ssl/cert.pem \
-#       -subj "/CN=bedroc" -addext "subjectAltName=IP:10.66.66.1"
+# Hardening (every container): no-new-privileges, ALL capabilities dropped
+# (a few added back only where an official entrypoint needs them), read-only
+# root filesystem, process limits, bounded logs. Database, cache, API and the
+# static frontend sit on internal networks with no internet access; only nginx
+# publishes ports. Migrations run in a short-lived container so the API server
+# never holds the PostgreSQL superuser password.
+#
+# DO NOT rename the services or the `postgres_data` volume — that volume holds
+# your existing data.
 # =============================================================================
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
 
 services:
 
   # ── PostgreSQL 16 ───────────────────────────────────────────────────────────
   postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-
+    <<: *hardening
+    build:
+      context: ./docker/postgres
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    read_only: true
+    tmpfs:
+      - /var/run/postgresql
+      - /tmp
+    shm_size: 128mb
+    pids_limit: 256
     environment:
       POSTGRES_DB: bedroc
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      # Passed to init.sh so it can extract the bedroc_app password
-      DATABASE_URL: ${DATABASE_URL}
-
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set in your env file}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is not set in your env file}
+      POSTGRES_INITDB_ARGS: --data-checksums
     volumes:
-      # Persistent data volume — survives container restarts and rebuilds
       - postgres_data:/var/lib/postgresql/data
-      # First-boot init script: creates bedroc_app user with least-privilege access
-      # Shell script reads DATABASE_URL to set the correct password automatically
-      - ./docker/postgres/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
-
     networks:
-      - internal
-
-    # Postgres is NOT exposed on any host port — internal Docker network only.
-    # The server container connects via the 'internal' network.
-
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d bedroc"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 6
       start_period: 30s
 
-  # ── Redis 7 ─────────────────────────────────────────────────────────────────
+  # ── Redis 7 (password-protected, memory only) ───────────────────────────────
   redis:
+    <<: *hardening
     image: redis:7.4-alpine
-    restart: unless-stopped
-
-    # Require a password even on internal network (defence in depth)
-    # If you set this, update REDIS_URL to: redis://:PASSWORD@redis:6379
-    command: redis-server --save 60 1 --loglevel warning
-
-    volumes:
-      - redis_data:/data
-
+    user: redis
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m,mode=1777
+    pids_limit: 64
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is not set in your env file — run "bash bedroc.sh check" to add one}
+    command:
+      - sh
+      - -c
+      - |
+        umask 077
+        {
+          printf 'requirepass %s\n' "$$REDIS_PASSWORD"
+          printf 'save ""\nappendonly no\nprotected-mode yes\nloglevel warning\n'
+          printf 'rename-command CONFIG ""\nrename-command DEBUG ""\nrename-command MODULE ""\n'
+          printf 'rename-command REPLICAOF ""\nrename-command SLAVEOF ""\n'
+        } > /tmp/redis.conf
+        exec redis-server /tmp/redis.conf
     networks:
-      - internal
-
+      - backend
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 5
 
-  # ── Fastify backend ──────────────────────────────────────────────────────────
-  server:
+  # ── One-shot database migrations ────────────────────────────────────────────
+  migrate:
+    <<: *hardening
+    restart: "no"
     build:
       context: ./server
-      dockerfile: Dockerfile
-
-    restart: unless-stopped
-
+    entrypoint: ["node", "dist/migrate.js"]
+    read_only: true
+    tmpfs:
+      - /tmp
     environment:
-      HOST: 0.0.0.0         # Listen on all interfaces inside Docker network
-      PORT: 3000
       NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL}
-      # Superuser URL used only for running migrations at startup.
-      # bedroc_app lacks CREATE ON SCHEMA PUBLIC in PG15+, so migrations
-      # must run as postgres to CREATE TABLE, CREATE INDEX, etc.
       POSTGRES_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/bedroc
-      REDIS_URL: ${REDIS_URL}
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Fastify API server ──────────────────────────────────────────────────────
+  server:
+    <<: *hardening
+    build:
+      context: ./server
+    read_only: true
+    tmpfs:
+      - /tmp
+    pids_limit: 256
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      NODE_ENV: production
+      RUN_MIGRATIONS: "false"
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is not set in your env file}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is not set in your env file}
       JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
       JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-30d}
-      # Required — the server refuses to start without it (see .env.example)
       CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN must be set in your env file (see .env.example)}
       TRUST_PROXY: ${TRUST_PROXY:-1}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
-
+      RECORD_LOGIN_IP: ${RECORD_LOGIN_IP:-true}
+      ENABLE_ACCESS_LOG: "false"
     networks:
-      - internal
-
-    # Server is NOT exposed on any host port — nginx proxies to it internally.
-
+      - backend
+      - web
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health >/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 30s
 
-  # ── SvelteKit frontend ───────────────────────────────────────────────────────
+  # ── SvelteKit frontend (static files, unprivileged nginx) ───────────────────
   bedroc:
+    <<: *hardening
     build:
       context: ./bedroc
-      dockerfile: Dockerfile
-
-    restart: unless-stopped
-
+    read_only: true
+    tmpfs:
+      - /tmp
+    pids_limit: 64
     networks:
-      - internal
-
-    # Not exposed on host — nginx proxies to it.
-
+      - web
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 15s
 
-  # ── nginx (TLS + WireGuard binding) ─────────────────────────────────────────
+  # ── nginx (TLS termination, bound to BIND_IP only) ──────────────────────────
   nginx:
-    image: nginx:1.27-alpine
-    restart: unless-stopped
-
+    <<: *hardening
+    build:
+      context: ./docker/nginx
+    # Master process: read the TLS key (any host ownership), bind 80/443 in the
+    # container, start workers as the nginx user.
+    cap_add: [CHOWN, DAC_OVERRIDE, SETGID, SETUID, NET_BIND_SERVICE]
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=64m
+      - /var/run
+      - /tmp
+    pids_limit: 64
     volumes:
-      # Main nginx config — binds ONLY to 10.66.66.1
-      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      # TLS certificates — generate before first boot (see header comment)
+      # TLS certificate + key — see GUIDE.md ("bash bedroc.sh setup" can create a self-signed one)
       - ./docker/ssl:/etc/nginx/ssl:ro
-      # Optional: nginx logs on host for easier debugging
-      - nginx_logs:/var/log/nginx
-
     ports:
-      # CRITICAL: bind ONLY to the WireGuard interface IP.
-      # '10.66.66.1:80:80' means only WireGuard peers can reach this port.
-      # Do NOT change to '0.0.0.0:80:80' or '80:80' — that would expose
-      # the server to the public internet.
-      - "10.66.66.1:80:80"
-      - "10.66.66.1:443:443"
-
+      # Bound ONLY to BIND_IP (your WireGuard/Tailscale/LAN address).
+      # Never use 0.0.0.0 unless you really mean "the whole internet".
+      - "${BIND_IP:-10.66.66.1}:${HTTP_PORT:-80}:80"
+      - "${BIND_IP:-10.66.66.1}:${HTTPS_PORT:-443}:443"
     networks:
-      - internal
-
+      - web
+      - edge
     depends_on:
       server:
-        condition: service_started
+        condition: service_healthy
       bedroc:
-        condition: service_started
-
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://127.0.0.1/ 2>&1 | grep -q 'HTTP\\|html' || wget -qO- http://127.0.0.1/ 2>&1 | grep -q '301\\|HTTP' || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/nginx-health >/dev/null || exit 1"]
       interval: 20s
       timeout: 5s
       retries: 3
 
-  # ── Adminer (database management GUI) ───────────────────────────────────────
-  #
-  # Access: https://10.66.66.1:8080 (WireGuard only — NOT exposed to internet)
-  #
-  # Log in with:
-  #   System:   PostgreSQL
-  #   Server:   postgres
-  #   Username: postgres
-  #   Password: (your POSTGRES_PASSWORD from .env)
-  #   Database: bedroc
-  #
-  # To disable Adminer for extra security, comment out this entire service.
+  # ── Adminer (optional DB GUI — NOT started by default) ──────────────────────
+  # bash bedroc.sh admin start   → http://${BIND_IP}:${ADMINER_PORT:-8080}
+  # bash bedroc.sh admin stop
   adminer:
-    image: adminer:latest
-    restart: unless-stopped
-
+    <<: *hardening
+    restart: "no"
+    profiles: ["admin"]
+    image: adminer:5.4.1
+    read_only: true
+    tmpfs:
+      - /tmp
     environment:
-      # Pre-fill the login form with the postgres server name
       ADMINER_DEFAULT_SERVER: postgres
-
     ports:
-      # CRITICAL: bind ONLY to the WireGuard interface IP — not public internet.
-      - "10.66.66.1:8080:8080"
-
+      - "${BIND_IP:-10.66.66.1}:${ADMINER_PORT:-8080}:8080"
     networks:
-      - internal
-
+      - backend
+      - edge
     depends_on:
       - postgres
 
-# ── Networks ───────────────────────────────────────────────────────────────────
 networks:
-  internal:
-    # Internal Docker bridge network — services can reach each other by name
-    # (postgres, redis, server, bedroc) but none are reachable from outside Docker
-    # except via the ports listed above.
-    driver: bridge
-    internal: false   # Allow outbound internet (for health checks, npm, etc.)
+  backend:
+    internal: true     # postgres, redis, migrate, server — no internet access
+  web:
+    internal: true     # nginx ↔ frontend ↔ API
+  edge: {}             # only for publishing nginx's (and Adminer's) ports
 
-# ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   postgres_data:
-    # All encrypted note data lives here. Back this up regularly.
-    # Even with access to this volume, notes are unreadable without user passwords.
-  redis_data:
-  nginx_logs:
+    # All user data. Back up with `bash bedroc.sh backup`.

@@ -1,6 +1,8 @@
 # Bedroc — Management Guide
 
-This guide covers day-to-day operations: viewing and editing database records, creating backups, rotating secrets, and administrative tasks. It applies to both public backend operators (running `bedrocapi.cagancalidag.com` or similar) and private self-hosters.
+This guide covers day-to-day operations: viewing and editing database records, creating backups, rotating secrets, and administrative tasks. It applies to both public backend operators and private self-hosters.
+
+**Running SQL:** `bash bedroc.sh psql` opens a PostgreSQL shell in the right container. The examples below that use `docker exec bedroc-postgres-1 …` assume the compose project is called `bedroc`. Replace the prefix with yours: `bedroc-public` for the public stack (`bedroc-public-postgres-1`), or whatever `bash bedroc.sh status` shows. If Docker needs root on your machine, prefix `docker` with `sudo`.
 
 ---
 
@@ -10,33 +12,32 @@ Adminer is a lightweight, single-file database management UI included in the Doc
 
 ### Accessing Adminer
 
-Adminer is bound to the WireGuard interface only (`10.66.66.1:8080`). You must be connected to WireGuard to access it.
+Adminer is **not running by default**. Start it only when you need it:
 
-1. Connect to WireGuard
-2. Open `http://10.66.66.1:8080` in a browser
-3. Fill in the login form:
+```bash
+bash bedroc.sh admin start     # WireGuard stack: http://<BIND_IP>:8080   ·   public stack: http://127.0.0.1:8081
+bash bedroc.sh admin stop      # when you're done
+```
+
+On the public stack it listens on localhost only. Reach it through an SSH tunnel from your computer:
+
+```bash
+ssh -L 8081:127.0.0.1:8081 <user>@<server>      # then open http://localhost:8081
+```
+
+Fill in the login form:
 
 | Field    | Value              |
 |----------|--------------------|
 | System   | PostgreSQL         |
 | Server   | `postgres`         |
 | Username | `postgres`         |
-| Password | your `POSTGRES_PASSWORD` from `.env` |
+| Password | your `POSTGRES_PASSWORD` from the env file |
 | Database | `bedroc`           |
 
-> **Important:** Log in as `postgres` (the superuser), not as `bedroc_app`. The `bedroc_app` role has limited permissions and cannot view schema structure in Adminer properly.
+> **Important:** log in as `postgres` (the superuser), not as `bedroc_app`. The `bedroc_app` role has limited permissions and cannot view schema structure in Adminer properly.
 
-### Disabling Adminer
-
-If you do not need the GUI, comment out the `adminer` service in `docker-compose.yml`:
-
-```yaml
-# adminer:
-#   image: adminer:latest
-#   ...
-```
-
-Then restart: `docker compose up -d`
+Change the port with `ADMINER_PORT=<port>` in the env file.
 
 ---
 
@@ -156,38 +157,29 @@ The user's refresh cookie becomes invalid. They will be prompted to log in again
 
 ## Backups
 
+```bash
+bash bedroc.sh backup                         # verified dump → ./backups/<project>-<UTC time>.dump (mode 600)
+bash bedroc.sh restore backups/<file>.dump    # replace the database (typed confirmation; takes a backup first)
+```
+
+`bash bedroc.sh update` always takes a verified backup before changing anything. Restore also accepts `.sql` / `.sql.gz` files made by plain `pg_dump` (e.g. older cron jobs).
+
 ### Automated backup (recommended)
 
-Add a cron job on the host to dump the database daily:
-
-```bash
-# /etc/cron.d/bedroc-backup — runs at 2am every day
-0 2 * * * root docker exec bedroc-postgres-1 \
-  pg_dump -U postgres bedroc | \
-  gzip > /var/backups/bedroc/bedroc-$(date +%Y%m%d).sql.gz
+```cron
+# /etc/cron.d/bedroc-backup — 03:15 every day, as root (Docker usually needs root)
+15 3 * * * root cd /opt/Bedroc && bash bedroc.sh backup >> /var/log/bedroc-backup.log 2>&1
 ```
 
-Create the backup directory first: `mkdir -p /var/backups/bedroc`
-
-### Manual backup
-
-```bash
-docker exec bedroc-postgres-1 pg_dump -U postgres bedroc | gzip > bedroc-backup.sql.gz
-```
-
-### Restore from backup
-
-```bash
-gunzip -c bedroc-backup.sql.gz | docker exec -i bedroc-postgres-1 psql -U postgres bedroc
-```
+Old backups are never deleted automatically. Prune them yourself, e.g. `find /opt/Bedroc/backups -name '*.dump' -mtime +30 -delete`.
 
 ### What to back up
 
-- **`postgres_data` volume** — all user data (notes, topics, sessions). This is the critical backup.
-- **`.env` file** — JWT secrets and passwords. Without this, a restored database is inaccessible.
-- **`docker/ssl/`** — TLS certificates (only matters if you generated them for this server).
+- **The database dumps** in `./backups/`: all user data (notes, topics, sessions).
+- **The env file** (`.env.public` or `.env`): JWT secrets and passwords. Without it, a restored database can't be used. Store it separately from the dumps.
+- **`docker/ssl/`** (WireGuard stack): TLS certificate and key.
 
-> The notes themselves are encrypted — backing up the database does not expose user content.
+> Notes are encrypted, but dumps also contain usernames, password verifiers, wrapped keys and **plaintext topic/folder names**. Treat backups as sensitive.
 
 ---
 
@@ -206,20 +198,27 @@ Rotating JWT secrets invalidates all active sessions. All users will be logged o
    JWT_REFRESH_SECRET=<new_value>
    ```
 
-3. Restart the server:
-   ```bash
-   docker compose up -d server
-   ```
+3. Apply: `bash bedroc.sh up`
+
+---
+
+## Rotating the Redis Password
+
+Redis only holds short-lived login challenges, so this is safe at any time:
+
+1. Set a new `REDIS_PASSWORD` in the env file (letters and digits only: `openssl rand -hex 32`).
+2. `bash bedroc.sh up`. Redis and the API restart with the new password; logins in progress at that moment must be retried.
 
 ---
 
 ## Rotating the Database Password
 
-1. Update the password in PostgreSQL:
+1. Update the password in PostgreSQL (`bash bedroc.sh psql`):
    ```sql
    ALTER USER bedroc_app WITH PASSWORD 'new_password';
    ALTER USER postgres WITH PASSWORD 'new_postgres_password';
    ```
+   Changing only the env file does **not** change the passwords inside an existing database, so do this step first.
 
 2. Update `.env`:
    ```
@@ -227,26 +226,19 @@ Rotating JWT secrets invalidates all active sessions. All users will be logged o
    POSTGRES_PASSWORD=new_postgres_password
    ```
 
-3. Restart:
-   ```bash
-   docker compose up -d server
-   ```
+3. Apply: `bash bedroc.sh up`
 
 ---
 
 ## Log Access
 
 ```bash
-# All services
-docker compose logs -f
-
-# Specific service
-docker compose logs -f server
-docker compose logs -f nginx
-
-# nginx access log (mounted volume)
-docker exec bedroc-nginx-1 tail -f /var/log/nginx/access.log
+bash bedroc.sh logs                 # recent logs of every service
+bash bedroc.sh logs server -f       # follow one service (server, postgres, redis, migrate, nginx, bedroc)
+bash bedroc.sh access-log           # login access log (public stack, only if ENABLE_ACCESS_LOG=true)
 ```
+
+Container logs are size-capped (3 × 10 MB per container). For privacy, nginx doesn't write an access log. To debug, temporarily set `access_log /dev/stdout;` in `docker/nginx/nginx.conf` and run `bash bedroc.sh up`.
 
 ---
 
@@ -271,14 +263,10 @@ docker exec bedroc-postgres-1 psql -U postgres -d bedroc -c \
 ## Stopping and Restarting Services
 
 ```bash
-# Graceful restart of one service (zero downtime for others)
-docker compose restart server
-
-# Full stack restart
-docker compose down && docker compose up -d
-
-# Rebuild and restart (after code changes)
-docker compose build --no-cache server && docker compose up -d server
+bash bedroc.sh restart server     # restart one service
+bash bedroc.sh down               # stop everything (all data is kept)
+bash bedroc.sh up                 # start / apply config changes (rebuilds what changed)
+bash bedroc.sh update             # after git pull: backup → rebuild → restart → health check
 ```
 
 ---
@@ -313,46 +301,15 @@ tailscale ip -4
 
 ### Bind Bedroc to the Tailscale interface
 
-In `.env`, set `HOST` to the Tailscale IP so the Fastify server only listens on the Tailscale interface:
+Run `bash bedroc.sh setup`, choose **wireguard**, and enter the Tailscale IP (e.g. `100.64.0.5`) as the address to listen on. It's stored as `BIND_IP` in `.env`, and nginx publishes ports 80/443 on that address only. No compose file edits are needed. `bash bedroc.sh check` verifies the address exists on the machine.
 
-```env
-HOST=100.64.0.5
-PORT=3000
-```
-
-Or use `0.0.0.0` if you also want LAN access, and rely on `ufw` to block public internet access to port 3000.
-
-### Adjust docker-compose.yml port binding
-
-Change the server port mapping so it only listens on the Tailscale IP:
-
-```yaml
-server:
-  ports:
-    - "100.64.0.5:3000:3000"   # Tailscale IP only, not public internet
-```
-
-Then restart:
-
-```bash
-docker compose up -d server
-```
-
-### Expose Adminer over Tailscale (optional)
-
-```yaml
-adminer:
-  ports:
-    - "100.64.0.5:8080:8080"
-```
-
-Access it at `http://100.64.0.5:8080` from any Tailscale-connected device.
+Adminer, when started with `bash bedroc.sh admin start`, also listens only on that address.
 
 ### Access from clients
 
 1. Install Tailscale on your phone/laptop and sign in with the same account
 2. The server appears at its `100.x.x.x` address automatically
-3. In the Bedroc app, set the server URL to `http://100.64.0.5:3000` (or use MagicDNS: `http://servername:3000`)
+3. Open `https://100.64.0.5` (accept the self-signed certificate once), or use the server URL `https://100.64.0.5` in the app
 
 ### TLS with Tailscale (optional)
 
@@ -370,25 +327,23 @@ cp servername.your-tailnet.ts.net.crt docker/ssl/cert.pem
 cp servername.your-tailnet.ts.net.key docker/ssl/key.pem
 ```
 
-Then update `nginx.conf` to use them (same as the WireGuard setup). Access at `https://servername.your-tailnet.ts.net`.
+Restart with `bash bedroc.sh up`. Add `https://servername.your-tailnet.ts.net` to `CORS_ORIGIN` and open that address.
 
-### Firewall: block public access to the Bedroc port
+### Firewall
 
-If your host has a public IP, ensure the Bedroc port is not reachable from the internet:
-
-```bash
-sudo ufw deny 3000/tcp    # block public access to Fastify
-sudo ufw allow in on tailscale0 to any port 3000   # allow Tailscale interface only
-```
+Nothing extra is needed: nginx is bound to the Tailscale address only, and the API, database and Redis publish no host ports at all.
 
 ---
 
 ## Security Checklist (for public operators)
 
-- [ ] WireGuard is the only way to reach Adminer — it is NOT exposed to the internet
+- [ ] Adminer is stopped when not in use (`bash bedroc.sh admin stop`); it only ever listens on localhost / `BIND_IP`
 - [ ] `POSTGRES_PASSWORD` is a randomly generated secret (not `CHANGE_THIS_*`)
 - [ ] `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` are separate 32+ character random secrets
-- [ ] `.env` is not committed to git (it is in `.gitignore`)
+- [ ] Env files are mode 600 and not committed (`.env*` except `.env.example` is git-ignored)
+- [ ] `REDIS_PASSWORD` is set; `CORS_ORIGIN` lists exact origins
+- [ ] `ALLOW_REGISTRATION=false` once all intended accounts exist
+- [ ] `bash bedroc.sh check` passes with no warnings
 - [ ] `docker/ssl/key.pem` is not committed to git
 - [ ] Backups are running and tested
 - [ ] The host OS is kept up to date (`apt upgrade` / `yum update`)

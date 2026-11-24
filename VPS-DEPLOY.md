@@ -24,16 +24,19 @@ Client browser  ──▶  Cloudflare (DNS proxy + edge TLS)
                          │
                          ▼
                ┌────────────────────────────────────────────┐
-               │  Docker network (internal only)             │
-               │  ┌──────────┐ ┌───────┐ ┌──────────┐       │
-               │  │ postgres │ │ redis │ │  server  │ :3000  │
-               │  └──────────┘ └───────┘ └──────────┘       │
+               │  server (API)  127.0.0.1:3000 only          │
+               └────────────────────────────────────────────┘
+                         │  internal Docker network (no internet)
+               ┌────────────────────────────────────────────┐
+               │  postgres      redis (password, RAM only)   │
                └────────────────────────────────────────────┘
 ```
 
 **Key security properties:**
 
-- PostgreSQL and Redis are on an internal Docker network — **no host ports exposed**
+- PostgreSQL and Redis are on an internal Docker network: **no host ports, no internet access**. Redis requires a password and keeps nothing on disk
+- Every container: read-only filesystem, all Linux capabilities dropped (Postgres keeps the five its entrypoint needs), `no-new-privileges`, process limits, size-capped logs
+- Database migrations run in a one-off container; the long-running API never holds the database superuser password
 - The Fastify server binds to `127.0.0.1:3000` — only Caddy can reach it
 - Caddy handles TLS termination with a real Let's Encrypt certificate
 - Cloudflare provides DDoS protection, edge caching of static content, and hides the origin IP
@@ -52,11 +55,7 @@ Client browser  ──▶  Cloudflare (DNS proxy + edge TLS)
 
 ### Install Docker (if not already installed)
 
-```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER
-# Log out and back in, or run: newgrp docker
-```
+Follow Docker's official instructions for your distribution (GUIDE.md, Part 1, has the Ubuntu/Debian commands). You **don't** need to add your user to the `docker` group: `bash bedroc.sh` uses `sudo` when Docker requires root. Docker-group membership is equivalent to root, so leaving it out keeps a hardened server hardened.
 
 ---
 
@@ -143,7 +142,7 @@ When Cloudflare is proxied, your server sees Cloudflare's IP in the TCP connecti
 - Cloudflare sets `CF-Connecting-IP` and `X-Forwarded-For` headers with the real client IP
 - Caddy passes these headers through to the backend
 - The server trusts exactly `TRUST_PROXY` proxy hops (default `1` = Caddy). With Cloudflare in front, configure Caddy with `trusted_proxies` set to Cloudflare's IP ranges (so Caddy keeps Cloudflare's `X-Forwarded-For`) and set `TRUST_PROXY=2`. Otherwise every user appears to come from a Cloudflare edge IP and shares one rate-limit bucket
-- The access log (`logs/access.log`) records the real client IP correctly
+- See [Real client IPs behind Cloudflare](#real-client-ips-behind-cloudflare-optional-recommended) below for the Caddy setting
 
 ---
 
@@ -161,120 +160,47 @@ sudo apt-get install -y caddy
 
 ---
 
-## Step 4 — Clone the repo and configure the stack
-
-### Get the code
+## Step 4 — Get the code and set up Bedroc
 
 ```bash
-cd /opt
-sudo git clone https://github.com/MrBiscuitTR/Bedroc.git
-sudo chown -R $USER:$USER Bedroc
-cd Bedroc
+sudo mkdir -p /opt/Bedroc && sudo chown "$USER:$USER" /opt/Bedroc
+git clone https://github.com/MrBiscuitTR/Bedroc.git /opt/Bedroc
+cd /opt/Bedroc
+bash bedroc.sh setup
 ```
 
-### Create the environment file
+Choose **1) public**. Accept port `3000`, or pick another if something else uses it. For the allowed frontend origins, keep `https://bedroc.cagancalidag.com,http://localhost:*` (hosted web app + desktop app) and add your own frontend if you host one. The script writes `.env.public` with **freshly generated, unique secrets** (database superuser, separate app-user password, Redis, both JWT keys) and mode 600. It never overwrites an existing env file. All options are explained in `.env.example`.
 
-```bash
-cp .env.example .env.public
-```
+> **Already running Bedroc?** Don't run `setup`. Follow [UPGRADING.md](UPGRADING.md) instead.
 
-Edit `.env.public` — **replace every placeholder** with real values:
+Optional settings in `.env.public`:
 
-```env
-# PostgreSQL — generate a strong random password
-POSTGRES_PASSWORD=<run: openssl rand -hex 32>
-DATABASE_URL=postgres://bedroc_app:<SAME_PASSWORD_AS_ABOVE>@postgres:5432/bedroc
-
-# Redis (internal network, no auth needed — not exposed on any host port)
-REDIS_URL=redis://redis:6379
-
-# JWT — generate TWO DIFFERENT secrets (min 32 chars each)
-JWT_ACCESS_SECRET=<run: openssl rand -hex 32>
-JWT_REFRESH_SECRET=<run: openssl rand -hex 32>
-JWT_ACCESS_EXPIRY=15m
-JWT_REFRESH_EXPIRY=30d
-
-# CORS — MUST match the exact frontend origin, including https:// and NO trailing slash.
-# This prevents other websites from making API requests to your backend.
-# For the public Bedroc instance:
-CORS_ORIGIN=https://bedroc.cagancalidag.com
-
-# Access logging — records login/register events with IP and username
-ENABLE_ACCESS_LOG=true
-```
-
-Generate secrets:
-
-```bash
-# Run these and paste the output into .env.public
-openssl rand -hex 32   # → POSTGRES_PASSWORD
-openssl rand -hex 32   # → JWT_ACCESS_SECRET
-openssl rand -hex 32   # → JWT_REFRESH_SECRET
-```
-
-> **Never commit `.env.public` to git** — it is in `.gitignore`.
-
-### Create the logs directory with correct permissions
-
-The server runs as a non-root user (`uid 1001`) inside Docker. The `logs/` directory is mounted from the host, so the host directory must be writable by that uid:
-
-```bash
-mkdir -p ~/opt/Bedroc/logs
-sudo chown -R 1001:1001 ~/opt/Bedroc/logs
-```
-
-> Skip this if the directory already exists and logging works. If `logs/access.log` never appears after logins, this is almost certainly why.
-
-### Install the helper command
-
-All stack operations use several flags (`-p`, `-f`, `--env-file`). Install a wrapper so you never forget them:
-
-```bash
-sudo tee /usr/local/bin/bedroc-public >/dev/null <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-cd /home/biscuit/opt/Bedroc
-exec docker compose -p bedroc-public -f docker-compose.public.yml --env-file .env.public "$@"
-EOF
-sudo chmod +x /usr/local/bin/bedroc-public
-```
-
-> Adjust the `cd` path to wherever your repo lives. The `-p bedroc-public` flag is **critical** — see the isolation note below.
+- `ALLOW_REGISTRATION=false` after you've created your account(s), so strangers can't sign up.
+- `ENABLE_ACCESS_LOG=true` writes the username and IP of every login to `logs/access.log` (off by default for privacy; `bash bedroc.sh check` sets up the folder permissions it needs).
+- `RECORD_LOGIN_IP=false` stops storing IPs with sessions at all.
 
 ### Start the stack
 
 ```bash
-bedroc-public up -d
+bash bedroc.sh up
 ```
 
-Verify all services are healthy:
+The script checks Docker access (and uses `sudo` if needed, asking for your password once), the env file, that port 3000 is free and that the data volume is the right one. Then it builds, starts, and waits until `postgres`, `redis` and `server` are healthy. Test locally:
 
 ```bash
-bedroc-public ps
-```
-
-All three services (`postgres`, `redis`, `server`) should show `healthy` or `running`.
-
-Test the API locally:
-
-```bash
-curl http://127.0.0.1:3000/health
+curl -s http://127.0.0.1:3000/health
 # → {"ok":true}
 ```
 
-### Why `-p bedroc-public` matters
+### Project name and your data
 
-Docker Compose derives a project name from the directory name by default. If the directory is called `Bedroc`, the project name becomes `bedroc` — which collides with any other Compose stack in the same directory (e.g. a previous WireGuard/private deployment). A collision means Compose reuses existing volumes (old Postgres data, wrong passwords) instead of creating fresh ones.
+The script always uses compose project **`bedroc-public`** for `.env.public`. The project name selects the data volume (`bedroc-public_postgres_data`); the directory doesn't, so you can move the checkout without losing anything. If you ever run Compose by hand, keep the same flags:
 
-Always use `-p bedroc-public` explicitly. With the helper script this is automatic.
+```bash
+bash bedroc.sh compose ps                 # = docker compose -p bedroc-public -f docker-compose.public.yml --env-file .env.public ps
+```
 
-Resources created with the correct project name:
-
-- Containers: `bedroc-public-server-1`, `bedroc-public-postgres-1`, `bedroc-public-redis-1`
-- Volumes: `bedroc-public_postgres_data`, `bedroc-public_redis_data`
-- Network: `bedroc-public_internal`
-
-If you accidentally started without `-p bedroc-public` and ended up with stale volumes, stop the stack, identify the rogue volumes with `docker volume ls`, and remove them (`docker volume rm <name>`) before restarting with the correct project name.
+If the expected volume doesn't exist but other Bedroc data volumes do, `bedroc.sh` refuses to start instead of silently creating a new, empty database.
 
 ---
 
@@ -304,6 +230,11 @@ bedrocapi.cagancalidag.com {
         -Server
     }
 
+    # Attachments are up to ~20 MB per upload
+    request_body {
+        max_size 25MB
+    }
+
     # TLS — Let's Encrypt automatic. Caddy handles renewal.
     tls {
         protocols tls1.2 tls1.3
@@ -330,6 +261,23 @@ Check that the certificate was issued:
 sudo journalctl -u caddy --since "5 minutes ago"
 # Look for: "certificate obtained successfully"
 ```
+
+> If you changed `BEDROC_PORT`, use that port in `reverse_proxy`. `bedroc.sh` never edits your Caddyfile.
+
+### Real client IPs behind Cloudflare (optional, recommended)
+
+With Cloudflare proxying, every request reaches Caddy from a Cloudflare IP. Unless Caddy trusts Cloudflare, Bedroc sees only Cloudflare IPs: all users then share one rate-limit bucket and the session list shows Cloudflare addresses. To fix it, add Cloudflare's published ranges as trusted proxies in Caddy's **global options** (top of the Caddyfile):
+
+```caddy
+{
+    servers {
+        # Paste the current ranges from https://www.cloudflare.com/ips/ (IPv4 and IPv6)
+        trusted_proxies static 173.245.48.0/20 103.21.244.0/22 ...
+    }
+}
+```
+
+Then set `TRUST_PROXY=2` in `.env.public` and run `bash bedroc.sh up`. With this in place, a client that bypasses Cloudflare and connects to your origin directly still can't spoof its IP: Caddy only keeps `X-Forwarded-For` from the trusted ranges. This changes your Caddy configuration, so review it before reloading (`caddy validate --config /etc/caddy/Caddyfile`).
 
 > **Note**: If Cloudflare proxy is enabled, Caddy obtains the certificate via the HTTP-01 ACME challenge. Cloudflare passes port 80 traffic through to your origin for this. If cert issuance fails, check that port 80 is open in your firewall.
 
@@ -399,29 +347,24 @@ blog.yourdomain.com {
 
 ## Access logs
 
-When `ENABLE_ACCESS_LOG=true`, every successful login and registration is appended to `./logs/access.log`:
+Off by default. With `ENABLE_ACCESS_LOG=true` in `.env.public`, every successful login and registration is appended to `./logs/access.log`:
 
 ```text
 [2025-06-14T18:42:01.234Z] login    alice                    203.0.113.42
 [2025-06-14T18:42:05.991Z] register bob                     198.51.100.7
 ```
 
-Fields: `[timestamp]  event  username  ip-address`
+Fields: `[timestamp]  event  username  ip-address`. The IP is the real client IP only if Caddy trusts Cloudflare (see above); otherwise it's a Cloudflare edge IP.
 
-- IPs are the **real client IPs** from Cloudflare's `X-Forwarded-For` header — not Cloudflare edge IPs
-- Events: `login` (successful auth) or `register` (new account)
-
-### Read the log
+The server writes the file as uid 1001, so `./logs` must belong to that uid. `bash bedroc.sh check` detects a wrong owner and offers to fix just that directory. Read it with:
 
 ```bash
-tail -f logs/access.log                        # live feed
-grep alice logs/access.log                     # all events for a user
-awk '{print $4}' logs/access.log | sort | uniq -c | sort -rn   # IP frequency
+bash bedroc.sh access-log
 ```
 
 ### Log rotation
 
-Create `/etc/logrotate.d/bedroc`:
+`/etc/logrotate.d/bedroc` (adjust the path):
 
 ```text
 /opt/Bedroc/logs/access.log {
@@ -434,24 +377,21 @@ Create `/etc/logrotate.d/bedroc`:
 }
 ```
 
-`copytruncate` truncates the file in-place without needing to signal the Node process.
-
 ### Privacy note
 
-The log records **usernames and IP addresses** of authentication events only. Notes are end-to-end encrypted — neither the log nor the server can read note contents. If you run a public server, inform users that login IPs are logged per your privacy policy.
+The log records **usernames and IP addresses** of authentication events. Notes are end-to-end encrypted, so neither the log nor the server can read their contents. If you run a public server with the access log on, say so in your privacy policy.
 
 ---
 
 ## Updating Bedroc
 
 ```bash
-cd ~/opt/Bedroc
+cd /opt/Bedroc
 git pull
-bedroc-public build --no-cache server
-bedroc-public up -d
+bash bedroc.sh update
 ```
 
-> `bedroc-public up -d` (without `down` first) does a rolling update — it only recreates containers whose image or config changed, leaving the database untouched.
+`update` takes a verified database backup, builds the new images while the old containers keep running, restarts what changed, runs migrations, and waits for health checks. It stops at the first problem, and your data is never removed. Coming from a version before November 2026, or moving the checkout to another directory? See [UPGRADING.md](UPGRADING.md).
 
 ---
 
@@ -474,12 +414,7 @@ sizeBytes: z.number().int().min(0).max(15_000_000),  // max plaintext size
 
 The relationship: `sizeBytes` max = max plaintext file size. `MAX_ENCRYPTED_DATA_LENGTH` ≈ `sizeBytes × 1.37` (base64 + AES-GCM overhead). `bodyLimit` = `MAX_ENCRYPTED_DATA_LENGTH` + ~1 MB margin.
 
-After editing, rebuild:
-
-```bash
-bedroc-public build --no-cache server
-bedroc-public up -d server
-```
+After editing, rebuild and restart: `bash bedroc.sh up`. Also raise Caddy's `request_body max_size` if you go above ~20 MB.
 
 ---
 
@@ -548,16 +483,20 @@ CORS is a **browser-only** protection. A determined attacker with curl can send 
 ### Docker
 
 - [ ] Docker daemon uses Unix socket only (not TCP)
-- [ ] Server port bound to `127.0.0.1:3000` — not `0.0.0.0:3000`
+- [ ] Your user is **not** in the `docker` group (root-equivalent); `bedroc.sh` uses `sudo`
+- [ ] Server port bound to `127.0.0.1` (the compose file does this; never change it to `0.0.0.0`)
 - [ ] PostgreSQL and Redis **NOT** exposed on any host port (internal network only)
-- [ ] `.env.public` not committed to git
+- [ ] `.env.public` is mode 600 and not committed (git-ignored)
+- [ ] `bash bedroc.sh check` passes
 
 ### Application
 
-- [ ] All secrets generated with `openssl rand -hex 32` (never placeholders)
-- [ ] `CORS_ORIGIN` set to the exact frontend URL (`https://bedroc.cagancalidag.com`)
+- [ ] All secrets generated (by `bash bedroc.sh setup`, or `openssl rand -hex 32`), including `REDIS_PASSWORD`
+- [ ] `CORS_ORIGIN` lists exact frontend origins (no `*`)
+- [ ] `ALLOW_REGISTRATION=false` once your accounts exist (unless you run an open instance)
+- [ ] `TRUST_PROXY` matches your proxy chain (1 = Caddy; 2 = Cloudflare → Caddy with `trusted_proxies`)
 - [ ] `JWT_REFRESH_EXPIRY` set to a reasonable window (default `30d`)
-- [ ] Access logging enabled (`ENABLE_ACCESS_LOG=true`)
+- [ ] Access log on only if you need it (and disclosed in your privacy policy)
 
 ### TLS (Caddy handles automatically)
 
@@ -570,7 +509,12 @@ CORS is a **browser-only** protection. A determined attacker with curl can send 
 
 ## Backups
 
-Same as the WireGuard setup — see [MANAGEMENT-GUIDE.md](MANAGEMENT-GUIDE.md) for backup commands. Replace any raw `docker compose` invocation with `bedroc-public` to pick up the correct project name and env file.
+```bash
+bash bedroc.sh backup                        # verified dump → ./backups/ (mode 600)
+bash bedroc.sh restore backups/<file>.dump   # typed confirmation; takes a backup of the current state first
+```
+
+Nightly via cron, plus what else to keep safe: see [MANAGEMENT-GUIDE.md](MANAGEMENT-GUIDE.md#backups). Keep a copy of `.env.public` separately from the dumps.
 
 ---
 
@@ -600,7 +544,7 @@ sudo systemctl start caddy
 
 ### "Cannot reach server" from the app
 
-1. Check the stack: `bedroc-public ps`
+1. Check the stack: `bash bedroc.sh status`
 2. Test locally: `curl http://127.0.0.1:3000/health`
 3. Test through Caddy (SNI-correct): `curl --resolve bedrocapi.cagancalidag.com:443:127.0.0.1 https://bedrocapi.cagancalidag.com/health`
 4. Test publicly: `curl https://bedrocapi.cagancalidag.com/health`
@@ -609,11 +553,7 @@ sudo systemctl start caddy
 ### CORS errors in the browser
 
 - Confirm `CORS_ORIGIN` in `.env.public` matches **exactly** the frontend URL (including `https://`, no trailing slash)
-- After changing `.env.public`, restart the server:
-
-  ```bash
-  bedroc-public up -d server
-  ```
+- After changing `.env.public`, apply it: `bash bedroc.sh up`
 
 - For local dev testing, use a comma-separated list:
 
@@ -623,36 +563,16 @@ sudo systemctl start caddy
 
 ### Server container keeps restarting
 
-- Check logs: `bedroc-public logs server`
-- Common causes: missing or wrong `DATABASE_URL` / `JWT_*` secrets in `.env.public`
+- `bash bedroc.sh logs server` and `bash bedroc.sh logs migrate`
+- The server refuses to start on insecure settings and says why in its log, e.g. `CORS_ORIGIN must not contain "*"`, weak or identical JWT secrets, or `TRUST_PROXY=true`.
 
-### Postgres authentication errors / wrong data in DB
+### Postgres authentication errors / an empty database
 
-This usually means Compose reused a volume from a different deployment (missing `-p bedroc-public`). Check which volumes exist:
-
-```bash
-docker volume ls | grep bedroc
-```
-
-If you see `bedroc_postgres_data` (no `public` prefix) alongside `bedroc-public_postgres_data`, you accidentally started the stack without the project flag at some point. Stop the stack and confirm you're always using `bedroc-public` commands.
-
-To start fresh with a clean database (destructive — all data lost):
-
-```bash
-bedroc-public down -v   # removes containers AND volumes
-bedroc-public up -d
-```
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#database). Never use `down -v` to fix this: it deletes all data.
 
 ### Access log not appearing (`logs/access.log` missing)
 
-The server runs as uid 1001 inside the container. The host `logs/` directory must be owned by that uid:
-
-```bash
-sudo chown -R 1001:1001 ~/opt/Bedroc/logs
-bedroc-public restart server
-```
-
-After the next login or registration, `logs/access.log` should appear.
+Check that `ENABLE_ACCESS_LOG=true` is set, then run `bash bedroc.sh check`. It offers to give `./logs` to uid 1001 (the server's user).
 
 ### Rate limited / 429 errors
 
@@ -663,21 +583,16 @@ After the next login or registration, `logs/access.log` should appear.
 
 ### Adminer (DB GUI) via SSH tunnel
 
-Adminer is not included in the public stack by default. To inspect the database, run a temporary Adminer container attached to the internal network, then tunnel to it:
-
 ```bash
-# On the VPS — start Adminer temporarily
-docker run -d --rm --name adminer-tmp \
-  --network bedroc-public_internal \
-  -p 127.0.0.1:8080:8080 \
-  adminer:latest
+# On the VPS
+bash bedroc.sh admin start        # listens on 127.0.0.1:8081 only
 
-# On your local machine — open the tunnel (use a different local port if 8080 is taken)
-ssh -L 18080:127.0.0.1:8080 biscuit@<vps-ip>
+# On your computer
+ssh -L 8081:127.0.0.1:8081 <user>@<vps-ip>
+# open http://localhost:8081 — System: PostgreSQL · Server: postgres · User: postgres · Password: POSTGRES_PASSWORD · Database: bedroc
 
-# Open http://localhost:18080 in your browser
-# System: PostgreSQL | Server: postgres | Username/Password: from .env.public | Database: bedroc
-
-# Stop Adminer when done
-docker stop adminer-tmp
+# On the VPS, when done
+bash bedroc.sh admin stop
 ```
+
+More fixes for Docker permissions, port conflicts, umask and SELinux: [TROUBLESHOOTING.md](TROUBLESHOOTING.md).

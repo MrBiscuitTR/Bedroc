@@ -117,3 +117,17 @@ export const IS_PROD = process.env.NODE_ENV === 'production';
 /** Set ALLOW_REGISTRATION=false to stop new sign-ups (existing users unaffected). */
 export const ALLOW_REGISTRATION = (process.env.ALLOW_REGISTRATION ?? 'true').toLowerCase() !== 'false';
 export const JWT_REFRESH_SECRET = refreshSecret;
+/**
+ * RECORD_LOGIN_IP=false stops storing the client IP with each session (the
+ * Settings → Sessions list then shows no IP). Default true: lets users spot
+ * logins they don't recognise.
+ */
+export const RECORD_LOGIN_IP = (process.env.RECORD_LOGIN_IP ?? 'true').toLowerCase() !== 'false';
+
+// Redis URL sanity check: a password with URL-special characters silently
+// breaks the connection string. bedroc.sh generates hex passwords.
+if (process.env.REDIS_URL) {
+  try { new URL(process.env.REDIS_URL); } catch {
+    fatal('REDIS_URL is not a valid URL. Use a hex/alphanumeric REDIS_PASSWORD (bedroc.sh generates one).');
+  }
+}

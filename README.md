@@ -13,15 +13,22 @@ End-to-end encrypted, self-hostable, real-time notes app. The server never sees 
 
 ## Self-hosting
 
-See [GUIDE.md](GUIDE.md) for the full Docker setup, WireGuard/Tailscale access, TLS, and backup instructions.
-
-Quick start:
+Everything goes through one script. It checks before it changes anything, asks before touching your system, takes verified backups before updates, and never deletes data.
 
 ```bash
-cp .env.example .env
-# edit .env — set JWT_SECRET, POSTGRES_PASSWORD, etc.
-docker compose up -d
+git clone https://github.com/MrBiscuitTR/Bedroc.git && cd Bedroc
+bash bedroc.sh setup     # pick "public" (API behind your reverse proxy) or "wireguard" (private, all-in-one)
+bash bedroc.sh up        # check → build → start → health check
+
+# later
+git pull && bash bedroc.sh update
 ```
+
+- [GUIDE.md](GUIDE.md): private (WireGuard/Tailscale/LAN) setup, from installing Docker to connecting devices
+- [VPS-DEPLOY.md](VPS-DEPLOY.md): public VPS behind Caddy + Cloudflare
+- [UPGRADING.md](UPGRADING.md): updating an existing server, moving it, rolling back
+- [MANAGEMENT-GUIDE.md](MANAGEMENT-GUIDE.md): backups, Adminer, rotating secrets, admin SQL
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md): Docker permissions, ports, umask/SELinux, database errors
 
 ## Development
 

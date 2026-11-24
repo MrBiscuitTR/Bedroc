@@ -17,7 +17,7 @@ Bedroc/
 │   │   │   └── stores/      Svelte 5 rune-based state (auth, notes)
 │   │   └── routes/          SvelteKit pages (+page.svelte)
 │   ├── static/              PWA icons, manifest, sw.js (service worker)
-│   ├── Dockerfile           Multi-stage: Node build → nginx static serve
+│   ├── Dockerfile           Multi-stage: Node build → unprivileged nginx static serve
 │   ├── nginx-static.conf    nginx config inside the bedroc container
 │   └── vercel.json          SPA rewrite rule for Vercel deployment
 │
@@ -29,6 +29,9 @@ Bedroc/
 │
 ├── server/          Fastify backend (TypeScript, Node 22)
 │   ├── src/
+│   │   ├── config.ts            Env validation (fails fast on insecure settings)
+│   │   ├── migrate.ts           One-shot migration runner (the `migrate` container)
+│   │   ├── crypto/srp.ts        Server-side SRP-6a math (unit-tested vs the client)
 │   │   ├── db/
 │   │   │   ├── client.ts        pg pool + migration runner
 │   │   │   ├── migrations/      SQL migration files (001_init.sql, …)
@@ -40,17 +43,20 @@ Bedroc/
 │   │       ├── notes.ts         CRUD for notes, topics, folders
 │   │       ├── attachments.ts   Encrypted attachment upload/download
 │   │       └── sync.ts          WebSocket real-time sync
-│   └── Dockerfile
+│   ├── test/                Unit + integration tests (see "Tests")
+│   └── Dockerfile           npm ci, non-root, npm removed from the runtime image
 │
 ├── docker/
-│   ├── nginx/nginx.conf     Outer reverse proxy (TLS termination, WireGuard bind)
+│   ├── nginx/               Outer reverse proxy image (nginx.conf baked in; TLS, BIND_IP)
 │   ├── nginx-static.conf    (canonical copy — also copied to bedroc/)
-│   ├── postgres/init.sql    First-boot DB user + permissions
+│   ├── postgres/            Postgres image with init.sh baked in (first-boot app user + grants)
 │   └── ssl/                 TLS certs (git-ignored)
 │
-├── docker-compose.yml       Production stack
-├── .env.example             All required env vars with documentation
-├── GUIDE.md                 End-user self-hosting guide
+├── bedroc.sh                Operator CLI: setup / check / up / update / backup / restore / …
+├── docker-compose.yml       Self-contained private stack (WireGuard/Tailscale/LAN)
+├── docker-compose.public.yml  Public VPS stack (API only, behind a host reverse proxy)
+├── .env.example             All env vars with documentation
+├── GUIDE.md / VPS-DEPLOY.md / UPGRADING.md / MANAGEMENT-GUIDE.md / TROUBLESHOOTING.md
 └── DEV-GUIDE.md             This file
 ```
 
@@ -66,10 +72,18 @@ Bedroc/
 
 ### 1. Start backing services
 
+The compose stacks keep Postgres and Redis on an internal network with no host ports, so for development run throwaway instances bound to localhost:
+
 ```bash
-# From repo root — starts postgres and redis only
-docker compose up -d postgres redis
+docker run -d --name bedroc-dev-pg -p 127.0.0.1:5432:5432 \
+  -e POSTGRES_DB=bedroc -e POSTGRES_PASSWORD=devpass postgres:16-alpine
+docker run -d --name bedroc-dev-redis -p 127.0.0.1:6379:6379 redis:7.4-alpine \
+  redis-server --requirepass devredis --save ''
+# server env: DATABASE_URL=postgres://postgres:devpass@127.0.0.1:5432/bedroc
+#             REDIS_URL=redis://:devredis@127.0.0.1:6379   CORS_ORIGIN=http://localhost:5173
 ```
+
+(Remove them with `docker rm -f bedroc-dev-pg bedroc-dev-redis`.)
 
 ### 2. Run the backend
 
@@ -119,8 +133,8 @@ The output is a plain static site — serve it from any static host (Vercel, ngi
 ### Backend (Docker)
 
 ```bash
-# From repo root
-docker compose build server
+# From repo root (any mode)
+bash bedroc.sh compose build server
 ```
 
 Or build and push manually:
@@ -134,11 +148,18 @@ docker push your-registry/bedroc-server:latest
 ### Full stack
 
 ```bash
-# From repo root
-cp .env.example .env
-# Fill in .env
-docker compose up -d --build
+bash bedroc.sh setup     # creates the env file with generated secrets
+bash bedroc.sh up
 ```
+
+### Container hardening (keep it when changing compose files)
+
+- Every service uses the `x-hardening` anchor: `no-new-privileges`, `cap_drop: [ALL]`, bounded json-file logs. Only postgres (`CHOWN DAC_OVERRIDE FOWNER SETGID SETUID`) and the outer nginx (`+ NET_BIND_SERVICE`) add capabilities back, so their official entrypoints can drop to their own users.
+- `read_only: true` everywhere; writable paths are `tmpfs` (plus the data volume and `./logs`).
+- Networks: `backend` (internal; postgres, redis, migrate, server), `web` (internal; nginx, frontend, server), `edge` (only for publishing ports). Postgres and Redis never get internet access or host ports.
+- The API server gets `RUN_MIGRATIONS=false` and never sees `POSTGRES_URL`. The `migrate` service runs `node dist/migrate.js` first (`service_completed_successfully`), trying the app role before the superuser.
+- Redis: password from `REDIS_PASSWORD` written to a tmpfs config file (not argv), no persistence, `CONFIG`/`DEBUG`/`MODULE`/replication commands disabled.
+- **Never rename services or the `postgres_data` volume**: operators' data and cron jobs depend on `<project>_postgres_data` and `<project>-postgres-1`.
 
 ---
 
@@ -203,7 +224,7 @@ Never commit `.env` to git. It is listed in `.gitignore`.
 
 ## Database migrations
 
-Migrations run automatically on every server startup (`runMigrations()` in `server/src/db/client.ts`). They are idempotent — safe to run multiple times.
+Migrations run before every start: in Docker via the one-shot `migrate` service (`server/src/migrate.ts`); outside Docker on server startup unless `RUN_MIGRATIONS=false`. They are idempotent, so they're safe to run multiple times. They run as the app role (`DATABASE_URL`) and fall back to `POSTGRES_URL` only on a privilege error (older installs where `postgres` owns the tables).
 
 Migration files live at `server/src/db/migrations/` and are numbered sequentially:
 
@@ -211,18 +232,22 @@ Migration files live at `server/src/db/migrations/` and are numbered sequentiall
 001_init.sql              — users, sessions, notes, topics, folders tables
 002_session_refresh_hash  — adds refresh_token_hash to sessions (token rotation)
 003_session_metadata      — adds login_ip and last_used_at to sessions
+004_attachments           — encrypted attachment blobs
+005_security_hardening    — srp_kdf_version, refresh-token reuse detection columns
 ```
+
+Keep migrations **additive** (new nullable/defaulted columns, `IF NOT EXISTS`) so the previous server version still runs on the migrated schema. That's what makes rollback safe (UPGRADING.md).
 
 To add a migration:
 
-1. Create `server/src/db/migrations/004_description.sql`
-2. Add the filename to the `migrations` array in `server/src/db/client.ts`
+1. Create `server/src/db/migrations/006_description.sql`
+2. Add the filename to the `MIGRATIONS` array in `server/src/db/client.ts`
 3. The migration runs automatically on next server start
 
 To run migrations manually (e.g. for inspection):
 
 ```bash
-docker compose exec postgres psql -U postgres -d bedroc -f /path/to/migration.sql
+bash bedroc.sh psql
 ```
 
 ---
